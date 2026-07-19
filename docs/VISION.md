@@ -94,4 +94,4 @@ The engineer responsible for reviewing large, substantially agent-written pull r
 
 Deliberately unresolved; this document will grow as they're answered.
 
-- **Review state:** Throughline may track per-cluster review progress ("clusters 1–3 reviewed, cluster 4 remaining"). Whether it does — and whether that state feeds back to the review platform in any form — is undecided.
+- **Review state:** Resolved in part — Throughline tracks read progress locally (see `PRODUCT.md`), which is what makes the coverage guarantee tangible: finishing the journey provably means every line was seen. Whether that state ever feeds back to the review platform remains open.

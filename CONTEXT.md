@@ -1,6 +1,6 @@
 # Throughline
 
-Throughline is a PR comprehension system: it reconstructs the development journey behind a large pull request so a reviewer can read the change as an ordered story rather than a flat list of file diffs. This glossary is the ubiquitous language for that domain — see `docs/vision.md` for the full product vision.
+Throughline is a PR comprehension system: it reconstructs the development journey behind a large pull request so a reviewer can read the change as an ordered story rather than a flat list of file diffs. This glossary is the ubiquitous language for that domain — see `docs/VISION.md` for the full product vision.
 
 ## Language
 
@@ -31,3 +31,11 @@ _Avoid_: revisit, duplicate, re-show
 **Coverage**:
 The inviolable guarantee that every changed line of the pull request appears in exactly one home cluster — the homes together partition the full diff. Nothing is omitted, condensed, or left unplaced.
 _Avoid_: completeness, summarization
+
+**Weight**:
+A cluster's attention classification — Core, Supporting, or Mechanical. Weight guides how much comprehension effort a cluster deserves; it never expresses risk or quality.
+_Avoid_: importance, priority, severity, risk, complexity
+
+**Overview**:
+The journey-level narrative the agent writes deliberately: what the PR builds, the shape of the journey, and where to begin. Distinct from the PR's own description, which it never merely restates.
+_Avoid_: summary, walkthrough, description
