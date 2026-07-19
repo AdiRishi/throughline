@@ -24,7 +24,7 @@ Reading only the map should leave the reviewer able to articulate the architectu
 
 ### 3. Where to begin
 
-A short closing orientation: the recommended entry point (normally cluster 1), plus honest guidance on attention — e.g. which Mechanical clusters can be walked quickly. Guidance about *attention*, never judgment about *quality*.
+A short closing orientation: the recommended entry point (normally cluster 1), plus honest guidance on attention — e.g. which Mechanical clusters can be walked quickly. Guidance about _attention_, never judgment about _quality_.
 
 ## The PR's own words
 

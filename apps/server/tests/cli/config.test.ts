@@ -32,9 +32,7 @@ function withBootstrapFd<A, E, R>(
 ): Effect.Effect<A, E, R> {
   return Effect.acquireUseRelease(
     Effect.sync(() => {
-      const dir = NodeFS.mkdtempSync(
-        NodePath.join(NodeOS.tmpdir(), "throughline-bootstrap-"),
-      );
+      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "throughline-bootstrap-"));
       const path = NodePath.join(dir, "bootstrap.json");
       NodeFS.writeFileSync(path, `${encodeBootstrapEnvelope(envelope)}\n`);
       return { dir, fd: NodeFS.openSync(path, "r") };

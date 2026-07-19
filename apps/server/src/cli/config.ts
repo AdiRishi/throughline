@@ -109,8 +109,7 @@ export const resolveServerConfig = Effect.fn("cli.resolveServerConfig")(function
 
   // Same directory the desktop shell uses as its app-data base, so the server
   // persists to one place whether it was spawned by the shell or standalone.
-  const dataDir =
-    env["APP_DATA_DIR"] ?? NodePath.join(NodeOS.homedir(), ".throughline");
+  const dataDir = env["APP_DATA_DIR"] ?? NodePath.join(NodeOS.homedir(), ".throughline");
 
   // Bootstrap token precedence: envelope → env → generated (dev convenience).
   let bootstrapToken = bootstrap?.desktopBootstrapToken ?? env["APP_BOOTSTRAP_TOKEN"];

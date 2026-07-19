@@ -117,10 +117,7 @@ describe("DesktopBackendConfiguration", () => {
       assert.equal(config.env.APP_SERVER_HOST, undefined);
       assert.isTrue("APP_DEV_WEB_URL" in config.env);
       assert.equal(config.env.APP_DEV_WEB_URL, undefined);
-      assert.equal(
-        config.env.APP_DATA_DIR,
-        "/home/user/Library/Application Support/throughline",
-      );
+      assert.equal(config.env.APP_DATA_DIR, "/home/user/Library/Application Support/throughline");
       assert.equal(config.bootstrapEnvelope.port, 19731);
       assert.equal(config.bootstrapEnvelope.desktopBootstrapToken, config.bootstrapToken);
       assert.match(config.bootstrapToken, /^[0-9a-f]{48}$/);

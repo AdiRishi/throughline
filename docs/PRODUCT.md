@@ -39,7 +39,7 @@ Read tracking is built in from v1 and is **local-only** — nothing is ever writ
 - The unit of marking is **a file within a cluster**. Marking it read collapses it.
 - A cluster's progress is the fraction of its homed hunks read; the journey's progress aggregates across clusters.
 - Progress persists across sessions and survives app restarts.
-- Read state is the mechanism that makes the coverage guarantee tangible: the journey's progress reaching 100% *is* the proof that every line was seen.
+- Read state is the mechanism that makes the coverage guarantee tangible: the journey's progress reaching 100% _is_ the proof that every line was seen.
 
 ## Design principles
 

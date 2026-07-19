@@ -11,7 +11,7 @@ The input is a GitHub pull request URL — pasted into the app, nothing else req
 When a URL is submitted, Throughline builds the journey. From the reviewer's perspective:
 
 - **Progress is visible and honest.** The run reports what it is doing in plain stages (fetching the change, reading the code, constructing the journey) — not a spinner of unknown duration. Long runs on huge PRs are expected; the reviewer should be able to walk away and come back.
-- **The run always completes.** Per the vision's always-commit principle, there is no "analysis failed" terminal state for a valid, reachable PR. A change with no clean structure gets an honest journey through a messy change — the degenerate floor being a small number of coarse clusters. (Unreachable input — bad URL, no access to the repository — is rejected *before* analysis begins, at submission time. Once a run starts, it finishes.)
+- **The run always completes.** Per the vision's always-commit principle, there is no "analysis failed" terminal state for a valid, reachable PR. A change with no clean structure gets an honest journey through a messy change — the degenerate floor being a small number of coarse clusters. (Unreachable input — bad URL, no access to the repository — is rejected _before_ analysis begins, at submission time. Once a run starts, it finishes.)
 - **A journey is a snapshot.** It is pinned to the PR's head commit at the moment of analysis. That pin is what makes coverage, read state, and every narrative claim stable and verifiable.
 
 ## Freshness
