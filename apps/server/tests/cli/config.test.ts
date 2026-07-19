@@ -33,7 +33,7 @@ function withBootstrapFd<A, E, R>(
   return Effect.acquireUseRelease(
     Effect.sync(() => {
       const dir = NodeFS.mkdtempSync(
-        NodePath.join(NodeOS.tmpdir(), "electron-effect-starter-bootstrap-"),
+        NodePath.join(NodeOS.tmpdir(), "throughline-bootstrap-"),
       );
       const path = NodePath.join(dir, "bootstrap.json");
       NodeFS.writeFileSync(path, `${encodeBootstrapEnvelope(envelope)}\n`);
@@ -83,7 +83,7 @@ describe("resolveServerConfig", () => {
       const defaulted = yield* resolveServerConfig(baseFlags).pipe(
         Effect.provideService(HostProcessEnvironment, { APP_BOOTSTRAP_TOKEN: "env-token" }),
       );
-      assert.equal(defaulted.dataDir, NodePath.join(NodeOS.homedir(), ".electron-effect-starter"));
+      assert.equal(defaulted.dataDir, NodePath.join(NodeOS.homedir(), ".throughline"));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

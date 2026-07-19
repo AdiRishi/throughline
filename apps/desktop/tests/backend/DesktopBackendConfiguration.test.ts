@@ -119,7 +119,7 @@ describe("DesktopBackendConfiguration", () => {
       assert.equal(config.env.APP_DEV_WEB_URL, undefined);
       assert.equal(
         config.env.APP_DATA_DIR,
-        "/home/user/Library/Application Support/electron-effect-starter",
+        "/home/user/Library/Application Support/throughline",
       );
       assert.equal(config.bootstrapEnvelope.port, 19731);
       assert.equal(config.bootstrapEnvelope.desktopBootstrapToken, config.bootstrapToken);

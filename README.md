@@ -1,4 +1,4 @@
-# Electron Effect Starter
+# Throughline
 
 ![Effect](https://img.shields.io/badge/Effect-v4-312E81) ![Electron](https://img.shields.io/badge/Electron-33-47848F?logo=electron&logoColor=white) ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white) ![pnpm](https://img.shields.io/badge/pnpm-11-F69220?logo=pnpm&logoColor=white)
 
@@ -22,7 +22,7 @@ Most Electron starters give you a window and a bundler, then leave the hard part
 Requires Node 24 and pnpm 11.
 
 ```bash
-npx degit AdiRishi/electron-effect-starter my-app
+npx degit AdiRishi/throughline my-app
 cd my-app
 pnpm install
 pnpm rename my-app com.mycompany  # make the starter yours (name, product name, app id, data dir)

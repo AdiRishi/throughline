@@ -51,7 +51,7 @@ export function App() {
         <header className="mb-8 flex items-start justify-between gap-4">
           <div>
             <h1 className="font-mono text-sm font-semibold tracking-tight">
-              {config?.appName ?? "Electron Effect Starter"}
+              {config?.appName ?? "Throughline"}
             </h1>
             <p className="mt-1 text-[13px] text-muted">
               Notes that sync live between every window on your local server.

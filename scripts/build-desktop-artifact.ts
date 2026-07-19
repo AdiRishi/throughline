@@ -17,8 +17,8 @@ import * as NodeURL from "node:url";
 
 const REPO_ROOT = NodePath.dirname(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)));
 
-const APP_ID = "com.example.electron-effect-starter";
-const PRODUCT_NAME = "Electron Effect Starter";
+const APP_ID = "com.arsoftware.throughline";
+const PRODUCT_NAME = "Throughline";
 
 function arg(name: string, fallback: string): string {
   const index = process.argv.indexOf(`--${name}`);
@@ -119,7 +119,7 @@ function main(): void {
     NodePath.join(stage, "package.json"),
     JSON.stringify(
       {
-        name: "electron-effect-starter",
+        name: "throughline",
         version: "0.0.0",
         main: "apps/desktop/dist-electron/main.cjs",
         dependencies: {

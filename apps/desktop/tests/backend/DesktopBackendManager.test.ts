@@ -290,7 +290,7 @@ describe("DesktopBackendManager", () => {
         LOG_DIR_HOME,
         "Library",
         "Application Support",
-        "electron-effect-starter",
+        "throughline",
         "logs",
         "server-child.log",
       );

@@ -16,7 +16,7 @@ import { DEFAULT_DESKTOP_SETTINGS } from "../settings/DesktopAppSettings.ts";
 // every consumer sees the same resolved values and nothing downstream touches
 // `process`/`__dirname` directly.
 
-const APP_BASE_NAME = "Electron Effect Starter";
+const APP_BASE_NAME = "Throughline";
 const DEFAULT_BACKEND_PORT = 13773;
 
 export interface MakeDesktopEnvironmentInput {
@@ -98,7 +98,7 @@ export function makeWith(
       : platform === "darwin"
         ? path.join(input.homeDirectory, "Library", "Application Support")
         : Option.getOrElse(input.xdgConfigHome, () => path.join(input.homeDirectory, ".config"));
-  const baseDir = path.join(appDataDirectory, "electron-effect-starter");
+  const baseDir = path.join(appDataDirectory, "throughline");
   const logDir = path.join(baseDir, "logs");
   const desktopSettingsPath = path.join(baseDir, "desktop-settings.json");
   const preloadPath = path.join(input.dirname, "preload.cjs");

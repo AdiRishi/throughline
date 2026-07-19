@@ -6,7 +6,7 @@
 
 ## Project Snapshot
 
-Electron Effect Starter is a starter for Effect v4 desktop apps: an Electron shell supervising a local Effect server (HTTP + WebSocket RPC), with one React web build that runs in the shell and in a plain browser.
+Throughline is a starter for Effect v4 desktop apps: an Electron shell supervising a local Effect server (HTTP + WebSocket RPC), with one React web build that runs in the shell and in a plain browser.
 
 ## Core Priorities
 

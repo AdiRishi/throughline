@@ -18,7 +18,7 @@ import packageJson from "../package.json" with { type: "json" };
 
 export const DEFAULT_PORT = 13773;
 export const DEFAULT_HOST = "127.0.0.1";
-export const APP_NAME = "Electron Effect Starter";
+export const APP_NAME = "Throughline";
 /** Single-sourced from package.json so `--version` can't drift from the manifest. */
 export const APP_VERSION: string = packageJson.version;
 

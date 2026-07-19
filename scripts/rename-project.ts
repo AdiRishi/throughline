@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Rename this project from "electron-effect-starter" to your own name.
+// Rename this project from "throughline" to your own name.
 //
 // The project name appears in exactly three shapes across the repo:
-//   kebab   "electron-effect-starter"             package name, ~/.<name> data dir
-//   title   "Electron Effect Starter"             product name, CLI docs, HTML title
-//   app id  "com.example.electron-effect-starter" electron-builder appId
+//   kebab   "throughline"             package name, ~/.<name> data dir
+//   title   "Throughline"             product name, CLI docs, HTML title
+//   app id  "com.arsoftware.throughline" electron-builder appId
 //
 // This script sweeps every git-tracked text file and replaces all three
 // (app id first, since it contains the kebab name). It also rewrites its
@@ -21,9 +21,9 @@ import * as NodeURL from "node:url";
 
 const REPO_ROOT = NodePath.dirname(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)));
 
-const OLD_KEBAB = "electron-effect-starter";
-const OLD_TITLE = "Electron Effect Starter";
-const OLD_APP_ID = "com.example.electron-effect-starter";
+const OLD_KEBAB = "throughline";
+const OLD_TITLE = "Throughline";
+const OLD_APP_ID = "com.arsoftware.throughline";
 
 /** "my-cool-app" -> "My Cool App" */
 export function toTitle(kebab: string): string {
