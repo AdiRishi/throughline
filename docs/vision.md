@@ -30,13 +30,15 @@ That narrative thread — the one idea that connects every part of the change in
 
 ## What Throughline is
 
-Throughline is a code review companion. You give it a pull request. An AI agent dissects the full diff and reconstructs the development journey behind it, presenting the change as an **ordered sequence of clusters**:
+Throughline is a code review companion. You give it a pull request URL. An AI agent dissects the full diff and reconstructs the development journey behind it, presenting the change as an **ordered sequence of clusters**:
 
 - **A cluster** is a set of changed hunks — possibly spanning many files, possibly only part of a file — that together accomplish one describable step of the work.
 - **Each cluster carries a narrative**: what this step does, why it comes at this point in the sequence, and how it relates to the clusters before it.
 - **The sequence is ordered for comprehension**: foundations before the things built on them, parts before the code that binds the parts together.
 
 The reviewer then reviews the PR *cluster by cluster*, in order — reading a story with a beginning, middle, and end, rather than a dump of files.
+
+The journey is the agent's, and it is read-only. The reviewer walks it; they don't merge, split, or reorder clusters. One authoritative decomposition keeps the narrative coherent and keeps the reviewer's attention where it belongs — on judging the code, not curating the presentation of it.
 
 ### The core guarantee: a partition, not a summary
 
@@ -57,9 +59,10 @@ Each step is a few thousand lines with a clear job — reviewable. And crucially
 ## Principles
 
 1. **The journey is an inference, honestly presented.** The agent proposes a plausible, useful decomposition — it does not claim to know the author's actual chronology. The product's claim is "here is an intelligible way through this change," not "here is what happened."
-2. **Complete coverage, always.** The partition guarantee is inviolable. If a line can't be confidently placed, it lands in an explicit cluster the reviewer can see — never on the floor.
-3. **Judgment stays with the human.** Throughline structures the review; it does not perform it. It doesn't approve, score, or flag code quality. It makes the reviewer more capable, not more passive.
-4. **The diff is the ground truth.** Narrative always links back to the actual hunks it describes. Prose that can't be checked against code is not allowed to exist in the product.
+2. **The agent always commits.** There is no "too tangled to decompose" and no low-confidence escape hatch. Every PR gets the best journey the agent can construct; a messy change gets an honest journey through a messy change, never an error state.
+3. **Complete coverage, always.** The partition guarantee is inviolable. If a line can't be confidently placed, it lands in an explicit cluster the reviewer can see — never on the floor.
+4. **Judgment stays with the human.** Throughline structures the review; it does not perform it. It doesn't approve, score, or flag code quality. It makes the reviewer more capable, not more passive.
+5. **The diff is the ground truth.** Narrative always links back to the actual hunks it describes. Prose that can't be checked against code is not allowed to exist in the product.
 
 ## What Throughline is not
 
@@ -81,7 +84,4 @@ The engineer responsible for reviewing large, substantially agent-written pull r
 
 Deliberately unresolved; this document will grow as they're answered.
 
-- **Ingestion scope:** GitHub PRs first — but what exactly is "a PR" as input (URL, repo + number, raw diff)? What about local branches that haven't been pushed?
-- **Interactivity:** Is the journey read-only, or can the reviewer reshape it — merge clusters, split them, re-order, annotate?
-- **Review state:** Does Throughline track per-cluster review progress ("steps 1–3 reviewed, step 4 remaining")? Does that state feed back to the review platform in any form?
-- **Trust calibration:** How does the product behave when the agent's confidence in the decomposition is low — for a tangled change with no clean journey?
+- **Review state:** Throughline may track per-cluster review progress ("clusters 1–3 reviewed, cluster 4 remaining"). Whether it does — and whether that state feeds back to the review platform in any form — is undecided.
