@@ -12,7 +12,7 @@ At the level this document cares about: Throughline clones the repository into a
 
 Two behavioral commitments:
 
-- **The run always completes.** Per the vision's always-commit principle, there is no "analysis failed" terminal state for a valid, reachable PR. A change with no clean structure gets an honest journey through a messy change. Unreachable input — a bad URL, a repository your `gh` login can't see — is rejected *before* ingestion begins, at the door.
+- **The run always completes.** Per the vision's always-commit principle, there is no "analysis failed" terminal state for a valid, reachable PR. A change with no clean structure gets an honest journey through a messy change. Unreachable input — a bad URL, a repository your `gh` login can't see — is rejected _before_ ingestion begins, at the door.
 - **A journey is a snapshot.** It is pinned to the PR's head commit at the moment of analysis. That pin is what makes coverage, read state, and every narrative claim stable and verifiable.
 
 ## The transition

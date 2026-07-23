@@ -12,7 +12,7 @@ Candidate hint kinds — deliberately drafted for later review, not yet final:
 - **Complexity companion** — a plain-words walkthrough of a genuinely dense region in view: the invariant a loop maintains, what a gnarly type expression actually says, the order things happen in an async flow.
 - **Ripple context** — facts from the surrounding codebase the diff can't show: "this function has twelve call sites; this PR changes the behavior of two of them."
 - **Pattern echo** — "the same transformation as the previous three files" — telling the reviewer a region is mechanical repetition they can walk quickly, without the product ever deciding for them.
-- **Behavioral before/after** — "errors on this path used to be swallowed; they now surface as typed failures." What the change *means*, stated at the moment the code shows *how*.
+- **Behavioral before/after** — "errors on this path used to be swallowed; they now surface as typed failures." What the change _means_, stated at the moment the code shows _how_.
 - **Resurfacing note** — on a revisited hunk: why the journey brought it back here, and what to see in it this time.
 
 All hints are comprehension, never judgment — no "this looks wrong," no severity. Like all narrative, every hint anchors to the exact code it describes (vision: every claim is evidence-backed).

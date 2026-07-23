@@ -15,7 +15,7 @@ Three panels:
 └────────────┴──────────────────────────────┴──────────────┘
 ```
 
-The middle panel is the reading surface. When a cluster is open it shows the cluster page (below), with guidance riding alongside. When the [Overview](./03-overview.md) is open, the document takes over the middle *and* right panels — guidance is a companion to code, and the Overview has no code.
+The middle panel is the reading surface. When a cluster is open it shows the cluster page (below), with guidance riding alongside. When the [Overview](./03-overview.md) is open, the document takes over the middle _and_ right panels — guidance is a companion to code, and the Overview has no code.
 
 Every diff surface is `@pierre/diffs`; every file tree is `@pierre/trees` (see PRODUCT.md, Technology foundations).
 
@@ -66,7 +66,7 @@ Below the narrative, every file this cluster touches, as **full file diffs**:
 One display mode at a time, per journey — switch it and it stays that way until you switch it again. No per-file toggles:
 
 - **Inline** (default) — the unified diff.
-- **Just the code** — every trace of diff UI falls away, leaving the file's new state as plain code, with only a subtle marker in the margin showing which regions changed. For when the reviewer just wants to *read* — silence, with orientation. Hints still bind here, anchored to the marked regions.
+- **Just the code** — every trace of diff UI falls away, leaving the file's new state as plain code, with only a subtle marker in the margin showing which regions changed. For when the reviewer just wants to _read_ — silence, with orientation. Hints still bind here, anchored to the marked regions.
 - **Split** — side-by-side, for the reviewers who prefer it. Available, not emphasized.
 
 The mode changes how code renders, never what counts: read state, coverage, and emphasis semantics are identical in all three.

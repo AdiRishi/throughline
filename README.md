@@ -4,9 +4,9 @@
 
 ## Why
 
-The way code gets written has changed faster than the way code gets reviewed. Agent-written changes routinely arrive as 10,000–40,000 line pull requests, and today's review tools answer only one question about them — *what changed in each file* — while staying silent on the ones that matter: what was the plan, what belongs together, what depends on what, where do I begin.
+The way code gets written has changed faster than the way code gets reviewed. Agent-written changes routinely arrive as 10,000–40,000 line pull requests, and today's review tools answer only one question about them — _what changed in each file_ — while staying silent on the ones that matter: what was the plan, what belongs together, what depends on what, where do I begin.
 
-Before a reviewer can decide whether a change is *correct*, they first have to understand what it *is*. At this scale, understanding is the bottleneck. Throughline exists to remove it.
+Before a reviewer can decide whether a change is _correct_, they first have to understand what it _is_. At this scale, understanding is the bottleneck. Throughline exists to remove it.
 
 ## What it is
 
@@ -18,11 +18,11 @@ The core guarantee: Throughline never summarizes the diff — it **partitions** 
 
 This project is being built documentation-first. The docs are the product right now:
 
-| Document | What it holds |
-| --- | --- |
-| [`docs/VISION.md`](./docs/VISION.md) | Why Throughline must exist, what it is, and the principles that bind it |
+| Document                               | What it holds                                                                                       |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| [`docs/VISION.md`](./docs/VISION.md)   | Why Throughline must exist, what it is, and the principles that bind it                             |
 | [`docs/PRODUCT.md`](./docs/PRODUCT.md) | The product specification — the map into the per-surface docs in [`docs/product/`](./docs/product/) |
-| [`CONTEXT.md`](./CONTEXT.md) | The domain glossary — the ubiquitous language (journey, cluster, hunk, home, coverage…) |
+| [`CONTEXT.md`](./CONTEXT.md)           | The domain glossary — the ubiquitous language (journey, cluster, hunk, home, coverage…)             |
 
 Read them in that order; where they conflict, the vision wins.
 
