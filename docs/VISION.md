@@ -89,9 +89,3 @@ The engineer responsible for reviewing large, substantially agent-written pull r
 - A reviewer opens a PR they would previously have skimmed, and instead walks it cluster by cluster to the end — every line seen, in an order that made sense.
 - Reviewers can articulate the _architecture_ of a change ("it's the auth module, then the UI, then the wiring") after minutes, not hours.
 - "Too big to review" stops being a reason to approve on trust.
-
-## Open questions
-
-Deliberately unresolved; this document will grow as they're answered.
-
-- **Review state:** Resolved in part — Throughline tracks read progress locally (see `PRODUCT.md`), which is what makes the coverage guarantee tangible: finishing the journey provably means every line was seen. Whether that state ever feeds back to the review platform remains open.
