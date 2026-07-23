@@ -63,7 +63,7 @@ Below the narrative, every file this cluster touches, as **full file diffs**:
 
 ### Three ways to see the code
 
-One global display mode, remembered across sessions:
+One display mode at a time, per journey — switch it and it stays that way until you switch it again. No per-file toggles:
 
 - **Inline** (default) — the unified diff.
 - **Just the code** — every trace of diff UI falls away, leaving the file's new state as plain code, with only a subtle marker in the margin showing which regions changed. For when the reviewer just wants to *read* — silence, with orientation. Hints still bind here, anchored to the marked regions.
