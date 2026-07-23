@@ -39,3 +39,11 @@ _Avoid_: importance, priority, severity, risk, complexity
 **Overview**:
 The journey-level narrative the agent writes deliberately: what the PR builds, the shape of the journey, and where to begin. Distinct from the PR's own description, which it never merely restates.
 _Avoid_: summary, walkthrough, description
+
+**Hint**:
+A scroll-anchored piece of guidance attached to a specific region of code — a connection, an explanation, an orientation aid. Hints aid comprehension and never judge quality.
+_Avoid_: comment, annotation, tip, suggestion
+
+**Stale**:
+The state of a journey whose pinned head commit no longer matches the PR's head. A stale journey stays fully readable; only a reviewer-triggered full reanalysis replaces it.
+_Avoid_: outdated, expired, invalid

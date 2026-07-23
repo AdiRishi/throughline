@@ -33,7 +33,7 @@ That narrative thread — the one idea that connects every part of the change in
 
 ## What Throughline is
 
-Throughline is a **PR comprehension system** — a companion to code review, not a participant in it. You give it a pull request URL. An AI agent dissects the full diff and reconstructs the development journey behind it, presenting the change as an **ordered sequence of clusters**:
+Throughline is a **PR comprehension system** — a companion to code review, not a participant in it. You point it at a pull request. An AI agent dissects the full diff and reconstructs the development journey behind it, presenting the change as an **ordered sequence of clusters**:
 
 - **A cluster** is a set of changed hunks — possibly spanning many files, possibly only part of a file — that together accomplish one describable step of the work.
 - **Each cluster carries a narrative**: what this step does, why it comes at this point in the sequence, and how it relates to the clusters before it.

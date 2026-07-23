@@ -4,6 +4,8 @@ Where every journey starts. The Overview is a first-class artifact the agent wri
 
 It is detailed — a good map, not an essay. Density comes from structure, not prose length.
 
+On screen, the Overview is a document, and it reads like one: it takes over the middle **and** right panels together. The guidance rail is a companion to code, and the Overview has no code — one wide, quiet page.
+
 ## Content, in order
 
 ### 1. The change, in brief
