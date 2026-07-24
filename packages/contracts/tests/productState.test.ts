@@ -2,11 +2,12 @@ import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
-import { GitHubPrListStreamEvent, PrSummary, Viewer } from "../src/github.ts";
+import { GitHubPrListStreamEvent, PrRef, PrSummary, Viewer } from "../src/github.ts";
 import { IngestionDoorRejectionError, IngestionStreamEvent } from "../src/ingestion.ts";
 
 const decodeViewer = Schema.decodeUnknownSync(Viewer);
 const decodePr = Schema.decodeUnknownSync(Schema.toCodecJson(PrSummary));
+const decodePrRef = Schema.decodeUnknownSync(PrRef);
 const decodePrEvent = Schema.decodeUnknownSync(Schema.toCodecJson(GitHubPrListStreamEvent));
 const decodeIngestionEvent = Schema.decodeUnknownSync(Schema.toCodecJson(IngestionStreamEvent));
 
@@ -55,6 +56,17 @@ describe("GitHub view contracts", () => {
     });
     assert.strictEqual(event.type, "snapshot");
     assert.isTrue(DateTime.isDateTime(event.refreshedAt));
+  });
+
+  it("rejects repository identity segments that could escape filesystem roots", () => {
+    for (const ref of [
+      { owner: "..", repo: "app", number: 1 },
+      { owner: "octo/team", repo: "app", number: 1 },
+      { owner: "octo", repo: "../app", number: 1 },
+      { owner: "octo", repo: "app\\nested", number: 1 },
+    ]) {
+      assert.throws(() => decodePrRef(ref));
+    }
   });
 });
 

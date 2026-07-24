@@ -3,12 +3,17 @@ import * as Schema from "effect/Schema";
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { JourneyId } from "./productIds.ts";
 
-export const GitHubOwner = TrimmedNonEmptyString.pipe(Schema.brand("GitHubOwner"));
+export const GitHubOwner = TrimmedNonEmptyString.check(Schema.isPattern(/^[A-Za-z0-9-]+$/u)).pipe(
+  Schema.brand("GitHubOwner"),
+);
 export type GitHubOwner = typeof GitHubOwner.Type;
 
-export const GitHubRepositoryName = TrimmedNonEmptyString.pipe(
-  Schema.brand("GitHubRepositoryName"),
-);
+export const GitHubRepositoryName = TrimmedNonEmptyString.check(
+  Schema.isPattern(/^[A-Za-z0-9._-]+$/u),
+  Schema.makeFilter((name) => name !== "." && name !== "..", {
+    expected: "a GitHub repository name",
+  }),
+).pipe(Schema.brand("GitHubRepositoryName"));
 export type GitHubRepositoryName = typeof GitHubRepositoryName.Type;
 
 export const PullRequestNumber = PositiveInt.pipe(Schema.brand("PullRequestNumber"));
@@ -116,7 +121,14 @@ export class GitHubParkedError extends Schema.TaggedErrorClass<GitHubParkedError
 }
 
 export class GitHubReadError extends Schema.TaggedErrorClass<GitHubReadError>()("GitHubReadError", {
-  reason: Schema.Literals(["unavailable", "unauthenticated", "transport"]),
+  reason: Schema.Literals([
+    "unavailable",
+    "unauthenticated",
+    "not-found",
+    "forbidden",
+    "client",
+    "transport",
+  ]),
   detail: TrimmedNonEmptyString,
 }) {
   override get message(): string {
