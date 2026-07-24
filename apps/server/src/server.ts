@@ -38,7 +38,6 @@ import * as JourneyQuery from "./journeys/JourneyQuery.ts";
 import * as JourneyState from "./journeys/JourneyState.ts";
 import * as JourneyStore from "./journeys/JourneyStore.ts";
 import * as LifecycleEvents from "./lifecycleEvents.ts";
-import * as NotesStore from "./notes/NotesStore.ts";
 import * as PullRequestIndex from "./pullRequests/PullRequestIndex.ts";
 import * as Readiness from "./readiness.ts";
 import * as GitProcess from "./workspace/GitProcess.ts";
@@ -127,7 +126,6 @@ export const workspaceCacheEvictionLayer = Layer.effectDiscard(
 const RuntimeServicesLive = Layer.mergeAll(
   Auth.layer,
   LifecycleEvents.layer,
-  NotesStore.layer,
   productServicesLayer,
   pullRequestIndexSyncLayer.pipe(Layer.provide(productServicesLayer)),
   workspaceCacheEvictionLayer.pipe(Layer.provide(productServicesLayer)),

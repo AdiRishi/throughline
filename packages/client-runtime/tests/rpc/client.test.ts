@@ -12,7 +12,12 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { RpcClientError } from "effect/unstable/rpc";
 
-import { EnvironmentAuthorizationError, WS_METHODS, type TickEvent } from "@app/contracts";
+import {
+  EnvironmentAuthorizationError,
+  PRODUCT_WS_METHODS,
+  WS_METHODS,
+  type ServerLifecycleStreamEvent,
+} from "@app/contracts";
 
 import { INITIAL_CONNECTION_STATE, type ConnectionState } from "../../src/connection/model.ts";
 import { ConnectionSupervisor } from "../../src/connection/supervisor.ts";
@@ -22,7 +27,12 @@ import type { RpcSession } from "../../src/rpc/session.ts";
 
 const AT = DateTime.makeUnsafe(0);
 
-const tick = (n: number): TickEvent => ({ tick: n, at: AT });
+const lifecycle = (sequence: number): ServerLifecycleStreamEvent => ({
+  version: 1,
+  sequence,
+  phase: "ready",
+  at: AT,
+});
 
 /** A live-looking session around a hand-rolled client record. */
 const session = (client: WsRpcProtocolClient): RpcSession => ({
@@ -56,17 +66,20 @@ describe("rpc client", () => {
     Effect.gen(function* () {
       const { supervisor } = yield* makeHarness;
 
-      const exit = yield* request(WS_METHODS.serverEcho, { message: "hello" }).pipe(
+      const exit = yield* request(WS_METHODS.serverGetConfig, {}).pipe(
         Effect.provideService(ConnectionSupervisor, supervisor),
         Effect.exit,
       );
 
       assert.isTrue(Exit.isFailure(exit));
       if (Exit.isFailure(exit)) {
-        const unavailable = exit.cause.reasons.some(
+        const unavailable = exit.cause.reasons.find(
           (reason) => reason._tag === "Fail" && reason.error instanceof RpcUnavailableError,
         );
-        assert.isTrue(unavailable, "expected RpcUnavailableError");
+        assert.isDefined(unavailable, "expected RpcUnavailableError");
+        if (unavailable?._tag === "Fail" && unavailable.error instanceof RpcUnavailableError) {
+          assert.strictEqual(unavailable.error.method, WS_METHODS.serverGetConfig);
+        }
       }
     }),
   );
@@ -75,29 +88,30 @@ describe("rpc client", () => {
     Effect.gen(function* () {
       const { activeSession, supervisor } = yield* makeHarness;
       const client = {
-        [WS_METHODS.serverEcho]: (input: { readonly message: string }) =>
-          Effect.succeed({ message: input.message, receivedAt: AT }),
+        [PRODUCT_WS_METHODS.settingsUpdate]: (input: {
+          readonly harness: "codex" | "claude" | null;
+        }) => Effect.succeed(input.harness === null ? {} : { harness: input.harness }),
       } as unknown as WsRpcProtocolClient;
       yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
 
-      const result = yield* request(WS_METHODS.serverEcho, { message: "hello" }).pipe(
+      const result = yield* request(PRODUCT_WS_METHODS.settingsUpdate, { harness: "codex" }).pipe(
         Effect.provideService(ConnectionSupervisor, supervisor),
       );
 
-      assert.equal(result.message, "hello");
+      assert.deepStrictEqual(result, { harness: "codex" });
     }),
   );
 
   it.effect("subscribe re-attaches to each fresh session across reconnects", () =>
     Effect.gen(function* () {
       const { activeSession, supervisor } = yield* makeHarness;
-      const firstTicks = yield* Queue.unbounded<TickEvent>();
-      const secondTicks = yield* Queue.unbounded<TickEvent>();
+      const firstEvents = yield* Queue.unbounded<ServerLifecycleStreamEvent>();
+      const secondEvents = yield* Queue.unbounded<ServerLifecycleStreamEvent>();
       const firstClient = {
-        [WS_METHODS.serverSubscribeTicks]: () => Stream.fromQueue(firstTicks),
+        [WS_METHODS.serverSubscribeLifecycle]: () => Stream.fromQueue(firstEvents),
       } as unknown as WsRpcProtocolClient;
       const secondClient = {
-        [WS_METHODS.serverSubscribeTicks]: () => Stream.fromQueue(secondTicks),
+        [WS_METHODS.serverSubscribeLifecycle]: () => Stream.fromQueue(secondEvents),
       } as unknown as WsRpcProtocolClient;
 
       const values = yield* Ref.make<ReadonlyArray<number>>([]);
@@ -105,9 +119,9 @@ describe("rpc client", () => {
       const sawSecond = yield* Deferred.make<void>();
 
       const consumer = yield* Effect.forkChild(
-        subscribe(WS_METHODS.serverSubscribeTicks, {}).pipe(
+        subscribe(WS_METHODS.serverSubscribeLifecycle, {}).pipe(
           Stream.runForEach((event) =>
-            Ref.updateAndGet(values, (current) => [...current, event.tick]).pipe(
+            Ref.updateAndGet(values, (current) => [...current, event.sequence]).pipe(
               Effect.flatMap((current) =>
                 current.length === 1
                   ? Deferred.succeed(sawFirst, undefined).pipe(Effect.asVoid)
@@ -124,12 +138,12 @@ describe("rpc client", () => {
       // First session delivers, then the connection drops and a new session
       // replaces it — the consumer must keep receiving without re-subscribing.
       yield* SubscriptionRef.set(activeSession, Option.some(session(firstClient)));
-      yield* Queue.offer(firstTicks, tick(1));
+      yield* Queue.offer(firstEvents, lifecycle(1));
       yield* Deferred.await(sawFirst);
 
       yield* SubscriptionRef.set(activeSession, Option.none());
       yield* SubscriptionRef.set(activeSession, Option.some(session(secondClient)));
-      yield* Queue.offer(secondTicks, tick(2));
+      yield* Queue.offer(secondEvents, lifecycle(2));
       yield* Deferred.await(sawSecond);
 
       assert.deepEqual(yield* Ref.get(values), [1, 2]);
@@ -141,20 +155,20 @@ describe("rpc client", () => {
     Effect.gen(function* () {
       const { activeSession, supervisor } = yield* makeHarness;
       const failingClient = {
-        [WS_METHODS.serverSubscribeTicks]: () => Stream.fail(transportError()),
+        [WS_METHODS.serverSubscribeLifecycle]: () => Stream.fail(transportError()),
       } as unknown as WsRpcProtocolClient;
-      const nextTicks = yield* Queue.unbounded<TickEvent>();
+      const nextEvents = yield* Queue.unbounded<ServerLifecycleStreamEvent>();
       const nextClient = {
-        [WS_METHODS.serverSubscribeTicks]: () => Stream.fromQueue(nextTicks),
+        [WS_METHODS.serverSubscribeLifecycle]: () => Stream.fromQueue(nextEvents),
       } as unknown as WsRpcProtocolClient;
 
       const values = yield* Ref.make<ReadonlyArray<number>>([]);
       const sawValue = yield* Deferred.make<void>();
 
       const consumer = yield* Effect.forkChild(
-        subscribe(WS_METHODS.serverSubscribeTicks, {}).pipe(
+        subscribe(WS_METHODS.serverSubscribeLifecycle, {}).pipe(
           Stream.runForEach((event) =>
-            Ref.update(values, (current) => [...current, event.tick]).pipe(
+            Ref.update(values, (current) => [...current, event.sequence]).pipe(
               Effect.andThen(Deferred.succeed(sawValue, undefined)),
             ),
           ),
@@ -167,7 +181,7 @@ describe("rpc client", () => {
       // ...so a later session still delivers.
       yield* SubscriptionRef.set(activeSession, Option.none());
       yield* SubscriptionRef.set(activeSession, Option.some(session(nextClient)));
-      yield* Queue.offer(nextTicks, tick(7));
+      yield* Queue.offer(nextEvents, lifecycle(7));
       yield* Deferred.await(sawValue);
 
       assert.deepEqual(yield* Ref.get(values), [7]);
@@ -179,12 +193,12 @@ describe("rpc client", () => {
     Effect.gen(function* () {
       const defect = new Error("subscription invariant failed");
       const client = {
-        [WS_METHODS.serverSubscribeTicks]: () => Stream.die(defect),
+        [WS_METHODS.serverSubscribeLifecycle]: () => Stream.die(defect),
       } as unknown as WsRpcProtocolClient;
       const { activeSession, supervisor } = yield* makeHarness;
 
       yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
-      const exit = yield* subscribe(WS_METHODS.serverSubscribeTicks, {}).pipe(
+      const exit = yield* subscribe(WS_METHODS.serverSubscribeLifecycle, {}).pipe(
         Stream.runDrain,
         Effect.provideService(ConnectionSupervisor, supervisor),
         Effect.exit,
@@ -201,12 +215,12 @@ describe("rpc client", () => {
     Effect.gen(function* () {
       const { activeSession, supervisor } = yield* makeHarness;
       const rejectingClient = {
-        [WS_METHODS.serverSubscribeTicks]: () =>
+        [WS_METHODS.serverSubscribeLifecycle]: () =>
           Stream.fail(new EnvironmentAuthorizationError({ reason: "expired" })),
       } as unknown as WsRpcProtocolClient;
       yield* SubscriptionRef.set(activeSession, Option.some(session(rejectingClient)));
 
-      const exit = yield* subscribe(WS_METHODS.serverSubscribeTicks, {}).pipe(
+      const exit = yield* subscribe(WS_METHODS.serverSubscribeLifecycle, {}).pipe(
         Stream.runCollect,
         Effect.provideService(ConnectionSupervisor, supervisor),
         Effect.exit,

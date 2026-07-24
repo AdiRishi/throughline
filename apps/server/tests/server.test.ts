@@ -31,7 +31,6 @@ import * as Auth from "../src/auth.ts";
 import * as ServerConfig from "../src/config.ts";
 import { AUTH_BOOTSTRAP_PATH, HEALTH_PATH } from "../src/http.ts";
 import * as LifecycleEvents from "../src/lifecycleEvents.ts";
-import * as NotesStore from "../src/notes/NotesStore.ts";
 import * as Readiness from "../src/readiness.ts";
 import {
   productServicesLayer,
@@ -70,7 +69,6 @@ const appLayer = (options: HarnessOptions = {}) => {
         options.lifecycleEvents === undefined
           ? LifecycleEvents.layer
           : Layer.mock(LifecycleEvents.ServerLifecycleEvents)(options.lifecycleEvents),
-        NotesStore.layer,
         productServicesLayer,
         Readiness.layer,
       ),
@@ -299,17 +297,21 @@ describe("websocket gate", () => {
       const result = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           Effect.gen(function* () {
+            const config = yield* client[WS_METHODS.serverGetConfig]({});
             const initial = yield* client[PRODUCT_WS_METHODS.settingsGet]({});
             const updated = yield* client[PRODUCT_WS_METHODS.prStateReviewed]({
               pr,
               active: true,
             });
             const persisted = yield* client[PRODUCT_WS_METHODS.prStateGet]({});
-            return { initial, updated, persisted };
+            return { config, initial, updated, persisted };
           }),
         ),
       ).pipe(Effect.timeout("2 seconds"));
 
+      assert.strictEqual(result.config.appName, "Test App");
+      assert.strictEqual(result.config.version, "0.0.0-test");
+      assert.isTrue(DateTime.isUtc(result.config.startedAt));
       assert.deepStrictEqual(result.initial, {});
       assert.deepStrictEqual(result.updated.reviewed, [pr]);
       assert.deepStrictEqual(result.persisted, result.updated);

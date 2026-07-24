@@ -8,7 +8,6 @@
  *
  * @module ws
  */
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -27,7 +26,6 @@ import {
   WS_METHODS,
   WsRpcGroup,
   type ServerLifecycleStreamEvent,
-  type TickEvent,
 } from "@app/contracts";
 
 import * as Ingestion from "./analysis/Ingestion.ts";
@@ -39,7 +37,6 @@ import * as JourneyQuery from "./journeys/JourneyQuery.ts";
 import * as JourneyState from "./journeys/JourneyState.ts";
 import * as JourneyStore from "./journeys/JourneyStore.ts";
 import * as LifecycleEvents from "./lifecycleEvents.ts";
-import * as NotesStore from "./notes/NotesStore.ts";
 import * as PullRequestIndex from "./pullRequests/PullRequestIndex.ts";
 import * as Workspaces from "./workspace/Workspaces.ts";
 
@@ -74,7 +71,6 @@ const makeCoreWsRpcLayer = () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* LifecycleEvents.ServerLifecycleEvents;
-      const notes = yield* NotesStore.NotesStore;
 
       return WsRpcGroup.of({
         [WS_METHODS.serverGetConfig]: () =>
@@ -83,26 +79,6 @@ const makeCoreWsRpcLayer = () =>
             version: config.version,
             startedAt: config.startedAt,
           }),
-        [WS_METHODS.serverEcho]: (input) =>
-          DateTime.now.pipe(
-            Effect.map((receivedAt) => ({
-              message: input.message,
-              receivedAt,
-            })),
-          ),
-        [WS_METHODS.serverSubscribeTicks]: () =>
-          Stream.tick("1 second").pipe(
-            Stream.mapAccum(
-              () => 0,
-              (count, _void) => {
-                const next = count + 1;
-                return [next, [next]] as const;
-              },
-            ),
-            Stream.mapEffect((tick) =>
-              DateTime.now.pipe(Effect.map((at): TickEvent => ({ tick, at }))),
-            ),
-          ),
         [WS_METHODS.serverSubscribeLifecycle]: () =>
           Stream.unwrap(
             Effect.gen(function* () {
@@ -124,10 +100,6 @@ const makeCoreWsRpcLayer = () =>
               return Stream.concat(Stream.fromIterable(replay), live);
             }),
           ),
-        [WS_METHODS.notesCreate]: (input) => notes.create(input),
-        [WS_METHODS.notesUpdate]: (input) => notes.update(input),
-        [WS_METHODS.notesDelete]: (input) => notes.remove(input),
-        [WS_METHODS.notesSubscribe]: () => notes.changes,
       });
     }),
   );
