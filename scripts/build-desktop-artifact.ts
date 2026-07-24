@@ -19,6 +19,14 @@ const REPO_ROOT = NodePath.dirname(NodePath.dirname(NodeURL.fileURLToPath(import
 
 const APP_ID = "com.arsoftware.throughline";
 const PRODUCT_NAME = "Throughline";
+const SERVER_RUNTIME_DEPENDENCIES = [
+  "@anthropic-ai/claude-agent-sdk",
+  "@anthropic-ai/sdk",
+  "@modelcontextprotocol/sdk",
+  "@openai/codex",
+  "@openai/codex-sdk",
+  "zod",
+] as const;
 
 function arg(name: string, fallback: string): string {
   const index = process.argv.indexOf(`--${name}`);
@@ -54,6 +62,13 @@ function validateBundledClientAssets(clientDir: string): void {
         "or stale; run `pnpm --filter @app/web build` and retry.",
     );
   }
+}
+
+function installedVersion(packagePath: string): string {
+  const manifest = JSON.parse(NodeFS.readFileSync(packagePath, "utf8")) as {
+    readonly version: string;
+  };
+  return manifest.version;
 }
 
 /**
@@ -103,17 +118,22 @@ function main(): void {
   copy("apps/web/dist", "apps/server/dist/client");
   validateBundledClientAssets(NodePath.join(stage, "apps/server/dist/client"));
 
-  const desktopPackageJson = JSON.parse(
-    NodeFS.readFileSync(NodePath.join(REPO_ROOT, "apps/desktop/package.json"), "utf8"),
-  ) as {
-    readonly dependencies: { readonly "electron-updater": string };
-  };
   const electronPackageJson = JSON.parse(
     NodeFS.readFileSync(
       NodePath.join(REPO_ROOT, "apps/desktop/node_modules/electron/package.json"),
       "utf8",
     ),
   ) as { readonly version: string };
+  const stagedRuntimeDependencies: Record<string, string> = {
+    "electron-updater": installedVersion(
+      NodePath.join(REPO_ROOT, "apps/desktop/node_modules/electron-updater/package.json"),
+    ),
+  };
+  for (const dependency of SERVER_RUNTIME_DEPENDENCIES) {
+    stagedRuntimeDependencies[dependency] = installedVersion(
+      NodePath.join(REPO_ROOT, "apps/server/node_modules", dependency, "package.json"),
+    );
+  }
 
   NodeFS.writeFileSync(
     NodePath.join(stage, "package.json"),
@@ -122,9 +142,7 @@ function main(): void {
         name: "throughline",
         version: "0.0.0",
         main: "apps/desktop/dist-electron/main.cjs",
-        dependencies: {
-          "electron-updater": desktopPackageJson.dependencies["electron-updater"],
-        },
+        dependencies: stagedRuntimeDependencies,
         devDependencies: {
           electron: electronPackageJson.version,
         },
@@ -154,7 +172,11 @@ function main(): void {
     productName: PRODUCT_NAME,
     directories: { output: NodePath.join(REPO_ROOT, "release/dist") },
     files: ["**/*"],
-    asarUnpack: ["apps/server/**"],
+    asarUnpack: [
+      "apps/server/**",
+      "node_modules/@anthropic-ai/claude-agent-sdk*/**",
+      "node_modules/@openai/codex*/**",
+    ],
     mac: { target: [target], category: "public.app-category.developer-tools" },
     win: { target: [target] },
     linux: { target: [target], category: "Development" },

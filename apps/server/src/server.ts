@@ -122,8 +122,8 @@ export const makeServerLayer = Layer.unwrap(
       // The stack's only HttpClient (NodeServices does not bundle one).
       // Nothing consumes it yet; it is pre-wired for handlers that make
       // outbound requests. Global fetch, not the undici-based Node client:
-      // the shell spawns this server under Electron's bundled Node (v20.18),
-      // where npm undici@8 crashes at load (`webidl.util.markAsUncloneable`).
+      // the shell spawns this server under Electron's bundled Node, where
+      // bundling npm undici has crashed at load (`webidl.util.markAsUncloneable`).
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provideMerge(NodeServices.layer),
     );
