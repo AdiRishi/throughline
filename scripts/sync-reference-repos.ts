@@ -10,7 +10,7 @@
 //   pnpm sync:repos --latest        track the default branch instead of the pin
 //   pnpm sync:repos --dry-run       print the git commands without running them
 //
-// The T3 Code original is an Effect CLI program; this starter keeps it as a
+// The T3 Code original is an Effect CLI program; Throughline keeps this as a
 // dependency-free Node script like the other scripts here.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";

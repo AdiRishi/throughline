@@ -4,7 +4,7 @@ The system shape: processes, packages, and the seams everything else in `docs/te
 
 ## Process topology
 
-Throughline keeps the starter's three-process shape unchanged — the ADRs in `docs/adr/` all continue to apply:
+Throughline uses the three-process shape recorded in `docs/adr/`:
 
 ```
 ┌──────────────────────────┐   spawn + fd3 envelope   ┌──────────────────────────┐
@@ -29,21 +29,21 @@ Everything is local-first: there is no Throughline cloud, no telemetry, no serve
 
 ## Package map
 
-The monorepo gains one package and grows the server; the notes sample domain (marked for deletion in the starter) is removed in the same change that lands the first real domain code.
+The monorepo keeps pure journey logic separate from host-specific runtime modules:
 
-| Package                    | Role                                                                                                                                               |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/contracts`       | Extended, stays schema-only: journey/cluster/hunk/hint schemas, GitHub view types, ingestion events, and the new RPC groups. The wire truth.       |
-| `packages/journey` _(new)_ | Pure domain logic over contract types: seed-hunk derivation from patch text, partition/coverage validation, split validation, progress arithmetic. |
-| `packages/shared`          | Unchanged role — host-agnostic runtime utilities.                                                                                                  |
-| `packages/client-runtime`  | Unchanged — connection supervisor and typed RPC client.                                                                                            |
-| `apps/server`              | Gains the domain modules below.                                                                                                                    |
-| `apps/web`                 | Becomes the product UI: welcome, ingestion transition, overview, reading experience.                                                               |
-| `apps/desktop`             | Essentially unchanged.                                                                                                                             |
+| Package                   | Role                                                                                                                                      |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/contracts`      | Schema-only journey, GitHub, ingestion, RPC, IPC, and auth contracts. The wire truth.                                                     |
+| `packages/journey`        | Pure domain logic over contract types: seed-hunk derivation, coverage and evidence validation, split validation, and progress arithmetic. |
+| `packages/shared`         | Host-agnostic runtime utilities.                                                                                                          |
+| `packages/client-runtime` | Connection supervisor and typed RPC client.                                                                                               |
+| `apps/server`             | GitHub access, workspaces, analysis, persistence, and HTTP + WebSocket RPC delivery.                                                      |
+| `apps/web`                | Product UI: welcome, ingestion transition, overview, and reading experience.                                                              |
+| `apps/desktop`            | Native host: server supervision, windows, menus, updates, and the schema-validated IPC bridge.                                            |
 
 `@app/journey` exists because it passes the two-adapters test: the same partition and progress arithmetic runs on the server (validating agent output, persisting) and in the renderer (progress display, mapping hunks onto rendered diffs). It is pure — no I/O, no Effect services, functions from values to values — which also makes it the most heavily unit-tested code in the repo. It follows the subpath-exports-only rule (`@app/journey/hunks`, `/coverage`, `/progress`), like `@app/shared`.
 
-Everything else stays a **directory module inside `apps/server`** — one consumer means a package would be a hypothetical seam (deletion test: moving it out removes no complexity, adds a package boundary to maintain):
+The server domains stay as **directory modules inside `apps/server`** — one consumer means a package would be a hypothetical seam (deletion test: moving it out removes no complexity, adds a package boundary to maintain):
 
 | Server module | Interface it presents                                                                | Documented in                              |
 | ------------- | ------------------------------------------------------------------------------------ | ------------------------------------------ |
@@ -57,11 +57,11 @@ Everything else stays a **directory module inside `apps/server`** — one consum
 
 Five seams carry the whole design. Each is deliberately small; the depth lives behind it.
 
-1. **The WS RPC contracts** (`packages/contracts`) — the renderer↔server seam. Unary RPCs for immutable artifacts (a journey is fetched once), snapshot-then-live streams for anything that moves (ingestion progress, PR lists, read state). The starter's push-bus pattern — versioned events, monotonic `sequence`, snapshot replay on subscribe — is the template for every stream.
+1. **The WS RPC contracts** (`packages/contracts`) — the renderer↔server seam. Unary RPCs carry immutable artifacts (a journey is fetched once); snapshot-then-live streams carry anything that moves (ingestion progress, PR lists, read state). Every stream uses the shared push-bus contract: versioned events, monotonic `sequence`, and snapshot replay on subscribe.
 2. **`GitHub`** — one module, one choke point. Every byte to or from the GitHub API flows through it, which is what makes the rate-limit discipline ([03](./03-github.md)) enforceable instead of aspirational.
 3. **`AnalysisHarness`** — the seam the user's agent harnesses plug into. Codex and Claude are the two v1 adapters; ACP is a planned third. The interface is small enough (detect, run-with-schema, cancel-via-scope) that adding a harness never touches the pipeline. T3 Code (`~/forks/t3code`) proves this shape at much larger scale — five harnesses behind one provider interface — and is our reference for the subprocess-supervision details.
 4. **`Ingestion`** — the pipeline as a module. Callers see "start job, watch events, get journey"; clone orchestration, prompt assembly, validation, and repair are implementation.
-5. **`LocalApi`** (existing, ADR-0004) — the renderer↔host seam. Unchanged; any new bridge capability must define its browser degradation.
+5. **`LocalApi`** (ADR-0004) — the renderer↔host seam. Browser degradation is part of every bridge capability's interface.
 
 ## The ingestion data flow
 
@@ -78,10 +78,10 @@ renderer ── ingestion.start(prRef) ──▶ Ingestion
   (throughout) Ingestion ──▶ push bus ── phase events ──▶ renderer transition UI
 ```
 
-## Runtime constraints carried forward
+## Runtime constraints
 
 - **Effect v4 everywhere** on the server and in transport; the vendored `.repos/effect` stays the idiom reference.
 - **Persistence is SQLite via `@effect/sql-sqlite-node`** ([02](./02-domain-model.md)) — same pinned Effect version, riding Node's built-in `node:sqlite`: no native modules, verified under Electron's bundled Node (24.x under the pinned Electron; build targets stay under that floor, per ADR-0006).
 - **The server runs under Electron's bundled Node when packaged** (ADR-0006). The harness SDKs (`@openai/codex-sdk`, `@anthropic-ai/claude-agent-sdk`) both spawn their own bundled platform binaries — they must stay **external** to the server bundle and ship as packaged dependencies, and any change here is verified against a packaged app, per ADR-0006.
-- **Auth posture unchanged** (ADR-0002): one local trust level, bearer at the WS upgrade. Journeys contain the reviewer's own code visible to their own logins; nothing new crosses a trust boundary.
+- **Auth follows ADR-0002:** one local trust level, bearer at the WS upgrade. Journeys contain the reviewer's own code visible to their own logins; nothing crosses an additional trust seam.
 - **Analysis is read-only.** No harness run may mutate the workspace, and nothing anywhere writes to GitHub. These are enforced mechanically (sandbox modes, tool allowlists — see [04](./04-analysis.md)), not by prompt politeness.

@@ -4,7 +4,7 @@
 // desktop shell) with a consistent environment.
 //
 // The T3 Code original is an Effect CLI program (see the reference repo's
-// scripts/dev-runner.ts). This starter keeps it as a dependency-free Node
+// scripts/dev-runner.ts). Throughline keeps this as a dependency-free Node
 // script so `pnpm dev` works before anything is installed into the workspace.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";

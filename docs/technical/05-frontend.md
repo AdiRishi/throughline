@@ -4,9 +4,9 @@ How `apps/web` renders the product: state architecture, the Pierre rendering fou
 
 ## State: the server owns it, atoms view it
 
-Throughline adds **no new state-management library**. The reviewer's state of record — journeys, read state, PR lists, job progress — already lives in the server ([02](./02-domain-model.md)), and the starter's `@effect/atom-react` + push-bus architecture is precisely a client for that shape:
+Throughline uses `@effect/atom-react` to project server-owned RPC state into renderer view models. The reviewer's state of record — journeys, read state, PR lists, job progress — lives in the server ([02](./02-domain-model.md)):
 
-- **Server-owned state** arrives as unary fetches (immutable journey data) or snapshot-then-live streams (ingestion progress, read state, PR list), folded into atoms exactly as the starter's notes feature does today. Reconnects replay snapshots; the UI can always be rebuilt from the wire.
+- **Server-owned state** arrives as unary fetches (immutable journey data) or snapshot-then-live streams (ingestion progress, read state, PR list) and is folded into purpose-built atoms. Reconnects replay snapshots; the UI can always be rebuilt from the wire.
 - **Renderer-local state** is only ephemera: scroll positions, collapsed-narrative flags, the changed-files-filter toggle. Location — which PR, cluster, or file is open — lives in the URL (see Routing). React state and a few atoms suffice for the rest.
 - Read marks are **optimistic**: the atom updates on click, the RPC persists, the `readState.subscribe` stream confirms (and reconciles other windows). A failed persist rolls back visibly rather than lying.
 

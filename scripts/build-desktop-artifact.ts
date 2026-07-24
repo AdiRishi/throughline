@@ -6,9 +6,8 @@
 // bundle the dev flow does; the shell spawns `apps/server/dist/bin.mjs` and
 // the server serves the web build from its `dist/client`.
 //
-// This is the one piece the starter ships as a *skeleton*: signing, icons,
-// notarization, and per-OS targets always need project-specific values. It is
-// intentionally small and honest rather than a 1000-line clone. Run:
+// Signing, icons, notarization, and per-OS targets require release-owned
+// values, so those choices stay explicit here. Run:
 //   pnpm dist:desktop -- --platform mac --target dmg
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";

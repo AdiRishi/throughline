@@ -6,7 +6,7 @@ ADRs in this repository live in this directory and use sequential numbering: `00
 
 Optional sections such as status, considered options, and consequences should only be added when they genuinely help. The point is recording "that a decision was made and why", not filling a template.
 
-Create a new ADR when a decision is hard to reverse, surprising without context, and the result of a real trade-off. Good candidates include architectural shape, integration patterns, platform choices, scope boundaries, deliberate deviations from the obvious path, hidden constraints, or non-obvious rejected alternatives. Many ADRs here record deliberate deviations from — or deliberate adoptions of — patterns in the T3 Code reference repository, which this starter treats as its baseline for best practices.
+Create a new ADR when a decision is hard to reverse, surprising without context, and the result of a real trade-off. Good candidates include architectural shape, integration patterns, platform choices, scope boundaries, deliberate deviations from the obvious path, hidden constraints, or non-obvious rejected alternatives. Many ADRs here record deliberate deviations from — or deliberate adoptions of — patterns in the T3 Code reference repository, which Throughline treats as its baseline for best practices.
 
 When an ADR no longer describes the system, update or replace that ADR so the directory remains a current architecture guide. Do not keep superseded records solely for historical tracking.
 

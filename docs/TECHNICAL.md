@@ -17,12 +17,12 @@ This file is the map. Each area has its own document in [`docs/technical/`](./te
 - **The server owns everything durable and slow**; the renderer is rebuildable from the wire; the shell stays a host. Immutable artifacts travel as unary RPCs, changing state as snapshot-then-live streams. Durable state lives in one SQLite database (`@effect/sql-sqlite-node` on `node:sqlite`); bulk run artifacts and clone workspaces stay on disk beside it.
 - **External services are behind single choke points.** One `GitHub` module (semaphored, cached, parked on rate limits, retries bounded to transport failures); one `AnalysisHarness` seam (read-only enforced by sandbox/allowlist, scope-owned subprocesses).
 - **Rendering is not reinvented.** Every diff surface is `@pierre/diffs`, every tree `@pierre/trees`; Throughline's frontend work is the journey, not diff plumbing.
-- **The starter's ADRs stand** — process topology (0001), local trust (0002), single reconnector (0003), one web build (0004), raw-source packages (0005), Electron build shape (0006), test layout (0007).
+- **The foundational ADRs stand** — process topology (0001), local trust (0002), single reconnector (0003), one web build (0004), raw-source packages (0005), Electron build shape (0006), test layout (0007).
 
-## Known build-time risks
+## Ongoing validation constraints
 
-Named here so they are spiked early, not discovered late:
+These implementation choices remain part of release validation:
 
-- **Emphasis/dimming inside Pierre diffs** — the cluster boundary's visual carrier rides `@pierre/diffs`' CSS/annotation seams; mechanism must be proven against a real `CodeView` first ([05](./technical/05-frontend.md)).
+- **Emphasis/dimming inside Pierre diffs** — the cluster boundary's visual carrier uses `@pierre/diffs`' item-scoped post-render and annotation seams; changes are verified against a real `CodeView` ([05](./technical/05-frontend.md)).
 - **Packaged-app harness SDKs** — both SDKs spawn bundled platform binaries and must stay external to the server bundle under Electron's Node (ADR-0006 territory; verify packaged, [01](./technical/01-architecture.md)).
-- **Plan quality at 40k lines** — the pipeline's stage split and disk-materialized inputs are designed for it, but prompt and stage tuning against real large PRs is expected iteration, not a risk to the architecture ([04](./technical/04-analysis.md)).
+- **Plan quality at 40k lines** — the pipeline's stage split and disk-materialized inputs keep prompt size flat, while prompt and stage tuning against real large PRs remains ongoing product validation rather than an architectural change ([04](./technical/04-analysis.md)).

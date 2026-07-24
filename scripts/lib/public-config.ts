@@ -14,7 +14,7 @@ const REPO_ROOT = NodePath.dirname(
 /**
  * Minimal `.env` / `.env.local` loader. Reads the repo-root env files and
  * layers them under `process.env`. Kept tiny on purpose — the T3 Code original
- * also injected Clerk/relay public config, which this starter does not use.
+ * also injected Clerk/relay public config, which Throughline does not use.
  */
 export function loadRepoEnv({
   baseEnv = process.env,

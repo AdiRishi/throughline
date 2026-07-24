@@ -91,7 +91,7 @@ The final rung is what makes "the agent always commits" an invariant of the _sys
 
 `Ingestion` (in `apps/server/src/analysis/`) orchestrates the whole flow as a supervised job — one active job per PR, a global cap of one running analysis at a time (harness runs are heavy; queued jobs say so honestly).
 
-Phases, published as a snapshot-then-live stream (the starter's push-bus pattern) and consumed directly by the transition UI — the narrated stages the product docs promise are these events, so the narration is honest by construction. `analyzing` events additionally carry a structured activity payload — the current action, a short trail of recent ones, and monotonic counters (files walked, symbols traced, call sites followed) — derived only from observed harness events, never invented; this is what the transition's live feed and counters render (design `02-ingestion`):
+Phases are published through the shared snapshot-then-live push-bus contract and consumed directly by the transition UI — the narrated stages the product docs promise are these events, so the narration is honest by construction. `analyzing` events additionally carry a structured activity payload — the current action, a short trail of recent ones, and monotonic counters (files walked, symbols traced, call sites followed) — derived only from observed harness events, never invented; this is what the transition's live feed and counters render (design `02-ingestion`):
 
 ```
 resolving → cloning → diffing → analyzing(stage, detail) → validating → saving → complete
@@ -108,13 +108,14 @@ resolving → cloning → diffing → analyzing(stage, detail) → validating �
 
 ## RPC surface
 
-Added to `packages/contracts` (shapes per [02](./02-domain-model.md)):
+The renderer/server seam uses these `packages/contracts` methods (shapes per [02](./02-domain-model.md)):
 
 | RPC                                                                                       | Kind                                                                                                                    |
 | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `github.viewer`                                                                           | unary (cached identity/status)                                                                                          |
 | `github.prs`                                                                              | snapshot+live stream, server-enriched with each PR's journey state — exists, progress, stale                            |
 | `github.refreshPrs`                                                                       | unary trigger used on focus and explicit refresh; respects cache minimums and global parking                            |
+| `github.retry`                                                                            | unary recovery trigger that clears retryable parked state, invalidates GitHub caches, and reloads the PR index          |
 | `ingestion.start`, `ingestion.cancel`                                                     | unary (door rejections are `ingestion.start`'s only errors)                                                             |
 | `ingestion.subscribe`                                                                     | stream                                                                                                                  |
 | `journey.get`, `journey.filePatch`, `journey.fileContent`, `journey.tree`                 | unary (immutable per journey — cacheable forever client-side); file content is a discriminated text/image/binary result |
