@@ -15,6 +15,7 @@ import {
   type CommitSha,
   type FileChange,
   type FileContent,
+  type PrDetail,
   type PrRef,
   RepositoryPath,
   type RepositoryPath as RepositoryPathValue,
@@ -74,12 +75,13 @@ export interface WorkspaceRunRef {
   readonly runId: string;
 }
 
-export interface PrepareWorkspaceInput extends WorkspaceRunRef {
-  readonly baseTipSha: CommitSha;
-  readonly headSha: CommitSha;
+export interface PrepareWorkspaceInput {
+  readonly runId: string;
+  readonly pullRequest: PrDetail;
 }
 
 interface PinnedWorkspace extends WorkspaceRunRef {
+  readonly pullRequest: PrDetail;
   readonly baseSha: CommitSha;
   readonly headSha: CommitSha;
 }
@@ -137,6 +139,7 @@ export class Workspaces extends Context.Service<
     readonly tree: (
       run: WorkspaceRunRef,
     ) => Effect.Effect<ReadonlyArray<RepositoryPathValue>, WorkspaceError>;
+    readonly pullRequest: (run: WorkspaceRunRef) => Effect.Effect<PrDetail, WorkspaceError>;
     readonly evictCache: (
       maxRepositories: number,
     ) => Effect.Effect<ReadonlyArray<string>, WorkspaceError>;
@@ -405,8 +408,9 @@ export const make = Effect.gen(function* () {
     repository: RepositoryPaths,
     access: CloneAccess.CloneAccess,
   ) {
-    const pullRef = `refs/throughline/pulls/${input.pr.number}/head`;
-    const baseRef = `refs/throughline/bases/${input.baseTipSha}`;
+    const pullRequest = input.pullRequest;
+    const pullRef = `refs/throughline/pulls/${pullRequest.ref.number}/head`;
+    const baseRef = `refs/throughline/bases/${pullRequest.baseSha}`;
     yield* expectGit(
       [
         "--git-dir",
@@ -415,8 +419,8 @@ export const make = Effect.gen(function* () {
         "--no-tags",
         "--force",
         "origin",
-        `+refs/pull/${input.pr.number}/head:${pullRef}`,
-        `+${input.baseTipSha}:${baseRef}`,
+        `+refs/pull/${pullRequest.ref.number}/head:${pullRef}`,
+        `+${pullRequest.baseSha}:${baseRef}`,
       ],
       { environment: access.environment },
     );
@@ -429,10 +433,10 @@ export const make = Effect.gen(function* () {
       )
       .trim()
       .toLowerCase();
-    if (resolvedHead !== input.headSha.toLowerCase()) {
+    if (resolvedHead !== pullRequest.headSha.toLowerCase()) {
       return yield* workspaceError(
         "pinned-head-mismatch",
-        `Expected PR head ${input.headSha}, but refs/pull/${input.pr.number}/head resolved to ${resolvedHead}.`,
+        `Expected PR head ${pullRequest.headSha}, but refs/pull/${pullRequest.ref.number}/head resolved to ${resolvedHead}.`,
       );
     }
     const mergeBase = textDecoder
@@ -757,7 +761,7 @@ export const make = Effect.gen(function* () {
     };
     const runDocument: RunDocument = {
       version: 1,
-      pr: input.pr,
+      pullRequest: input.pullRequest,
       runId: input.runId,
       baseSha: input.baseSha,
       headSha: input.headSha,
@@ -1003,25 +1007,26 @@ export const make = Effect.gen(function* () {
   });
 
   const prepare = Effect.fn("Workspaces.prepare")(function* (input: PrepareWorkspaceInput) {
-    const paths = yield* runPaths(input);
-    yield* reapFailedRunsInternal(input.pr);
+    const run = { pr: input.pullRequest.ref, runId: input.runId } satisfies WorkspaceRunRef;
+    const paths = yield* runPaths(run);
+    yield* reapFailedRunsInternal(run.pr);
     const finalExists = yield* fileSystem
       .exists(paths.final)
       .pipe(Effect.mapError(fromIo(`inspect ${paths.final}`)));
     if (finalExists) {
       return yield* workspaceError(
         "run-exists",
-        `Run ${input.runId} already exists for ${input.pr.owner}/${input.pr.repo}#${input.pr.number}.`,
+        `Run ${input.runId} already exists for ${run.pr.owner}/${run.pr.repo}#${run.pr.number}.`,
       );
     }
-    const access = yield* accessFor(input.pr);
+    const access = yield* accessFor(run.pr);
     yield* ensureClone(paths.repository, access);
     const baseSha = yield* fetchPinnedCommits(input, paths.repository, access);
     const pinned = {
-      pr: input.pr,
-      runId: input.runId,
+      ...run,
+      pullRequest: input.pullRequest,
       baseSha,
-      headSha: input.headSha,
+      headSha: input.pullRequest.headSha,
     } satisfies PinnedWorkspace;
     yield* fileSystem
       .makeDirectory(paths.inputs, { recursive: true })
@@ -1038,7 +1043,7 @@ export const make = Effect.gen(function* () {
           "--detach",
           "--force",
           paths.worktree,
-          input.headSha,
+          input.pullRequest.headSha,
         ],
         { environment: access.environment },
       );
@@ -1091,6 +1096,7 @@ export const make = Effect.gen(function* () {
     return {
       pr: prepared.pr,
       runId: prepared.runId,
+      pullRequest: prepared.pullRequest,
       baseSha: prepared.baseSha,
       headSha: prepared.headSha,
       runDir: paths.final,
@@ -1235,6 +1241,7 @@ export const make = Effect.gen(function* () {
     filePatch,
     fileContent,
     tree: loadTree,
+    pullRequest: (run) => loadRun(run).pipe(Effect.map((document) => document.pullRequest)),
     evictCache: (maximum) => mutex.withPermit(evictCache(maximum)),
     removeRun: (run) =>
       mutex.withPermit(

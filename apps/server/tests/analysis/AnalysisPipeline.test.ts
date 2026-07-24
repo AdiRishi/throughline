@@ -174,6 +174,7 @@ const makeFixture = Effect.gen(function* () {
   const prepared: Workspaces.PreparedWorkspace = {
     pr,
     runId: "run-1",
+    pullRequest: detail,
     baseSha: detail.baseSha,
     headSha: detail.headSha,
     stagingRunDir,
@@ -195,6 +196,7 @@ const makeFixture = Effect.gen(function* () {
         return {
           pr,
           runId: prepared.runId,
+          pullRequest: prepared.pullRequest,
           baseSha: prepared.baseSha,
           headSha: prepared.headSha,
           runDir: finalRunDir,
@@ -209,6 +211,7 @@ const makeFixture = Effect.gen(function* () {
     filePatch: () => Effect.die("unused"),
     fileContent: () => Effect.die("unused"),
     tree: () => Effect.die("unused"),
+    pullRequest: () => Effect.die("unused"),
     evictCache: () => Effect.die("unused"),
     removeRun: () =>
       Effect.sync(() => {
@@ -720,7 +723,7 @@ describe("AnalysisPipeline", () => {
           prepare: (input) =>
             Effect.suspend(() => {
               prepareCalls += 1;
-              heads.push(input.headSha);
+              heads.push(input.pullRequest.headSha);
               if (prepareCalls === 1) {
                 return Effect.fail(
                   new Workspaces.WorkspaceError({
@@ -731,6 +734,7 @@ describe("AnalysisPipeline", () => {
               }
               return Effect.succeed({
                 ...fixture.prepared,
+                pullRequest: refreshedDetail,
                 headSha: refreshedDetail.headSha,
                 baseSha: refreshedDetail.baseSha,
               });

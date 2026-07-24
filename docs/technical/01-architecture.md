@@ -45,20 +45,21 @@ The monorepo keeps pure journey logic separate from host-specific runtime module
 
 The server domains stay as **directory modules inside `apps/server`** — one consumer means a package would be a hypothetical seam (deletion test: moving it out removes no complexity, adds a package boundary to maintain):
 
-| Server module | Interface it presents                                                                | Documented in                              |
-| ------------- | ------------------------------------------------------------------------------------ | ------------------------------------------ |
-| `github/`     | `GitHub` — the only door to the GitHub API and `gh`                                  | [03-github.md](./03-github.md)             |
-| `workspace/`  | `Workspaces` — clone/worktree lifecycle, diff materialization                        | [03-github.md](./03-github.md)             |
-| `harness/`    | `AnalysisHarness` — run one structured analysis task on a local agent harness        | [04-analysis.md](./04-analysis.md)         |
-| `analysis/`   | `Ingestion` — PR in, journey out, honest progress events                             | [04-analysis.md](./04-analysis.md)         |
-| `journeys/`   | `JourneyStore` — SQLite-backed persistence: journeys, read state, PR state, settings | [02-domain-model.md](./02-domain-model.md) |
+| Server module   | Interface it presents                                                                | Documented in                              |
+| --------------- | ------------------------------------------------------------------------------------ | ------------------------------------------ |
+| `github/`       | `GitHub` — the only door to the GitHub API and `gh`                                  | [03-github.md](./03-github.md)             |
+| `workspace/`    | `Workspaces` — clone/worktree lifecycle, diff materialization                        | [03-github.md](./03-github.md)             |
+| `harness/`      | `AnalysisHarness` — run one structured analysis task on a local agent harness        | [04-analysis.md](./04-analysis.md)         |
+| `analysis/`     | `Ingestion` — PR in, journey out, honest progress events                             | [04-analysis.md](./04-analysis.md)         |
+| `journeys/`     | `JourneyStore` — SQLite-backed persistence: journeys, read state, PR state, settings | [02-domain-model.md](./02-domain-model.md) |
+| `pullRequests/` | `PullRequestIndex` — viewer-affiliated PRs united with every locally saved journey   | [03-github.md](./03-github.md)             |
 
 ## The seams that matter
 
 Five seams carry the whole design. Each is deliberately small; the depth lives behind it.
 
 1. **The WS RPC contracts** (`packages/contracts`) — the renderer↔server seam. Unary RPCs carry immutable artifacts (a journey is fetched once); snapshot-then-live streams carry anything that moves (ingestion progress, PR lists, read state). Every stream uses the shared push-bus contract: versioned events, monotonic `sequence`, and snapshot replay on subscribe.
-2. **`GitHub`** — one module, one choke point. Every byte to or from the GitHub API flows through it, which is what makes the rate-limit discipline ([03](./03-github.md)) enforceable instead of aspirational.
+2. **`GitHub`** — one module, one choke point. Every byte to or from the GitHub API flows through it, including the cached detail reads that let `PullRequestIndex` refresh saved journeys outside the viewer-affiliation list. The index falls back to the immutable PR detail in the finalized `Workspaces` run when GitHub cannot supply one. This is what makes both the rate-limit discipline and saved-journey availability ([03](./03-github.md)) structural instead of aspirational.
 3. **`AnalysisHarness`** — the seam the user's agent harnesses plug into. Codex and Claude are the two v1 adapters; ACP is a planned third. The interface is small enough (detect, run-with-schema, cancel-via-scope) that adding a harness never touches the pipeline. T3 Code (`~/forks/t3code`) proves this shape at much larger scale — five harnesses behind one provider interface — and is our reference for the subprocess-supervision details.
 4. **`Ingestion`** — the pipeline as a module. Callers see "start job, watch events, get journey"; clone orchestration, prompt assembly, validation, and repair are implementation.
 5. **`LocalApi`** (ADR-0004) — the renderer↔host seam. Browser degradation is part of every bridge capability's interface.

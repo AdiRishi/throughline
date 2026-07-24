@@ -15,6 +15,7 @@ import {
   type GitHubPrListStreamEvent,
   type GitHubPrListUpdatedEvent,
   type GitHubReadError,
+  type PrDetail,
   type PrRef,
   type PrSummary,
 } from "@app/contracts";
@@ -22,11 +23,13 @@ import {
 import * as GitHub from "../github/GitHub.ts";
 import * as JourneyStore from "../journeys/JourneyStore.ts";
 import { derivePullRequestJourneyState } from "../journeys/journeyView.ts";
+import * as Workspaces from "../workspace/Workspaces.ts";
 
 export type PullRequestIndexError =
   | GitHubReadError
   | GitHubParkedError
-  | JourneyStore.JourneyStoreError;
+  | JourneyStore.JourneyStoreError
+  | Workspaces.WorkspaceError;
 
 export class PullRequestIndex extends Context.Service<
   PullRequestIndex,
@@ -36,7 +39,7 @@ export class PullRequestIndex extends Context.Service<
     readonly retry: () => Effect.Effect<GitHubPrListUpdatedEvent, PullRequestIndexError>;
     readonly recompute: () => Effect.Effect<
       Option.Option<GitHubPrListUpdatedEvent>,
-      JourneyStore.JourneyStoreError
+      PullRequestIndexError
     >;
   }
 >()("@app/server/pullRequests/PullRequestIndex") {}
@@ -49,7 +52,8 @@ interface IdleIndexState {
 interface ReadyIndexState {
   readonly _tag: "Ready";
   readonly sequence: number;
-  readonly rawPullRequests: ReadonlyArray<PrSummary>;
+  readonly affiliatedPullRequests: ReadonlyArray<PrSummary>;
+  readonly indexedPullRequests: ReadonlyArray<PrSummary>;
   readonly pullRequests: ReadonlyArray<PrSummary>;
   readonly refreshedAt: DateTime.Utc;
 }
@@ -63,9 +67,26 @@ interface FlightClaim {
 
 const prKey = (pr: PrRef): string => `${pr.owner.length}:${pr.owner}/${pr.repo}#${pr.number}`;
 
+const toPrSummary = (detail: PrDetail): PrSummary => ({
+  ref: detail.ref,
+  title: detail.title,
+  author: detail.author,
+  url: detail.url,
+  state: detail.state,
+  baseRefName: detail.baseRefName,
+  headSha: detail.headSha,
+  updatedAt: detail.updatedAt,
+  mergedAt: detail.mergedAt,
+  changedFiles: detail.changedFiles,
+  additions: detail.additions,
+  deletions: detail.deletions,
+  journey: null,
+});
+
 export const make = Effect.gen(function* () {
   const github = yield* GitHub.GitHub;
   const store = yield* JourneyStore.JourneyStore;
+  const workspaces = yield* Workspaces.Workspaces;
   const state = yield* SynchronizedRef.make<IndexState>({
     _tag: "Idle",
     sequence: 0,
@@ -75,34 +96,64 @@ export const make = Effect.gen(function* () {
     Option.Option<Deferred.Deferred<GitHubPrListUpdatedEvent, PullRequestIndexError>>
   >(Option.none());
 
-  const enrich = (rawPullRequests: ReadonlyArray<PrSummary>) =>
-    Effect.gen(function* () {
-      const metadata = yield* store.listMetadata;
-      const journeys = new Map(metadata.map((entry) => [prKey(entry.journey.pr), entry]));
-
-      return rawPullRequests.map((pullRequest): PrSummary => {
-        const stored = journeys.get(prKey(pullRequest.ref));
-        if (stored === undefined) {
-          return { ...pullRequest, journey: null };
-        }
-        return {
-          ...pullRequest,
-          journey: derivePullRequestJourneyState(
-            stored.journey,
-            Option.getOrNull(stored.readState),
-            pullRequest.headSha,
-          ),
-        };
-      });
+  const materialize = Effect.fn("PullRequestIndex.materialize")(function* (
+    affiliatedPullRequests: ReadonlyArray<PrSummary>,
+    currentIndexedPullRequests: ReadonlyArray<PrSummary>,
+  ) {
+    const metadata = yield* store.listMetadata;
+    const journeys = new Map(metadata.map((entry) => [prKey(entry.journey.pr), entry]));
+    const affiliatedKeys = new Set(
+      affiliatedPullRequests.map((pullRequest) => prKey(pullRequest.ref)),
+    );
+    const retainedSupplemental = currentIndexedPullRequests.filter((pullRequest) => {
+      const key = prKey(pullRequest.ref);
+      return !affiliatedKeys.has(key) && journeys.has(key);
     });
+    const indexedKeys = new Set([
+      ...affiliatedKeys,
+      ...retainedSupplemental.map((pullRequest) => prKey(pullRequest.ref)),
+    ]);
+    const missing = metadata.filter((entry) => !indexedKeys.has(prKey(entry.journey.pr)));
+    const supplemental = yield* Effect.forEach(
+      missing,
+      (entry) =>
+        github.pr(entry.journey.pr).pipe(
+          Effect.catchTag(["GitHubReadError", "GitHubParkedError"], () =>
+            workspaces.pullRequest({ pr: entry.journey.pr, runId: entry.runId }),
+          ),
+          Effect.map(toPrSummary),
+        ),
+      { concurrency: "unbounded" },
+    );
+    const indexedPullRequests = [
+      ...affiliatedPullRequests,
+      ...retainedSupplemental,
+      ...supplemental,
+    ];
+    const pullRequests = indexedPullRequests.map((pullRequest): PrSummary => {
+      const stored = journeys.get(prKey(pullRequest.ref));
+      if (stored === undefined) {
+        return { ...pullRequest, journey: null };
+      }
+      return {
+        ...pullRequest,
+        journey: derivePullRequestJourneyState(
+          stored.journey,
+          Option.getOrNull(stored.readState),
+          pullRequest.headSha,
+        ),
+      };
+    });
+    return { indexedPullRequests, pullRequests };
+  });
 
   const commit = (
-    rawPullRequests: ReadonlyArray<PrSummary>,
+    affiliatedPullRequests: ReadonlyArray<PrSummary>,
     refreshedAt: DateTime.Utc,
-  ): Effect.Effect<GitHubPrListUpdatedEvent, JourneyStore.JourneyStoreError> =>
+  ): Effect.Effect<GitHubPrListUpdatedEvent, PullRequestIndexError> =>
     SynchronizedRef.modifyEffect(state, (current) =>
-      enrich(rawPullRequests).pipe(
-        Effect.flatMap((pullRequests) => {
+      materialize(affiliatedPullRequests, affiliatedPullRequests).pipe(
+        Effect.flatMap(({ indexedPullRequests, pullRequests }) => {
           const event: GitHubPrListUpdatedEvent = {
             version: 1,
             sequence: current.sequence + 1,
@@ -113,7 +164,8 @@ export const make = Effect.gen(function* () {
           const next: ReadyIndexState = {
             _tag: "Ready",
             sequence: event.sequence,
-            rawPullRequests,
+            affiliatedPullRequests,
+            indexedPullRequests,
             pullRequests,
             refreshedAt,
           };
@@ -190,14 +242,14 @@ export const make = Effect.gen(function* () {
 
   const recompute = (): Effect.Effect<
     Option.Option<GitHubPrListUpdatedEvent>,
-    JourneyStore.JourneyStoreError
+    PullRequestIndexError
   > =>
     SynchronizedRef.modifyEffect(state, (current) => {
       if (current._tag === "Idle") {
         return Effect.succeed([Option.none(), current] as const);
       }
-      return enrich(current.rawPullRequests).pipe(
-        Effect.flatMap((pullRequests) => {
+      return materialize(current.affiliatedPullRequests, current.indexedPullRequests).pipe(
+        Effect.flatMap(({ indexedPullRequests, pullRequests }) => {
           const event: GitHubPrListUpdatedEvent = {
             version: 1,
             sequence: current.sequence + 1,
@@ -208,6 +260,7 @@ export const make = Effect.gen(function* () {
           const next: ReadyIndexState = {
             ...current,
             sequence: event.sequence,
+            indexedPullRequests,
             pullRequests,
           };
           return PubSub.publish(updates, event).pipe(

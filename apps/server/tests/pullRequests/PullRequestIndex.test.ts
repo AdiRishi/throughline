@@ -15,12 +15,15 @@ import {
   PrSummary,
   TrimmedNonEmptyString,
   type GitHubPrListStreamEvent,
+  type PrDetail,
+  type PrRef,
   type ReadState,
 } from "@app/contracts";
 
 import * as GitHub from "../../src/github/GitHub.ts";
 import * as JourneyStore from "../../src/journeys/JourneyStore.ts";
 import * as PullRequestIndex from "../../src/pullRequests/PullRequestIndex.ts";
+import * as Workspaces from "../../src/workspace/Workspaces.ts";
 
 const decodeJourney = Schema.decodeUnknownSync(Schema.toCodecJson(Journey));
 const decodePrSummary = Schema.decodeUnknownSync(Schema.toCodecJson(PrSummary));
@@ -52,6 +55,12 @@ const makePr = (number: number, headSha = CURRENT_HEAD): PrSummary =>
     deletions: 1,
     journey: null,
   });
+
+const detailFor = (pullRequest: PrSummary): PrDetail => ({
+  ...pullRequest,
+  body: "",
+  baseSha: pullRequest.headSha,
+});
 
 const makeJourney = (pullRequest: PrSummary, id: string, pinnedHead = PINNED_HEAD): Journey =>
   decodeJourney({
@@ -154,8 +163,10 @@ const makeJourney = (pullRequest: PrSummary, id: string, pinnedHead = PINNED_HEA
 const firstPr = makePr(1);
 const currentPr = makePr(2, PINNED_HEAD);
 const unindexedPr = makePr(3);
+const locallyPinnedPr = makePr(4);
 const firstJourney = makeJourney(firstPr, "journey-first");
 const currentJourney = makeJourney(currentPr, "journey-current");
+const locallyPinnedJourney = makeJourney(locallyPinnedPr, "journey-locally-pinned");
 
 const readState = (journey: Journey, complete = false): ReadState => ({
   journeyId: journey.id,
@@ -190,12 +201,17 @@ interface ControlledGitHubOptions {
   readonly pullRequests: (
     call: number,
   ) => Effect.Effect<ReadonlyArray<PrSummary>, GitHubReadError | GitHubParkedError>;
+  readonly pr?: (
+    ref: PrRef,
+    call: number,
+  ) => Effect.Effect<PrDetail, GitHubReadError | GitHubParkedError>;
   readonly retry?: (call: number) => Effect.Effect<void, GitHubParkedError>;
 }
 
 const makeControlledGitHub = (options: ControlledGitHubOptions) =>
   Effect.gen(function* () {
     const pullCalls = yield* Ref.make(0);
+    const prCalls = yield* Ref.make(0);
     const retryCalls = yield* Ref.make(0);
 
     const service = GitHub.GitHub.of({
@@ -213,7 +229,14 @@ const makeControlledGitHub = (options: ControlledGitHubOptions) =>
         ),
       openPrs: () => Effect.succeed([]),
       recentlyMergedPrs: () => Effect.succeed([]),
-      pr: () => Effect.die("Unused GitHub.pr test seam."),
+      pr: (ref) =>
+        Ref.updateAndGet(prCalls, (calls) => calls + 1).pipe(
+          Effect.flatMap((call) =>
+            options.pr === undefined
+              ? Effect.die("Unexpected GitHub.pr test call.")
+              : options.pr(ref, call),
+          ),
+        ),
       refreshPrs: () => Effect.void,
       retry: () =>
         Ref.updateAndGet(retryCalls, (calls) => calls + 1).pipe(
@@ -229,7 +252,7 @@ const makeControlledGitHub = (options: ControlledGitHubOptions) =>
         }),
     });
 
-    return { service, pullCalls, retryCalls };
+    return { service, prCalls, pullCalls, retryCalls };
   });
 
 interface ControlledStoreOptions {
@@ -279,10 +302,32 @@ const makeControlledStore = (
     return { service, storedMetadata, listCalls };
   });
 
-const makeIndex = (github: GitHub.GitHub["Service"], store: JourneyStore.JourneyStore["Service"]) =>
+const makeWorkspaces = (
+  pullRequest: Workspaces.Workspaces["Service"]["pullRequest"] = () =>
+    Effect.die("Unexpected Workspaces.pullRequest test call."),
+): Workspaces.Workspaces["Service"] =>
+  Workspaces.Workspaces.of({
+    prepare: () => Effect.die("Unused Workspaces.prepare test seam."),
+    finalize: () => Effect.die("Unused Workspaces.finalize test seam."),
+    abandon: () => Effect.die("Unused Workspaces.abandon test seam."),
+    reapFailedRuns: () => Effect.die("Unused Workspaces.reapFailedRuns test seam."),
+    filePatch: () => Effect.die("Unused Workspaces.filePatch test seam."),
+    fileContent: () => Effect.die("Unused Workspaces.fileContent test seam."),
+    tree: () => Effect.die("Unused Workspaces.tree test seam."),
+    pullRequest,
+    evictCache: () => Effect.die("Unused Workspaces.evictCache test seam."),
+    removeRun: () => Effect.die("Unused Workspaces.removeRun test seam."),
+  });
+
+const makeIndex = (
+  github: GitHub.GitHub["Service"],
+  store: JourneyStore.JourneyStore["Service"],
+  workspaces = makeWorkspaces(),
+) =>
   PullRequestIndex.make.pipe(
     Effect.provideService(GitHub.GitHub, github),
     Effect.provideService(JourneyStore.JourneyStore, store),
+    Effect.provideService(Workspaces.Workspaces, workspaces),
   );
 
 const eventSummary = (event: GitHubPrListStreamEvent) => ({
@@ -393,6 +438,134 @@ describe("PullRequestIndex", () => {
     }),
   );
 
+  it.effect(
+    "keeps a locally pinned journey outside the affiliation list across index restarts",
+    () =>
+      Effect.gen(function* () {
+        const github = yield* makeControlledGitHub({
+          pullRequests: () => Effect.succeed([firstPr]),
+          pr: (ref) =>
+            Effect.succeed(
+              detailFor(ref.number === locallyPinnedPr.ref.number ? locallyPinnedPr : firstPr),
+            ),
+        });
+        const store = yield* makeControlledStore([metadata(locallyPinnedJourney, Option.none())]);
+
+        const firstIndex = yield* makeIndex(github.service, store.service);
+        const firstLoad = yield* firstIndex.refresh();
+        assert.deepStrictEqual(
+          firstLoad.pullRequests.map((pullRequest) => pullRequest.ref.number),
+          [firstPr.ref.number, locallyPinnedPr.ref.number],
+        );
+        assert.deepStrictEqual(firstLoad.pullRequests[1]!.journey, {
+          journeyId: locallyPinnedJourney.id,
+          progress: 0,
+          markedFiles: 0,
+          clusterFiles: 2,
+          stale: true,
+          pinnedHeadSha: PINNED_HEAD,
+        });
+
+        const restartedIndex = yield* makeIndex(github.service, store.service);
+        const restarted = yield* restartedIndex.subscribe.pipe(Stream.take(1), Stream.runCollect);
+        assert.deepStrictEqual(
+          restarted[0]!.pullRequests.map((pullRequest) => pullRequest.ref.number),
+          [firstPr.ref.number, locallyPinnedPr.ref.number],
+        );
+        assert.strictEqual(
+          restarted[0]!.pullRequests[1]!.journey?.journeyId,
+          locallyPinnedJourney.id,
+        );
+        assert.strictEqual(yield* Ref.get(github.pullCalls), 2);
+        assert.strictEqual(yield* Ref.get(github.prCalls), 2);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "restores a locally pinned journey after restart when GitHub can no longer read the PR",
+    () =>
+      Effect.gen(function* () {
+        const notFound = new GitHubReadError({
+          reason: "not-found",
+          detail: decodeDetail("The pull request is no longer visible."),
+        });
+        const parked = new GitHubParkedError({
+          resetAt: DateTime.makeUnsafe(10_000),
+        });
+        const github = yield* makeControlledGitHub({
+          pullRequests: () => Effect.succeed([firstPr]),
+          pr: (_ref, call) => Effect.fail(call === 1 ? notFound : parked),
+        });
+        const store = yield* makeControlledStore([metadata(locallyPinnedJourney, Option.none())]);
+        const workspaceReads = yield* Ref.make<ReadonlyArray<Workspaces.WorkspaceRunRef>>([]);
+        const pinnedDetail = detailFor(makePr(locallyPinnedPr.ref.number, PINNED_HEAD));
+        const workspaces = makeWorkspaces((run) =>
+          Ref.update(workspaceReads, (reads) => [...reads, run]).pipe(Effect.as(pinnedDetail)),
+        );
+
+        const firstIndex = yield* makeIndex(github.service, store.service, workspaces);
+        const firstLoad = yield* firstIndex.refresh();
+        assert.deepStrictEqual(
+          firstLoad.pullRequests.map((pullRequest) => pullRequest.ref.number),
+          [firstPr.ref.number, locallyPinnedPr.ref.number],
+        );
+        assert.isFalse(firstLoad.pullRequests[1]!.journey!.stale);
+
+        const restartedIndex = yield* makeIndex(github.service, store.service, workspaces);
+        const restarted = yield* restartedIndex.subscribe.pipe(Stream.take(1), Stream.runCollect);
+        assert.strictEqual(
+          restarted[0]!.pullRequests[1]!.journey?.journeyId,
+          locallyPinnedJourney.id,
+        );
+        assert.deepStrictEqual(yield* Ref.get(workspaceReads), [
+          {
+            pr: locallyPinnedJourney.pr,
+            runId: `run-${locallyPinnedJourney.id}`,
+          },
+          {
+            pr: locallyPinnedJourney.pr,
+            runId: `run-${locallyPinnedJourney.id}`,
+          },
+        ]);
+        assert.strictEqual(yield* Ref.get(github.prCalls), 2);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("adds a newly saved local journey once and keeps later recomputes network-local", () =>
+    Effect.gen(function* () {
+      const github = yield* makeControlledGitHub({
+        pullRequests: () => Effect.succeed([firstPr]),
+        pr: () => Effect.succeed(detailFor(locallyPinnedPr)),
+      });
+      const store = yield* makeControlledStore([]);
+      const index = yield* makeIndex(github.service, store.service);
+      yield* index.refresh();
+
+      yield* Ref.set(store.storedMetadata, [metadata(locallyPinnedJourney, Option.none())]);
+      const added = yield* index.recompute();
+      assert.isTrue(Option.isSome(added));
+      if (Option.isSome(added)) {
+        assert.deepStrictEqual(
+          added.value.pullRequests.map((pullRequest) => pullRequest.ref.number),
+          [firstPr.ref.number, locallyPinnedPr.ref.number],
+        );
+      }
+      assert.strictEqual(yield* Ref.get(github.pullCalls), 1);
+      assert.strictEqual(yield* Ref.get(github.prCalls), 1);
+
+      yield* Ref.set(store.storedMetadata, [
+        metadata(locallyPinnedJourney, Option.some(readState(locallyPinnedJourney, true))),
+      ]);
+      const updated = yield* index.recompute();
+      assert.isTrue(Option.isSome(updated));
+      if (Option.isSome(updated)) {
+        assert.strictEqual(updated.value.pullRequests[1]!.journey?.progress, 1);
+      }
+      assert.strictEqual(yield* Ref.get(github.pullCalls), 1);
+      assert.strictEqual(yield* Ref.get(github.prCalls), 1);
+    }),
+  );
+
   it.effect("recomputes local journey state without another GitHub read", () =>
     Effect.gen(function* () {
       const github = yield* makeControlledGitHub({
@@ -437,6 +610,7 @@ describe("PullRequestIndex", () => {
         ],
       );
       assert.strictEqual(yield* Ref.get(github.pullCalls), 1);
+      assert.strictEqual(yield* Ref.get(github.prCalls), 0);
       assert.strictEqual(events[1]!.pullRequests[0]!.journey?.progress, 1);
     }).pipe(Effect.scoped),
   );

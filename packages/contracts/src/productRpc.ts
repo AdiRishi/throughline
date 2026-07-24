@@ -173,13 +173,6 @@ const JourneyRpcError = Schema.Union([
   ProductOperationError,
   EnvironmentAuthorizationError,
 ]);
-const JourneyGetRpcError = Schema.Union([
-  JourneyNotFoundError,
-  GitHubReadError,
-  GitHubParkedError,
-  ProductOperationError,
-  EnvironmentAuthorizationError,
-]);
 const JourneyFileRpcError = Schema.Union([
   JourneyNotFoundError,
   JourneyFileNotFoundError,
@@ -238,7 +231,7 @@ export const WsIngestionSubscribeRpc = Rpc.make(PRODUCT_WS_METHODS.ingestionSubs
 export const WsJourneyGetRpc = Rpc.make(PRODUCT_WS_METHODS.journeyGet, {
   payload: Schema.Struct({ pr: PrRef }),
   success: JourneyDocument,
-  error: JourneyGetRpcError,
+  error: JourneyRpcError,
 });
 
 const JourneyFileInput = Schema.Struct({

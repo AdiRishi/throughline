@@ -163,4 +163,4 @@ Schema migrations run at server boot (`SqliteMigrator`). The artifact blob carri
 
 ## Staleness
 
-Never stored. A journey is stale iff its pinned `headSha` differs from the PR's current head as reported by the `GitHub` module's cached view — computed at the moment of display, so it can't be stale about being stale.
+Never stored. A journey is stale iff its pinned `headSha` differs from the latest PR head Throughline can observe. Viewer-affiliated rows carry that head in the GraphQL list; a locally saved journey absent from that list first uses the `GitHub` module's cached `pr()` detail read. If that read is unavailable, parked, or returns not-found, the immutable PR detail in the journey's finalized run preserves the row without claiming an unseen head change. `PullRequestIndex` derives stale state only after uniting those sources with `JourneyStore.listMetadata`.

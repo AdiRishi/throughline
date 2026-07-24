@@ -14,6 +14,7 @@ import {
   CommitSha,
   type GitHubOwner,
   type GitHubRepositoryName,
+  PrDetail,
   type PrRef,
   RepositoryPath,
   type RepositoryPath as RepositoryPathValue,
@@ -26,7 +27,27 @@ import * as Workspaces from "../../src/workspace/Workspaces.ts";
 import { gitExpect, makeGitFixture } from "./fixture.ts";
 
 const decodeCommitSha = Schema.decodeUnknownSync(CommitSha);
+const decodePrDetail = Schema.decodeUnknownSync(Schema.toCodecJson(PrDetail));
 const decodeRepositoryPath = Schema.decodeUnknownSync(RepositoryPath);
+
+const pullRequest = (pr: PrRef, baseSha: string, headSha: string) =>
+  decodePrDetail({
+    ref: pr,
+    title: "Materialize immutable review inputs",
+    author: { login: "octocat", avatarUrl: null },
+    url: `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`,
+    state: "open",
+    baseRefName: "main",
+    headSha,
+    updatedAt: "2026-07-25T00:00:00.000Z",
+    mergedAt: null,
+    changedFiles: 12,
+    additions: 24,
+    deletions: 8,
+    journey: null,
+    body: "Preserve these author-provided words with the pinned run.",
+    baseSha,
+  });
 
 const testConfig = (dataDir: string) =>
   ServerConfig.make({
@@ -74,6 +95,7 @@ it.layer(NodeServices.layer)("Workspaces real Git integration", (it) => {
         });
         const realGit = yield* GitProcess.make;
         const fixture = yield* makeGitFixture(realGit);
+        const detail = pullRequest(fixture.pr, fixture.baseTipSha, fixture.headSha);
         const commands: GitProcess.GitCommand[] = [];
         const recordingGit = GitProcess.GitProcess.of({
           run: (command) =>
@@ -96,19 +118,18 @@ it.layer(NodeServices.layer)("Workspaces real Git integration", (it) => {
 
         const mismatch = yield* workspaces
           .prepare({
-            pr: fixture.pr,
             runId: "mismatch",
-            baseTipSha: fixture.baseTipSha,
-            headSha: fixture.baseSha,
+            pullRequest: {
+              ...detail,
+              headSha: fixture.baseSha,
+            },
           })
           .pipe(Effect.exit);
         assert.strictEqual(failedWorkspaceError(mismatch)?.reason, "pinned-head-mismatch");
 
         const prepared = yield* workspaces.prepare({
-          pr: fixture.pr,
           runId: "run-1",
-          baseTipSha: fixture.baseTipSha,
-          headSha: fixture.headSha,
+          pullRequest: detail,
         });
         assert.strictEqual(prepared.baseSha, fixture.baseSha);
         assert.notStrictEqual(prepared.baseSha, fixture.baseTipSha);
@@ -194,6 +215,10 @@ it.layer(NodeServices.layer)("Workspaces real Git integration", (it) => {
         assert.isFalse(yield* fileSystem.exists(prepared.repositoryDir));
         assert.isTrue(yield* fileSystem.exists(committed.runDir));
         assert.isTrue(yield* fileSystem.exists(path.join(committed.inputsDir, "contents.json")));
+        assert.deepStrictEqual(
+          yield* workspaces.pullRequest({ pr: fixture.pr, runId: "run-1" }),
+          detail,
+        );
 
         const modifiedPath = decodeRepositoryPath("text/modified.txt");
         const modifiedPatch = yield* workspaces.filePatch(
@@ -234,10 +259,8 @@ it.layer(NodeServices.layer)("Workspaces real Git integration", (it) => {
         );
 
         const abandoned = yield* workspaces.prepare({
-          pr: fixture.pr,
           runId: "failed-run",
-          baseTipSha: fixture.baseTipSha,
-          headSha: fixture.headSha,
+          pullRequest: detail,
         });
         yield* workspaces.abandon(abandoned);
         const reaped = yield* workspaces.reapFailedRuns(fixture.pr);
@@ -339,40 +362,50 @@ it.layer(NodeServices.layer)("Workspaces path boundaries", (it) => {
         repo: "widgets" as GitHubRepositoryName,
         number: 7,
       } as PrRef;
+      const validDetail = pullRequest(validPr, sha, sha);
       const invalidRuns = [
         {
-          pr: { ...validPr, owner: ".." as GitHubOwner },
+          pullRequest: {
+            ...validDetail,
+            ref: { ...validPr, owner: ".." as GitHubOwner },
+          },
           runId: "run",
         },
         {
-          pr: { ...validPr, owner: "octo/escape" as GitHubOwner },
+          pullRequest: {
+            ...validDetail,
+            ref: { ...validPr, owner: "octo/escape" as GitHubOwner },
+          },
           runId: "run",
         },
         {
-          pr: { ...validPr, repo: "../escape" as GitHubRepositoryName },
+          pullRequest: {
+            ...validDetail,
+            ref: { ...validPr, repo: "../escape" as GitHubRepositoryName },
+          },
           runId: "run",
         },
         {
-          pr: { ...validPr, repo: "bad\0repo" as GitHubRepositoryName },
+          pullRequest: {
+            ...validDetail,
+            ref: { ...validPr, repo: "bad\0repo" as GitHubRepositoryName },
+          },
           runId: "run",
         },
         {
-          pr: { ...validPr, repo: "bad\\repo" as GitHubRepositoryName },
+          pullRequest: {
+            ...validDetail,
+            ref: { ...validPr, repo: "bad\\repo" as GitHubRepositoryName },
+          },
           runId: "run",
         },
         {
-          pr: validPr,
+          pullRequest: validDetail,
           runId: "../run",
         },
       ];
       for (const invalid of invalidRuns) {
-        const exit = yield* workspaces
-          .prepare({
-            ...invalid,
-            baseTipSha: sha,
-            headSha: sha,
-          })
-          .pipe(Effect.exit);
+        const exit = yield* workspaces.prepare(invalid).pipe(Effect.exit);
         assert.strictEqual(failedWorkspaceError(exit)?.reason, "invalid-input");
       }
 
@@ -385,10 +418,11 @@ it.layer(NodeServices.layer)("Workspaces path boundaries", (it) => {
 
       const validDotRepository = yield* workspaces
         .prepare({
-          pr: { ...validPr, repo: ".github" as GitHubRepositoryName },
           runId: "run",
-          baseTipSha: sha,
-          headSha: sha,
+          pullRequest: {
+            ...validDetail,
+            ref: { ...validPr, repo: ".github" as GitHubRepositoryName },
+          },
         })
         .pipe(Effect.exit);
       assert.notStrictEqual(failedWorkspaceError(validDotRepository)?.reason, "invalid-input");

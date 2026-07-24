@@ -1,11 +1,13 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 
 import {
   CommitSha,
+  GitHubParkedError,
   GitHubReadError,
   Journey,
   JourneyFileNotFoundError,
@@ -113,7 +115,11 @@ const journey = decodeJourney({
 const missingJourneyId = decodeJourneyId("journey-query-missing");
 const unchangedPath = decodeRepositoryPath("README.md");
 
-const pullRequest = (headSha: string, ref: PrRef = journey.pr): PrDetail =>
+const pullRequest = (
+  headSha: string,
+  ref: PrRef = journey.pr,
+  body = "The current pull request body.",
+): PrDetail =>
   decodePrDetail({
     ref,
     title: "Build the query seam",
@@ -131,15 +137,13 @@ const pullRequest = (headSha: string, ref: PrRef = journey.pr): PrDetail =>
     additions: 2,
     deletions: 1,
     journey: null,
-    body: "The current pull request body.",
+    body,
     baseSha: "1111111111111111111111111111111111111111",
   });
 
 const unused = <A>(): Effect.Effect<A> => Effect.die("Unexpected test collaborator call.");
 
-const makeGitHub = (
-  readPr: (ref: PrRef) => Effect.Effect<PrDetail, GitHubReadError>,
-): GitHub.GitHub["Service"] =>
+const makeGitHub = (readPr: GitHub.GitHub["Service"]["pr"]): GitHub.GitHub["Service"] =>
   GitHub.GitHub.of({
     identity: () => unused(),
     repositories: () => unused(),
@@ -157,6 +161,7 @@ interface WorkspaceReads {
   readonly filePatch?: Workspaces.Workspaces["Service"]["filePatch"];
   readonly fileContent?: Workspaces.Workspaces["Service"]["fileContent"];
   readonly tree?: Workspaces.Workspaces["Service"]["tree"];
+  readonly pullRequest?: Workspaces.Workspaces["Service"]["pullRequest"];
 }
 
 const makeWorkspaces = (reads: WorkspaceReads = {}): Workspaces.Workspaces["Service"] =>
@@ -168,6 +173,7 @@ const makeWorkspaces = (reads: WorkspaceReads = {}): Workspaces.Workspaces["Serv
     filePatch: reads.filePatch ?? (() => unused()),
     fileContent: reads.fileContent ?? (() => unused()),
     tree: reads.tree ?? (() => unused()),
+    pullRequest: reads.pullRequest ?? (() => unused()),
     evictCache: () => unused(),
     removeRun: () => unused(),
   });
@@ -466,25 +472,69 @@ it.layer(NodeServices.layer)("JourneyQuery", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("preserves GitHub failures from the current PR lookup", () =>
-    Effect.gen(function* () {
-      const filename = yield* temporaryDatabase;
-      const failure = new GitHubReadError({
-        reason: "transport",
-        detail: decodeTrimmedString("GitHub could not be reached."),
-      });
-
-      yield* withQuery(
-        filename,
-        makeGitHub(() => Effect.fail(failure)),
-        makeWorkspaces(),
-        (query, store) =>
-          Effect.gen(function* () {
-            yield* store.replace({ journey, runId: "immutable-run" });
-            const error = yield* query.get(journey.pr).pipe(Effect.flip);
-            assert.strictEqual(error, failure);
+  it.effect(
+    "falls back to pinned PR words and non-stale progress while GitHub is unavailable",
+    () =>
+      Effect.gen(function* () {
+        const filename = yield* temporaryDatabase;
+        const pinned = pullRequest(
+          journey.pinned.headSha,
+          journey.pr,
+          "The author's words captured when this journey was analyzed.",
+        );
+        const failures = [
+          new GitHubReadError({
+            reason: "transport",
+            detail: decodeTrimmedString("GitHub could not be reached."),
           }),
-      );
-    }).pipe(Effect.scoped),
+          new GitHubParkedError({ resetAt: DateTime.makeUnsafe(1_800_000_000_000) }),
+        ];
+        const snapshotReads: Workspaces.WorkspaceRunRef[] = [];
+        let githubReads = 0;
+
+        yield* withQuery(
+          filename,
+          makeGitHub(() => Effect.fail(failures[githubReads++]!)),
+          makeWorkspaces({
+            pullRequest: (run) =>
+              Effect.sync(() => {
+                snapshotReads.push(run);
+                return pinned;
+              }),
+          }),
+          (query, store) =>
+            Effect.gen(function* () {
+              yield* store.replace({ journey, runId: "immutable-run" });
+              yield* store.setReadMark(
+                journey.id,
+                {
+                  clusterId: journey.clusters[0]!.id,
+                  path: journey.files[0]!.path,
+                },
+                true,
+              );
+
+              for (let attempt = 0; attempt < failures.length; attempt += 1) {
+                const document = yield* query.get(journey.pr);
+                assert.strictEqual(document.pullRequest.body, pinned.body);
+                assert.strictEqual(document.pullRequest.headSha, journey.pinned.headSha);
+                assert.deepStrictEqual(document.pullRequest.journey, {
+                  journeyId: journey.id,
+                  progress: 0.5,
+                  markedFiles: 1,
+                  clusterFiles: 2,
+                  stale: false,
+                  pinnedHeadSha: journey.pinned.headSha,
+                });
+              }
+
+              assert.strictEqual(githubReads, 2);
+              assert.deepStrictEqual(snapshotReads, [
+                { pr: journey.pr, runId: "immutable-run" },
+                { pr: journey.pr, runId: "immutable-run" },
+              ]);
+            }),
+        );
+      }).pipe(Effect.scoped),
   );
 });

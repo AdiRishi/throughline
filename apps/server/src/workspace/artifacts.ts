@@ -4,7 +4,7 @@ import {
   CommitSha,
   FileChange,
   NonNegativeInt,
-  PrRef,
+  PrDetail,
   RepositoryPath,
   SeedHunk,
 } from "@app/contracts";
@@ -13,7 +13,7 @@ const ArtifactFileName = Schema.String.check(Schema.isPattern(/^f[0-9]{6}\.(?:ol
 
 export const RunDocument = Schema.Struct({
   version: Schema.Literal(1),
-  pr: PrRef,
+  pullRequest: Schema.toCodecJson(PrDetail),
   runId: Schema.String,
   baseSha: CommitSha,
   headSha: CommitSha,

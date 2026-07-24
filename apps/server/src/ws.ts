@@ -130,18 +130,34 @@ const indexOperationError =
   (
     error: PullRequestIndex.PullRequestIndexError,
   ):
-    | Exclude<PullRequestIndex.PullRequestIndexError, JourneyStore.JourneyStoreError>
+    | Exclude<
+        PullRequestIndex.PullRequestIndexError,
+        JourneyStore.JourneyStoreError | Workspaces.WorkspaceError
+      >
     | ProductOperationError =>
-    error instanceof JourneyStore.JourneyStoreError ? storeOperationError(operation)(error) : error;
+    error instanceof JourneyStore.JourneyStoreError
+      ? storeOperationError(operation)(error)
+      : error instanceof Workspaces.WorkspaceError
+        ? workspaceOperationError(operation)(error)
+        : error;
 
 const journeyQueryGetError =
   (operation: string) =>
   (
     error: JourneyQuery.JourneyQueryGetError,
   ):
-    | Exclude<JourneyQuery.JourneyQueryGetError, JourneyStore.JourneyStoreError>
-    | ProductOperationError =>
-    error instanceof JourneyStore.JourneyStoreError ? storeOperationError(operation)(error) : error;
+    | Exclude<
+        JourneyQuery.JourneyQueryGetError,
+        JourneyStore.JourneyStoreError | Workspaces.WorkspaceError
+      >
+    | ProductOperationError => {
+    if (error instanceof JourneyStore.JourneyStoreError) {
+      return storeOperationError(operation)(error);
+    }
+    return error instanceof Workspaces.WorkspaceError
+      ? workspaceOperationError(operation)(error)
+      : error;
+  };
 
 const journeyQueryArtifactError =
   (operation: string) =>
@@ -215,9 +231,12 @@ export const makeProductWsRpcLayer = () =>
       const harnesses = yield* Harness.AnalysisHarnessRegistry;
 
       const recomputePullRequests = (operation: string) =>
-        pullRequests
-          .recompute()
-          .pipe(Effect.mapError(storeOperationError(operation)), Effect.asVoid);
+        pullRequests.recompute().pipe(
+          Effect.ignore({
+            log: "Warn",
+            message: `Failed to refresh the pull request index after ${operation}.`,
+          }),
+        );
 
       return ProductWsRpcGroup.of({
         [PRODUCT_WS_METHODS.githubViewer]: () => github.identity(),

@@ -330,10 +330,8 @@ export const make = Effect.gen(function* () {
       yield* input.callbacks.onPhase("cloning");
       prepared = yield* workspaces
         .prepare({
-          pr: input.pr,
           runId: input.runId,
-          baseTipSha: detail.baseSha,
-          headSha: detail.headSha,
+          pullRequest: detail,
         })
         .pipe(
           Effect.catchTag("WorkspaceError", (error) => {
@@ -349,10 +347,8 @@ export const make = Effect.gen(function* () {
               }
               detail = refreshed;
               return yield* workspaces.prepare({
-                pr: input.pr,
                 runId: input.runId,
-                baseTipSha: refreshed.baseSha,
-                headSha: refreshed.headSha,
+                pullRequest: refreshed,
               });
             });
           }),

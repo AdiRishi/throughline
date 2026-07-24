@@ -7,8 +7,6 @@ import {
   JourneyFileNotFoundError,
   JourneyNotFoundError,
   type FileContent,
-  type GitHubParkedError,
-  type GitHubReadError,
   type JourneyDocument,
   type JourneyFilePatch,
   type JourneyId,
@@ -25,8 +23,7 @@ import { derivePullRequestJourneyState } from "./journeyView.ts";
 export type JourneyQueryGetError =
   | JourneyNotFoundError
   | JourneyStore.JourneyStoreError
-  | GitHubReadError
-  | GitHubParkedError;
+  | Workspaces.WorkspaceError;
 
 export type JourneyQueryArtifactError =
   | JourneyNotFoundError
@@ -87,7 +84,7 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  const mapTreeError =
+  const mapArtifactError =
     (journeyId: JourneyId) =>
     (error: Workspaces.WorkspaceError): Workspaces.WorkspaceError | JourneyNotFoundError =>
       error.reason === "artifact-not-found" || error.reason === "artifact-corrupt"
@@ -117,7 +114,7 @@ export const make = Effect.gen(function* () {
       return Effect.fail(new JourneyNotFoundError({ journeyId: stored.journey.id }));
     }
     return workspaces.tree(runFor(stored)).pipe(
-      Effect.mapError(mapTreeError(stored.journey.id)),
+      Effect.mapError(mapArtifactError(stored.journey.id)),
       Effect.flatMap((paths) =>
         Effect.fail(
           paths.includes(path)
@@ -136,7 +133,18 @@ export const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const stored = yield* requireByPr(pr);
         const [pullRequest, readState] = yield* Effect.all(
-          [github.pr(stored.journey.pr), store.getReadState(stored.journey.id)],
+          [
+            github
+              .pr(stored.journey.pr)
+              .pipe(
+                Effect.catchTag(["GitHubReadError", "GitHubParkedError"], () =>
+                  workspaces
+                    .pullRequest(runFor(stored))
+                    .pipe(Effect.mapError(mapArtifactError(stored.journey.id))),
+                ),
+              ),
+            store.getReadState(stored.journey.id),
+          ],
           { concurrency: 2 },
         );
         if (!samePr(pullRequest.ref, stored.journey.pr)) {
@@ -178,7 +186,7 @@ export const make = Effect.gen(function* () {
         const stored = yield* requireById(journeyId);
         const paths = yield* workspaces
           .tree(runFor(stored))
-          .pipe(Effect.mapError(mapTreeError(journeyId)));
+          .pipe(Effect.mapError(mapArtifactError(journeyId)));
         return { paths };
       }),
   });
