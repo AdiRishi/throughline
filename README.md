@@ -18,11 +18,12 @@ The core guarantee: Throughline never summarizes the diff — it **partitions** 
 
 This project is being built documentation-first. The docs are the product right now:
 
-| Document                               | What it holds                                                                                       |
-| -------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| [`docs/VISION.md`](./docs/VISION.md)   | Why Throughline must exist, what it is, and the principles that bind it                             |
-| [`docs/PRODUCT.md`](./docs/PRODUCT.md) | The product specification — the map into the per-surface docs in [`docs/product/`](./docs/product/) |
-| [`CONTEXT.md`](./CONTEXT.md)           | The domain glossary — the ubiquitous language (journey, cluster, hunk, home, coverage…)             |
+| Document                                   | What it holds                                                                                          |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| [`docs/VISION.md`](./docs/VISION.md)       | Why Throughline must exist, what it is, and the principles that bind it                                |
+| [`docs/PRODUCT.md`](./docs/PRODUCT.md)     | The product specification — the map into the per-surface docs in [`docs/product/`](./docs/product/)    |
+| [`docs/TECHNICAL.md`](./docs/TECHNICAL.md) | The technical specification — the map into the per-area docs in [`docs/technical/`](./docs/technical/) |
+| [`CONTEXT.md`](./CONTEXT.md)               | The domain glossary — the ubiquitous language (journey, cluster, hunk, home, coverage…)                |
 
 Read them in that order; where they conflict, the vision wins.
 
