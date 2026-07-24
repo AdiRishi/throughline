@@ -6,7 +6,19 @@
 
 ## Project Snapshot
 
-Throughline is a starter for Effect v4 desktop apps: an Electron shell supervising a local Effect server (HTTP + WebSocket RPC), with one React web build that runs in the shell and in a plain browser.
+Throughline is a PR comprehension system: a desktop app that turns a large pull request into an ordered journey of clusters a reviewer can walk to the end. The app code is currently the Effect v4 starter it is being built into: an Electron shell supervising a local Effect server (HTTP + WebSocket RPC), with one React web build that runs in the shell and in a plain browser.
+
+## Documentation — read before designing or building anything
+
+This project is documentation-first; the docs are authoritative over any assumption. In reading (and precedence) order:
+
+1. [`docs/VISION.md`](./docs/VISION.md) — why Throughline exists and the principles that bind it. Where documents conflict, the vision wins.
+2. [`docs/PRODUCT.md`](./docs/PRODUCT.md) → [`docs/product/`](./docs/product/) — what the product does, surface by surface.
+3. [`docs/TECHNICAL.md`](./docs/TECHNICAL.md) → [`docs/technical/`](./docs/technical/) — how it's built: architecture, domain model, GitHub access, the analysis pipeline, the frontend.
+4. [`CONTEXT.md`](./CONTEXT.md) — the domain glossary (journey, cluster, hunk, home, coverage…). Use these terms exactly, including their listed _avoid_ words.
+5. [`docs/adr/`](./docs/adr/AGENTS.md) — why the hard-to-reverse decisions were made.
+
+Any change that contradicts these documents is wrong until the documents are changed first.
 
 ## Core Priorities
 
