@@ -2,6 +2,8 @@
 
 The right rail of the [reading experience](./04-reading.md): scroll-bound help. As the reviewer moves through the code, the rail attaches to their position and surfaces **hints** (see `CONTEXT.md`) anchored to the code in view — the things a thoughtful colleague would murmur while reading over your shoulder.
 
+**Design:** the rail appears in both reading designs — [`designs/04-reading-cluster.png`](./designs/04-reading-cluster.png) and [`designs/04-reading-just-the-code.png`](./designs/04-reading-just-the-code.png).
+
 Hints bind in every display mode, including just-the-code: reading in silence still carries its guidance, anchored there to the subtle changed-region markers.
 
 ## What a hint can be

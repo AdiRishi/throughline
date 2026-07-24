@@ -2,6 +2,8 @@
 
 What the app shows when no journey is open. Its intent is orientation and welcome: an overview of your review world — what's waiting for you, what you're in the middle of, what's done. It should feel calm and personal, like opening the app to a tidy desk.
 
+**Design:** [`designs/01-welcome.png`](./designs/01-welcome.png)
+
 ## Built on your GitHub identity
 
 Throughline sits on top of GitHub and authenticates through the **GitHub CLI** (`gh`). What you can see in Throughline is what your `gh` login can see — your repositories and their pull requests. There is no separate account, no separate permission model.

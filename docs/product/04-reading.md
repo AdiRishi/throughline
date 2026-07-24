@@ -2,6 +2,8 @@
 
 Where the reviewer spends nearly all their time: the frame, the navigation, and how a cluster's code is actually read. The right rail — guidance — has [its own document](./05-guidance.md).
 
+**Designs:** [`designs/04-reading-cluster.png`](./designs/04-reading-cluster.png) (Journey mode, diff) · [`designs/04-reading-just-the-code.png`](./designs/04-reading-just-the-code.png) (Files mode, just-the-code)
+
 ## The frame
 
 Three panels:
@@ -63,7 +65,7 @@ Below the narrative, every file this cluster touches, as **full file diffs**:
 
 ### Three ways to see the code
 
-One display mode at a time, per journey — switch it and it stays that way until you switch it again. No per-file toggles:
+One display mode at a time, per journey — switch it and it stays that way until you switch it again. On screen it reads as two controls — a **Diff | Code** toggle in the top bar, and the diff's **inline or split** arrangement in the file headers where the eye already is — but both always set the journey-wide mode. There is no per-file divergence:
 
 - **Inline** (default) — the unified diff.
 - **Just the code** — every trace of diff UI falls away, leaving the file's new state as plain code, with only a subtle marker in the margin showing which regions changed. For when the reviewer just wants to _read_ — silence, with orientation. Hints still bind here, anchored to the marked regions.
@@ -83,10 +85,10 @@ The complete interaction set of this experience:
 - **Mark read** — per file within the cluster. Marking a file read collapses it and advances the cluster's progress. This is the primary interaction of the whole product; it should be effortless (one click, one keystroke).
 - **Expand context** — open collapsed unchanged regions.
 - **Changed-files filter** — narrow or widen the file tree.
-- **Navigate** — next/previous file within the cluster; next/previous cluster in the journey.
+- **Navigate** — next/previous file within the cluster; next/previous cluster in the journey; next/previous changed region within the open file.
 
 Nothing else. No per-file button rows, no comment affordances, no complexity filters.
 
 ## Completion
 
-When every file in the cluster is marked read, the cluster is complete — reflected immediately in the left rail and the Overview map. Completing the last cluster completes the journey: every hunk seen at its home, the coverage guarantee discharged.
+When every file in the cluster is marked read, the cluster is complete — reflected immediately in the left rail and the Overview map. Completing the last cluster completes the journey: every hunk acknowledged at its home, the coverage guarantee discharged.

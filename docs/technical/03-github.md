@@ -13,7 +13,7 @@ One deep module in `apps/server/src/github/`; **no other code in the repository 
 ```ts
 GitHub {
   identity(): Viewer                              // login + auth state
-  openPrs(): PrSummary[]                          // the welcome screen's world: PRs relevant to the viewer
+  openPrs(): PrSummary[]                          // the viewer's repositories and their open PRs, repo-grouped
   pr(ref: PrRef): PrDetail                        // metadata + current headSha (the freshness source)
   resolveUrl(url: string): PrRef | DoorRejection  // door validation for pasted URLs
   cloneCredentials(repo): GitCredential           // hands git a token; git itself does the byte-moving
@@ -42,7 +42,8 @@ The unit tests for this module are adversarial: simulated 403-with-reset must pr
 
 - **One clone per repository, shared across its PRs**: a bare, partial clone (`--filter=blob:none`) so history arrives lazily and the first ingestion of a big repo isn't a full download.
 - **One worktree per analysis run**, added at the pinned `headSha`, removed when the run finishes (kept on failure for debugging, reaped on the next run). The worktree is the read-only ground the agent walks ([04](./04-analysis.md)).
-- **Diff materialization** happens here at ingestion time, from local git, and is written into the run directory: the full rename-aware `baseSha..headSha` patch, per-file patches (what the renderer's diff surfaces are served from), the head-revision file tree listing, and the seed-hunk index (`@app/journey/hunks` output). After this point, ingestion and reading never consult git again — the journey and its run artifacts are self-contained.
+- **PR heads are fetched as `refs/pull/<n>/head` from the base repository** — never from a fork remote or a branch name — which covers fork PRs, deleted source branches, and force-pushed heads with one mechanism. The fetched commit must equal the `headSha` the API reported; if a force-push moved the ref mid-ingestion, refetch once and re-pin to what the API now says. The partial clone omits blobs, not commits, so merge-base discovery against the base branch needs no special casing.
+- **Diff materialization** happens here at ingestion time, from local git, and is written into the run directory: the full rename-aware `baseSha..headSha` patch, per-file patches (what the renderer's diff surfaces are served from), the head-revision file tree listing, the seed-hunk index (`@app/journey/hunks` output), and the full old- and new-revision contents of every changed file (what context expansion and the just-the-code view are served from — [05](./05-frontend.md)). After this point, ingestion never consults git again. Journey _reading_ consults the clone for exactly one thing: serving files outside the changed set (free reading of any tree file), re-fetched on demand if the workspace was evicted.
 - **Eviction**: workspaces are a cache. LRU by repository, generous cap; deleting one is always safe because re-cloning is always possible.
 
 ## The door

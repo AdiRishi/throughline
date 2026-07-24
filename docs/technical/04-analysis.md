@@ -17,7 +17,8 @@ AnalysisTask {
   worktree,                                // absolute path; the agent's whole world
   prompt,                                  // instructions + relative paths to run inputs
   outputSchema,                            // JSON Schema the result must satisfy
-  onEvent,                                 // coarse progress: started, activity(label), completed, failed
+  onEvent,                                 // structured progress: started/completed/failed + activity
+                                           // (current action, file, monotonic counters) from harness events
 }
 ```
 
@@ -53,24 +54,28 @@ Analysis is a sequence of structured-output runs, each validated before the next
 
 ### Repair, then commit — never fail
 
-Per the vision, analysis has no error terminal state. Each stage enforces that with three rungs:
+Per the vision, analysis has no error terminal state. Each stage enforces that with a ladder of rungs:
 
 1. **Validate** — the pure validators return precise, machine-generated violation lists ("h17 unassigned", "split of h4 leaves lines 210–214 uncovered", "link tl:symbol/… does not resolve").
 2. **Repair loop** — violations go back to the same thread (both SDKs resume threads) as a correction turn, up to 2 rounds. Most failures are near-misses; precise feedback fixes them cheaply.
-3. **Deterministic completion** — if repair rounds are exhausted, the pipeline finishes the artifact itself, honestly: unassigned hunks land in a synthesized final cluster titled for what it is ("Unplaced changes", weight Supporting, narrative saying exactly how it came to exist); invalid splits collapse back to their seed hunk; unresolvable links downgrade to plain text; an invalid hint is dropped (hints are optional aids; coverage is not). Every fallback is logged in the run directory.
+3. **Regenerate (stage 2 only)** — narration that still fails validation after repair is discarded and rerun fresh, once. Narration runs are per-cluster and cheap, and a clean second attempt beats deterministically mutilating prose.
+4. **Deterministic completion** — at the floor, the pipeline finishes the artifact itself, honestly: unassigned hunks land in a synthesized final cluster titled for what it is ("Unplaced changes", weight Supporting, narrative saying exactly how it came to exist); invalid splits collapse back to their seed hunk; unresolvable links downgrade to plain text; an invalid hint is dropped (hints are optional aids; coverage is not). Every fallback is logged in the run directory.
 
-Rung 3 is what makes "the agent always commits" an invariant of the _system_ rather than a hope about the model: the pipeline can always construct a valid journey from any stage-1 output, including an empty one — the degenerate journey (one cluster per file-cluster of seeds) is dreadful but valid, visible, and honest.
+The final rung is what makes "the agent always commits" an invariant of the _system_ rather than a hope about the model: the pipeline can always construct a valid journey from any stage-1 output, including an empty one — the degenerate journey (one cluster per file-cluster of seeds) is dreadful but valid, visible, and honest.
 
 ## Ingestion jobs
 
 `Ingestion` (in `apps/server/src/analysis/`) orchestrates the whole flow as a supervised job — one active job per PR, a global cap of one running analysis at a time (harness runs are heavy; queued jobs say so honestly).
 
-Phases, published as a snapshot-then-live stream (the starter's push-bus pattern) and consumed directly by the transition UI — the narrated stages the product docs promise are these events, so the narration is honest by construction:
+Phases, published as a snapshot-then-live stream (the starter's push-bus pattern) and consumed directly by the transition UI — the narrated stages the product docs promise are these events, so the narration is honest by construction. `analyzing` events additionally carry a structured activity payload — the current action, a short trail of recent ones, and monotonic counters (files walked, symbols traced, call sites followed) — derived only from observed harness events, never invented; this is what the transition's live feed and counters render (design `02-ingestion`):
 
 ```
 resolving → cloning → diffing → analyzing(stage, detail) → validating → saving → complete
                                                       ↘ (cancel) → cancelled
+                                                      ↘ (operational fault) → failed
 ```
+
+**Failure is operational, never analytical.** A job can fail — a clone error, a harness crash, a full disk, auth expiring mid-run — and says so plainly, with retry as the remedy (a rerun is a fresh job). What cannot exist is an analytical failure: "too tangled to decompose" is not an outcome, and the repair ladder above is what guarantees it. The vision's always-commit principle constrains the _model's_ escape hatches, not the laws of physics; UI and code must never conflate the two.
 
 - **Leavable**: the job is server-side; the renderer may disconnect, navigate away, or the window may close. Reconnection replays the snapshot and resumes watching. Completion while away is simply a completed journey on the welcome screen.
 - **Cancellable**: `ingestion.cancel` closes the job's scope; the harness subprocess dies with it (scope-owned lifecycles, T3 Code's pattern). A cancelled job leaves no partial journey — persistence is a single atomic write at the end.

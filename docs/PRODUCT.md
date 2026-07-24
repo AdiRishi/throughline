@@ -10,7 +10,7 @@ This file is the map. Each surface has its own document in [`docs/product/`](./p
 4. [**The reading experience**](./product/04-reading.md) — the heart of the product: the frame, the navigation, and how a cluster's code is read.
 5. [**Guidance & hints**](./product/05-guidance.md) — the scroll-bound margin of help beside the code.
 
-Screenshots of other products that inspired (and warned) us live in [`docs/product/external-references/`](./product/external-references/README.md) — inspiration, not direction.
+Throughline's own screen designs live in [`docs/product/designs/`](./product/designs/README.md) — the visual source of truth for layout, hierarchy, and tone; the written documents stay the source of truth for behavior. Screenshots of other products that inspired (and warned) us live in [`docs/product/external-references/`](./product/external-references/README.md) — inspiration, not direction.
 
 This specification captures intent, behavior, and feel — plus the technology commitments that shape the product. It deliberately does not enumerate every state and permutation; deeper architecture lives in the technical docs.
 
@@ -32,7 +32,7 @@ Where excellent building blocks exist, Throughline does not reinvent them:
 1. **Ingest.** From the welcome screen, the reviewer opens a PR — picked from their list or pasted as a URL. Throughline clones and analyzes it through a designed, honest transition. Per the vision's always-commit principle, analysis cannot fail into an error state — every PR yields a journey.
 2. **Orient.** The reviewer lands on the journey's **Overview** — the story of the change and the map of its clusters.
 3. **Walk.** The reviewer moves through clusters in order, reading each cluster's files and marking them read as they go.
-4. **Finish.** The journey is complete when every hunk has been read in its home cluster. Because of the coverage guarantee, "the journey is finished" means, provably, "every changed line has been seen."
+4. **Finish.** The journey is complete when every hunk has been read in its home cluster. Because of the coverage guarantee, "the journey is finished" means, provably, "every changed line was presented at its home and acknowledged" — nothing omitted, nothing skipped silently.
 
 ## Weight
 
@@ -51,7 +51,7 @@ Read tracking is built in from v1 and is **local-only** — nothing is ever writ
 - The unit of marking is **a file within a cluster**. Marking it read collapses it.
 - A cluster's progress is the fraction of its homed hunks read; the journey's progress aggregates across clusters.
 - Progress persists across sessions and survives app restarts.
-- Read state is the mechanism that makes the coverage guarantee tangible: the journey's progress reaching 100% _is_ the proof that every line was seen.
+- Read state is the mechanism that makes the coverage guarantee tangible: the journey's progress reaching 100% _is_ the proof that nothing was omitted — every line was presented at its home and acknowledged there.
 
 ## Design principles
 

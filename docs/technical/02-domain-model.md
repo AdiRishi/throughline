@@ -32,6 +32,7 @@ The pin is load-bearing: every line range, anchor, and evidence link in the arti
 
 1. **Seed hunks are deterministic.** `@app/journey/hunks` parses the materialized diff (rename-aware, zero context lines) into seed hunks: maximal contiguous runs of changed lines per file. No agent involvement — the seeds and the changed-line set they cover are computed facts.
 2. **The agent may only refine.** During analysis the agent may split a seed hunk into finer contiguous sub-ranges when it mixes concerns — never merge, never omit, never invent. A refinement of a partition is still a partition, so the agent structurally cannot break coverage; it can only fail to _assign_, which the validator catches.
+3. **Files without textual hunks are still covered.** A changed file that yields no changed lines — a binary change, a pure rename, a mode/symlink/submodule change, an emptied or empty-added file — contributes exactly one synthetic **file-level hunk** at seed time, carrying a `fileKind` instead of line ranges. It is homed, validated, and counted like any other hunk (the agent may never split one), so the partition covers every changed _file_, not merely every changed line.
 
 ```ts
 Hunk {
@@ -39,12 +40,13 @@ Hunk {
   path,                           // new path (old path for pure deletions)
   oldStart, oldLines,             // removed-line run in the base revision (0-length allowed)
   newStart, newLines,             // added-line run in the head revision (0-length allowed)
+  fileKind?,                      // file-level hunks only: binary | rename | mode | symlink | submodule | empty
   seedId,                         // the seed hunk this is (a split of); = own id when unsplit
   home: ClusterId,
 }
 ```
 
-**Coverage, formalized.** For each changed file, the changed-line set is (removed old-side line numbers) ∪ (added new-side line numbers). The journey is valid iff the hunks' ranges partition that set exactly — no line uncovered, no line covered twice — and every hunk names exactly one existing home cluster. `@app/journey/coverage` implements this as a pure validator returning a precise violation list (used verbatim in the repair loop, [04](./04-analysis.md)); the server refuses to persist a journey that fails it. The guarantee is a checked invariant, not a prompt instruction.
+**Coverage, formalized.** For each changed file, the changed-line set is (removed old-side line numbers) ∪ (added new-side line numbers). The journey is valid iff the hunks' ranges partition that set exactly — no line uncovered, no line covered twice — every changed file with no changed lines carries exactly one file-level hunk, and every hunk names exactly one existing home cluster. `@app/journey/coverage` implements this as a pure validator returning a precise violation list (used verbatim in the repair loop, [04](./04-analysis.md)); the server refuses to persist a journey that fails it. The guarantee is a checked invariant, not a prompt instruction.
 
 ## Clusters
 
@@ -57,7 +59,7 @@ Cluster {
   narrative: Narrative,           // leads the cluster page
   mapEntry: Narrative,            // the compressed 2–3 sentence Overview-map account
   buildsOn: ClusterId[],          // stated relationships to earlier clusters only
-  fileOrder: path[],              // narrative order; every path hosting a homed hunk, exactly once
+  fileOrder: path[],              // narrative order; every path hosting a homed or resurfaced hunk, exactly once
   resurfaced: { hunkId, note: Narrative }[],   // hunks homed elsewhere, revisited here
 }
 ```
@@ -68,7 +70,7 @@ Resurfacing constraints, validated like coverage: a resurfaced hunk must exist, 
 
 ## Narrative and evidence
 
-Narrative is Markdown with one extension: evidence links, using `tl:` URIs — `tl:hunk/h12`, `tl:file/src/auth/token.ts`, `tl:symbol/src/auth/token.ts#issueToken`. The renderer resolves them to navigation (scroll to hunk, open file); the validator resolves them against the journey and the pinned tree. Per the vision, prose that can't be checked doesn't ship: unresolvable links are a validation failure fed back to the agent, and the deterministic last resort is downgrading the link to plain text with the run's log recording the loss — the claim survives, its broken anchor doesn't.
+Narrative is Markdown with one extension: evidence links, using `tl:` URIs — `tl:hunk/h12`, `tl:file/src/auth/token.ts`, `tl:symbol/src/auth/token.ts#issueToken`. The renderer resolves them to navigation (scroll to hunk, open file); the validator resolves them against the journey and the pinned tree. A `tl:symbol` link resolves iff the symbol string occurs textually in the referenced file at the pinned head — deliberately no language tooling, so the check stays cheap and unambiguous. Per the vision, prose that can't be checked doesn't ship: an unresolvable link is a validation failure that climbs [04](./04-analysis.md)'s ladder — repair, then regenerate the offending narration — before the absolute floor of downgrading the link to plain text with the loss logged. The floor exists so the pipeline terminates; the ladder exists so the floor is almost never stood on.
 
 ```ts
 Narrative { markdown }            // evidence is *in* the text; no parallel refs array to drift
@@ -85,7 +87,7 @@ Hint {
 }
 ```
 
-Anchors may cover unchanged lines (ripple context legitimately points at code the diff didn't touch) but must lie within the file at the pinned revision. Hints bind in every display mode; in just-the-code they attach to the changed-region margin markers ([05](./05-frontend.md)).
+Anchors may cover unchanged lines (ripple context legitimately points at code the diff didn't touch) but must lie within the file at the pinned revision. Hints bind in every display mode; in just-the-code they attach to the changed-region margin markers ([05](./05-frontend.md)). One deliberate display-mode consequence: an anchor lying only on the old side has nothing to attach to in just-the-code — the head revision is on screen and the deleted lines are not — so such hints render in inline and split and are omitted there.
 
 ## Read state
 

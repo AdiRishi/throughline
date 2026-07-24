@@ -2,6 +2,8 @@
 
 How a pull request becomes a journey, and what happens when the pull request moves on.
 
+**Design:** [`designs/02-ingestion.png`](./designs/02-ingestion.png)
+
 ## Input
 
 Two ways in, both from the [welcome screen](./01-welcome.md): selecting one of your open PRs, or pasting a PR URL. They feed the same pipeline. GitHub is the only platform in v1; raw diffs and unpushed local branches are out of scope.
@@ -12,7 +14,7 @@ At the level this document cares about: Throughline clones the repository into a
 
 Two behavioral commitments:
 
-- **The run always completes.** Per the vision's always-commit principle, there is no "analysis failed" terminal state for a valid, reachable PR. A change with no clean structure gets an honest journey through a messy change. Unreachable input — a bad URL, a repository your `gh` login can't see — is rejected _before_ ingestion begins, at the door.
+- **The run always completes.** Per the vision's always-commit principle, there is no "analysis failed" terminal state for a valid, reachable PR. A change with no clean structure gets an honest journey through a messy change. Unreachable input — a bad URL, a repository your `gh` login can't see — is rejected _before_ ingestion begins, at the door. Operational faults — a failed clone, a crashed harness, a full disk — fail the _run_, visibly and retryably; the impossibility is analytical: "too tangled to decompose" is never an outcome.
 - **A journey is a snapshot.** It is pinned to the PR's head commit at the moment of analysis. That pin is what makes coverage, read state, and every narrative claim stable and verifiable.
 
 ## The transition
