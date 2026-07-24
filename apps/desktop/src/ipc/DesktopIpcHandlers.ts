@@ -13,6 +13,7 @@ import {
   getAppInfo,
   getBearerToken,
   getServerBootstrap,
+  getTheme,
   openExternal,
   pickFolder,
   setTheme,
@@ -26,6 +27,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   const ipc = yield* DesktopIpc.DesktopIpc;
 
   yield* ipc.handleSync(getAppInfo);
+  yield* ipc.handleSync(getTheme);
   yield* ipc.handleSync(getServerBootstrap);
   yield* ipc.handle(getBearerToken);
 

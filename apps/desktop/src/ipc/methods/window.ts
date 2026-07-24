@@ -43,6 +43,15 @@ export const getAppInfo = DesktopIpc.makeSyncIpcMethod({
   }),
 });
 
+export const getTheme = DesktopIpc.makeSyncIpcMethod({
+  channel: IpcChannels.GET_THEME_CHANNEL,
+  result: DesktopTheme,
+  handler: Effect.fn("desktop.ipc.window.getTheme")(function* () {
+    const settings = yield* DesktopAppSettings.DesktopAppSettings;
+    return (yield* settings.get).theme;
+  }),
+});
+
 export const getServerBootstrap = DesktopIpc.makeSyncIpcMethod({
   channel: IpcChannels.GET_SERVER_BOOTSTRAP_CHANNEL,
   result: Schema.NullOr(DesktopServerBootstrap),

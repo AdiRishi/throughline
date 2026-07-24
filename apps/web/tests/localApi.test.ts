@@ -28,6 +28,7 @@ function makeStorage(overrides?: Partial<Storage>): Storage {
 function makeBridge(overrides?: Partial<DesktopBridge>): DesktopBridge {
   return {
     getAppInfo: () => null,
+    getTheme: () => "system",
     getServerBootstrap: () => null,
     getBearerToken: vi.fn<DesktopBridge["getBearerToken"]>(async () => "bearer"),
     setTheme: vi.fn<DesktopBridge["setTheme"]>(async () => undefined),
@@ -58,18 +59,33 @@ afterEach(() => {
 });
 
 describe("localApi in the shell (bridge present)", () => {
-  it("reports desktop and delegates to the bridge", async () => {
-    const bridge = makeBridge();
+  it("reads shell identity and theme while delegating local actions", async () => {
+    const appInfo = {
+      name: "Throughline",
+      version: "1.2.3",
+      platform: "darwin",
+      isPackaged: true,
+    } as const;
+    const bridge = makeBridge({
+      getAppInfo: () => appInfo,
+      getTheme: () => "dark",
+    });
     const storage = makeStorage();
+    storage.setItem("app:theme", "light");
     const { localApi } = await loadLocalApi({ desktopBridge: bridge, localStorage: storage });
     const api = localApi();
 
     expect(api.isDesktop).toBe(true);
-
-    await api.setTheme("dark");
-    expect(bridge.setTheme).toHaveBeenCalledWith("dark");
-    // Persisted too, so the pre-mount guard in index.html can read it.
+    expect(api.getAppInfo()).toEqual(appInfo);
+    expect(api.getTheme()).toBe("dark");
     expect(storage.getItem("app:theme")).toBe("dark");
+
+    const persisted = api.setTheme("light");
+    expect(api.getTheme()).toBe("light");
+    await persisted;
+    expect(bridge.setTheme).toHaveBeenCalledWith("light");
+    // Persisted too, so the pre-mount guard in index.html can read it.
+    expect(storage.getItem("app:theme")).toBe("light");
 
     await api.openExternal("https://example.com");
     expect(bridge.openExternal).toHaveBeenCalledWith("https://example.com");
@@ -109,10 +125,13 @@ describe("localApi in a plain browser (no bridge)", () => {
     const open = vi.fn<typeof window.open>();
     const confirm = vi.fn<() => boolean>(() => false);
     const storage = makeStorage();
+    storage.setItem("app:theme", "dark");
     const { localApi } = await loadLocalApi({ localStorage: storage, open, confirm });
     const api = localApi();
 
     expect(api.isDesktop).toBe(false);
+    expect(api.getAppInfo()).toBeNull();
+    expect(api.getTheme()).toBe("dark");
 
     await api.setTheme("system");
     expect(storage.getItem("app:theme")).toBe("system");

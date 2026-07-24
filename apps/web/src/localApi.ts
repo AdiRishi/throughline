@@ -4,6 +4,25 @@ import { isElectron } from "./env.ts";
 
 export const THEME_STORAGE_KEY = "app:theme";
 
+function readStoredTheme(): DesktopTheme {
+  if (typeof window === "undefined") return "system";
+  try {
+    const theme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (theme === "light" || theme === "dark" || theme === "system") return theme;
+  } catch {
+    // Storage may be unavailable.
+  }
+  return "system";
+}
+
+function storeTheme(theme: DesktopTheme): void {
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  } catch {
+    // Storage may be unavailable; the shell remains authoritative on desktop.
+  }
+}
+
 /**
  * The capability surface the renderer programs against. In the shell it
  * delegates to `window.desktopBridge`; in a plain browser it uses web fallbacks
@@ -11,19 +30,21 @@ export const THEME_STORAGE_KEY = "app:theme";
  */
 function createLocalApi(): LocalApi {
   const bridge = typeof window !== "undefined" ? window.desktopBridge : undefined;
+  let theme = bridge?.getTheme() ?? readStoredTheme();
+  if (bridge) storeTheme(theme);
 
   return {
     isDesktop: isElectron,
+    getAppInfo: () => bridge?.getAppInfo() ?? null,
+    getTheme: () => (bridge ? theme : readStoredTheme()),
 
-    setTheme: async (theme: DesktopTheme) => {
-      // Persist in the browser so the pre-mount guard in index.html can read it.
-      try {
-        window.localStorage.setItem(THEME_STORAGE_KEY, theme);
-      } catch {
-        // Storage may be unavailable (private mode); the shell still gets it.
-      }
+    setTheme: async (nextTheme: DesktopTheme) => {
+      storeTheme(nextTheme);
+      // Update before awaiting IPC so external-store subscribers can render
+      // the selected value immediately.
+      theme = nextTheme;
       if (bridge) {
-        await bridge.setTheme(theme);
+        await bridge.setTheme(nextTheme);
       }
     },
 

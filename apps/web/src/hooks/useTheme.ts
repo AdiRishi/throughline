@@ -2,21 +2,10 @@ import { useCallback, useSyncExternalStore } from "react";
 
 import type { DesktopTheme } from "@app/contracts";
 
-import { localApi, THEME_STORAGE_KEY } from "../localApi.ts";
+import { localApi } from "../localApi.ts";
 
 const MEDIA_QUERY = "(prefers-color-scheme: dark)";
 const DEFAULT_THEME: DesktopTheme = "system";
-
-function readStored(): DesktopTheme {
-  if (typeof window === "undefined") return DEFAULT_THEME;
-  try {
-    const raw = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (raw === "light" || raw === "dark" || raw === "system") return raw;
-  } catch {
-    // ignore
-  }
-  return DEFAULT_THEME;
-}
 
 function systemDark(): boolean {
   return (
@@ -46,7 +35,7 @@ function subscribe(onChange: () => void): () => void {
       ? window.matchMedia(MEDIA_QUERY)
       : null;
   const onSystemChange = () => {
-    if (readStored() === "system") applyTheme("system");
+    if (localApi().getTheme() === "system") applyTheme("system");
     onChange();
   };
   mq?.addEventListener("change", onSystemChange);
@@ -57,7 +46,7 @@ function subscribe(onChange: () => void): () => void {
 }
 
 function getSnapshot(): DesktopTheme {
-  return readStored();
+  return localApi().getTheme();
 }
 
 /**

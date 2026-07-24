@@ -3,6 +3,7 @@
 // can't drift.
 
 export const GET_APP_INFO_CHANNEL = "desktop:get-app-info";
+export const GET_THEME_CHANNEL = "desktop:get-theme";
 export const GET_SERVER_BOOTSTRAP_CHANNEL = "desktop:get-server-bootstrap";
 export const GET_BEARER_TOKEN_CHANNEL = "desktop:get-bearer-token";
 

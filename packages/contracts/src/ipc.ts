@@ -23,6 +23,8 @@ export type Unsubscribe = () => void;
 export interface DesktopBridge {
   /** Synchronous: static identity read at boot for branding. */
   readonly getAppInfo: () => DesktopAppInfo | null;
+  /** Synchronous: persisted shell theme, available before the first paint. */
+  readonly getTheme: () => DesktopTheme;
   /** Synchronous: where the local server lives (null before it's ready). */
   readonly getServerBootstrap: () => DesktopServerBootstrap | null;
 
@@ -57,6 +59,8 @@ export interface DesktopBridge {
  */
 export interface LocalApi {
   readonly isDesktop: boolean;
+  readonly getAppInfo: () => DesktopAppInfo | null;
+  readonly getTheme: () => DesktopTheme;
   readonly setTheme: (theme: DesktopTheme) => Promise<void>;
   readonly openExternal: (url: string) => Promise<void>;
   readonly confirm: (message: string) => Promise<boolean>;

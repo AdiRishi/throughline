@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     }
     return result as ReturnType<DesktopBridge["getAppInfo"]>;
   },
+  getTheme: () =>
+    ipcRenderer.sendSync(IpcChannels.GET_THEME_CHANNEL) as ReturnType<DesktopBridge["getTheme"]>,
   getServerBootstrap: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_SERVER_BOOTSTRAP_CHANNEL);
     if (typeof result !== "object" || result === null) {
