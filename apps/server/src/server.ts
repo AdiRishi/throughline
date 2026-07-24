@@ -105,19 +105,32 @@ export const pullRequestIndexSyncLayer = Layer.effectDiscard(
 
 export const workspaceCacheEvictionLayer = Layer.effectDiscard(
   Effect.gen(function* () {
+    const ingestion = yield* Ingestion.Ingestion;
     const workspaces = yield* Workspaces.Workspaces;
-    yield* workspaces.evictCache(WORKSPACE_CACHE_MAX_REPOSITORIES).pipe(
-      Effect.tap((evicted) =>
-        evicted.length === 0
-          ? Effect.void
-          : Effect.logInfo("evicted cached repository clones", {
-              repositories: evicted,
-            }),
-      ),
-      Effect.ignore({
-        log: "Warn",
-        message: "Failed to evict cached repository clones at startup.",
-      }),
+
+    const evictCache = Effect.fn("workspaceCacheEvictionLayer.evictCache")(function* (
+      trigger: "startup" | "completed analysis",
+    ) {
+      yield* workspaces.evictCache(WORKSPACE_CACHE_MAX_REPOSITORIES).pipe(
+        Effect.tap((evicted) =>
+          evicted.length === 0
+            ? Effect.void
+            : Effect.logInfo("evicted cached repository clones", {
+                repositories: evicted,
+              }),
+        ),
+        Effect.ignore({
+          log: "Warn",
+          message: `Failed to evict cached repository clones after ${trigger}.`,
+        }),
+      );
+    });
+
+    yield* evictCache("startup");
+    yield* ingestion.changes.pipe(
+      Stream.filter((job) => job.phase === "complete"),
+      Stream.runForEach(() => evictCache("completed analysis")),
+      Effect.forkScoped,
     );
   }),
 );

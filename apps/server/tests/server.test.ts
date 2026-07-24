@@ -8,6 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
@@ -21,12 +22,14 @@ import * as Socket from "effect/unstable/socket/Socket";
 import {
   BearerSessionJson,
   CompleteWsRpcGroup,
+  IngestionJob,
   PRODUCT_WS_METHODS,
   PrRef,
   WS_METHODS,
   type ServerLifecycleStreamEvent,
 } from "@app/contracts";
 
+import * as Ingestion from "../src/analysis/Ingestion.ts";
 import * as Auth from "../src/auth.ts";
 import * as ServerConfig from "../src/config.ts";
 import { AUTH_BOOTSTRAP_PATH, HEALTH_PATH } from "../src/http.ts";
@@ -98,6 +101,7 @@ const appLayer = (options: HarnessOptions = {}) => {
 };
 
 const decodeBearerSession = Schema.decodeUnknownSync(BearerSessionJson);
+const decodeIngestionJob = Schema.decodeUnknownSync(Schema.toCodecJson(IngestionJob));
 const decodePrRef = Schema.decodeUnknownSync(PrRef);
 
 const postJson = (path: string, body: string) =>
@@ -376,28 +380,81 @@ describe("dev redirect", () => {
   );
 });
 
-describe("startup maintenance", () => {
-  it.effect("evicts the clone cache once using the generous repository cap", () => {
-    const maximums: number[] = [];
-
-    return Effect.scoped(
+describe("workspace cache maintenance", () => {
+  it.effect("continues capping the clone cache when one completion eviction fails", () =>
+    Effect.scoped(
       Effect.gen(function* () {
+        const consumed = yield* Deferred.make<void>();
+        const pr = decodePrRef({ owner: "octo", repo: "widgets", number: 42 });
+        const resolving = decodeIngestionJob({
+          id: "job-41",
+          pr,
+          phase: "resolving",
+          queuePosition: null,
+          startedAt: "2026-07-25T00:00:00.000Z",
+          updatedAt: "2026-07-25T00:00:10.000Z",
+          activity: null,
+          journeyId: null,
+          failure: null,
+        });
+        const completed = decodeIngestionJob({
+          id: "job-42",
+          pr,
+          phase: "complete",
+          queuePosition: null,
+          startedAt: "2026-07-25T00:00:00.000Z",
+          updatedAt: "2026-07-25T00:01:00.000Z",
+          activity: null,
+          journeyId: "job-42",
+          failure: null,
+        });
+        const nextCompleted = decodeIngestionJob({
+          id: "job-43",
+          pr: decodePrRef({ owner: "octo", repo: "gadgets", number: 7 }),
+          phase: "complete",
+          queuePosition: null,
+          startedAt: "2026-07-25T00:02:00.000Z",
+          updatedAt: "2026-07-25T00:03:00.000Z",
+          activity: null,
+          journeyId: "job-43",
+          failure: null,
+        });
+        const maximums: number[] = [];
+
         yield* Layer.build(
           workspaceCacheEvictionLayer.pipe(
             Layer.provide(
-              Layer.mock(Workspaces.Workspaces)({
-                evictCache: (maximum) =>
-                  Effect.sync(() => {
-                    maximums.push(maximum);
-                    return [];
-                  }),
-              }),
+              Layer.mergeAll(
+                Layer.mock(Ingestion.Ingestion)({
+                  changes: Stream.make(resolving, completed, nextCompleted).pipe(
+                    Stream.ensuring(Deferred.succeed(consumed, undefined)),
+                  ),
+                }),
+                Layer.mock(Workspaces.Workspaces)({
+                  evictCache: (maximum) =>
+                    Effect.gen(function* () {
+                      maximums.push(maximum);
+                      if (maximums.length === 2) {
+                        return yield* new Workspaces.WorkspaceError({
+                          reason: "io",
+                          detail: "temporary filesystem failure",
+                        });
+                      }
+                      return [];
+                    }),
+                }),
+              ),
             ),
           ),
         );
 
-        assert.deepStrictEqual(maximums, [WORKSPACE_CACHE_MAX_REPOSITORIES]);
+        yield* Deferred.await(consumed);
+        assert.deepStrictEqual(maximums, [
+          WORKSPACE_CACHE_MAX_REPOSITORIES,
+          WORKSPACE_CACHE_MAX_REPOSITORIES,
+          WORKSPACE_CACHE_MAX_REPOSITORIES,
+        ]);
       }),
-    );
-  });
+    ),
+  );
 });
