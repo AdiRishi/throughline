@@ -64,7 +64,7 @@ export class DesktopWindow extends Context.Service<
 const { logInfo, logWarning } = makeComponentLogger("desktop-window");
 
 function initialBackgroundColor(shouldUseDarkColors: boolean): string {
-  return shouldUseDarkColors ? "#0a0a0a" : "#ffffff";
+  return shouldUseDarkColors ? "#0f1116" : "#f7f8fa";
 }
 
 // The renderer origin: the dev web server in development, otherwise the local
@@ -182,13 +182,19 @@ export const make = Effect.gen(function* () {
     const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
     const applicationUrl = yield* Ref.get(applicationUrlRef);
     const window = yield* electronWindow.create({
-      width: 1100,
-      height: 780,
-      minWidth: 840,
-      minHeight: 620,
+      width: 1440,
+      height: 900,
+      minWidth: 900,
+      minHeight: 640,
       show: false,
       backgroundColor: initialBackgroundColor(shouldUseDarkColors),
       title: environment.displayName,
+      ...(environment.platform === "darwin"
+        ? {
+            titleBarStyle: "hiddenInset" as const,
+            trafficLightPosition: { x: 14, y: 15 },
+          }
+        : {}),
       webPreferences: {
         preload: environment.preloadPath,
         contextIsolation: true,

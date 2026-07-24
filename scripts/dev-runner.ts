@@ -121,6 +121,7 @@ async function main(): Promise<void> {
   const devWebUrl = `http://localhost:${webPort}`;
 
   const serverEnv: NodeJS.ProcessEnv = {
+    APP_DATA_DIR: NodePath.join(REPO_ROOT, ".throughline-data"),
     APP_SERVER_PORT: String(serverPort),
     APP_BOOTSTRAP_TOKEN: bootstrapToken,
     APP_DEV_WEB_URL: devWebUrl,
