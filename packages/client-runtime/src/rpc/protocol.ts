@@ -1,13 +1,13 @@
 import type * as Effect from "effect/Effect";
 import * as RpcClient from "effect/unstable/rpc/RpcClient";
 
-import { WsRpcGroup } from "@app/contracts";
+import { CompleteWsRpcGroup } from "@app/contracts";
 
 /**
- * The factory that materializes a typed client for every method in `WsRpcGroup`.
+ * The factory that materializes a typed client for every application method.
  * Building it requires an `RpcClient.Protocol` in context (wired in `session.ts`).
  */
-export const makeWsRpcProtocolClient = RpcClient.make(WsRpcGroup);
+export const makeWsRpcProtocolClient = RpcClient.make(CompleteWsRpcGroup);
 
 type RpcClientFactory = typeof makeWsRpcProtocolClient;
 

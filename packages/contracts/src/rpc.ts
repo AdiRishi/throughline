@@ -11,6 +11,7 @@ import {
   NotesStreamEvent,
   NoteUpdateInput,
 } from "./notes.ts";
+import { ProductWsRpcGroup } from "./productRpc.ts";
 import {
   EchoInput,
   EchoResult,
@@ -106,3 +107,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsNotesDeleteRpc,
   WsNotesSubscribeRpc,
 );
+
+/** Core supervision methods plus the complete Throughline product surface. */
+export const CompleteWsRpcGroup = WsRpcGroup.merge(ProductWsRpcGroup);

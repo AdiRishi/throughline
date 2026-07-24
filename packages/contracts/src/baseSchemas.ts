@@ -7,5 +7,8 @@ import * as Schema from "effect/Schema";
  */
 export const TrimmedNonEmptyString = Schema.Trim.check(Schema.isNonEmpty());
 
+export const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
+export const NonBlankString = Schema.String.check(Schema.isPattern(/\S/u));
 export const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+export const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
 export const Port = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
