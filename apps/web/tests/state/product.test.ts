@@ -1,11 +1,18 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 
-import { GitHubPrListStreamEvent } from "@app/contracts";
+import { ClusterId, GitHubPrListStreamEvent, ReadState, RepositoryPath } from "@app/contracts";
 
-import { applyPullRequestListEvent, INITIAL_PULL_REQUEST_LIST } from "../../src/state/product.ts";
+import {
+  applyOptimisticReadMark,
+  applyPullRequestListEvent,
+  INITIAL_PULL_REQUEST_LIST,
+} from "../../src/state/product.ts";
 
 const decodeEvent = Schema.decodeUnknownSync(Schema.toCodecJson(GitHubPrListStreamEvent));
+const decodeReadState = Schema.decodeUnknownSync(Schema.toCodecJson(ReadState));
+const decodeClusterId = Schema.decodeUnknownSync(ClusterId);
+const decodePath = Schema.decodeUnknownSync(RepositoryPath);
 
 const pullRequest = (number: number, title: string) => ({
   ref: { owner: "throughline", repo: "fixture", number },
@@ -50,5 +57,31 @@ describe("applyPullRequestListEvent", () => {
     expect(reconnected.ready).toBe(true);
     expect(reconnected.sequence).toBe(5);
     expect(reconnected.pullRequests.map((pr) => pr.title)).toEqual(["Current row"]);
+  });
+});
+
+describe("applyOptimisticReadMark", () => {
+  it("reflects one cluster-file acknowledgement immediately and can undo it", () => {
+    const state = decodeReadState({
+      journeyId: "journey-1",
+      readFiles: [{ clusterId: "cluster-1", path: "src/existing.ts" }],
+      displayMode: "inline",
+      updatedAt: "2026-07-25T00:00:00.000Z",
+    });
+    const input = {
+      journeyId: state.journeyId,
+      clusterId: decodeClusterId("cluster-2"),
+      path: decodePath("src/new.ts"),
+    };
+
+    const marked = applyOptimisticReadMark(state, input, true);
+    expect(marked.readFiles).toEqual([
+      { clusterId: "cluster-1", path: "src/existing.ts" },
+      { clusterId: "cluster-2", path: "src/new.ts" },
+    ]);
+
+    expect(applyOptimisticReadMark(marked, input, false).readFiles).toEqual([
+      { clusterId: "cluster-1", path: "src/existing.ts" },
+    ]);
   });
 });

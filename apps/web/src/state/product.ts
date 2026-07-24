@@ -7,6 +7,7 @@ import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { ConnectionSupervisor } from "@app/client-runtime/connection";
 import { request as rpcRequest, subscribe as rpcSubscribe } from "@app/client-runtime/rpc";
 import type {
+  ClusterId,
   GitHubPrListStreamEvent,
   HarnessSelection,
   HarnessStatus,
@@ -129,6 +130,19 @@ const harnessesAtom = Atom.make(
 ).pipe(Atom.withLabel("harness-statuses"));
 
 const refreshPullRequestsAtom = connectionRuntime.fn(() => rpcRequest("github.refreshPrs", {}));
+const refreshHarnessesAtom = connectionRuntime.fn((_input: void, get) =>
+  Effect.sync(() => get.refresh(harnessStatusResultAtom)),
+);
+const retryGitHubAtom = connectionRuntime.fn((_input: void, get) =>
+  rpcRequest("github.retry", {}).pipe(
+    Effect.tap(() =>
+      Effect.sync(() => {
+        get.refresh(viewerResultAtom);
+        get.refresh(pullRequestListResultAtom);
+      }),
+    ),
+  ),
+);
 const startIngestionAtom = connectionRuntime.fn((source: IngestionSource) =>
   rpcRequest("ingestion.start", { source }),
 );
@@ -208,16 +222,25 @@ const journeyDocumentFamily = Atom.family((key: string) => {
     ).pipe(Atom.withLabel(`journey:${key}`)),
   } as const;
 });
+const refreshJourneyDocumentAtom = connectionRuntime.fn((pr: PrRef, get) =>
+  Effect.sync(() => get.refresh(journeyDocumentFamily(rememberPr(pr)).result)),
+);
 
 const readStateFamily = Atom.family((journeyId: JourneyId) => {
-  const result = connectionRuntime.atom(
-    rpcSubscribe("readState.subscribe", { journeyId }).pipe(Stream.map((event) => event.state)),
+  const state = Atom.make<ReadState | null>(null);
+  const result = connectionRuntime.atom((get) =>
+    rpcSubscribe("readState.subscribe", { journeyId }).pipe(
+      Stream.map((event) => event.state),
+      Stream.tap((readState) => Effect.sync(() => get.set(state, readState))),
+    ),
   );
   return {
     result,
-    value: Atom.make((get): ReadState | null =>
-      Option.getOrNull(AsyncResult.value(get(result))),
-    ).pipe(Atom.withLabel(`read-state:${journeyId}`)),
+    state,
+    value: Atom.make((get): ReadState | null => {
+      get(result);
+      return get(state);
+    }).pipe(Atom.withLabel(`read-state:${journeyId}`)),
   } as const;
 });
 
@@ -254,19 +277,65 @@ const treeFamily = Atom.family((journeyId: JourneyId) =>
   connectionRuntime.atom(requestOnEachSession(() => rpcRequest("journey.tree", { journeyId }))),
 );
 
-const markReadAtom = connectionRuntime.fn(
-  (input: {
-    readonly journeyId: JourneyId;
-    readonly clusterId: ReadState["readFiles"][number]["clusterId"];
-    readonly path: RepositoryPath;
-  }) => rpcRequest("readState.markFile", input),
+export interface ReadMarkInput {
+  readonly journeyId: JourneyId;
+  readonly clusterId: ClusterId;
+  readonly path: RepositoryPath;
+}
+
+const sameReadMark = (mark: ReadState["readFiles"][number], input: ReadMarkInput): boolean =>
+  mark.clusterId === input.clusterId && mark.path === input.path;
+
+export const applyOptimisticReadMark = (
+  state: ReadState,
+  input: ReadMarkInput,
+  read: boolean,
+): ReadState => {
+  const withoutMark = state.readFiles.filter((mark) => !sameReadMark(mark, input));
+  return {
+    ...state,
+    readFiles: read
+      ? [...withoutMark, { clusterId: input.clusterId, path: input.path }]
+      : withoutMark,
+  };
+};
+
+const mutateReadState = (input: ReadMarkInput, read: boolean, get: Atom.FnContext) => {
+  const family = readStateFamily(input.journeyId);
+  const previous = get(family.state);
+  const optimistic = previous === null ? null : applyOptimisticReadMark(previous, input, read);
+
+  if (optimistic !== null) {
+    get.set(family.state, optimistic);
+  }
+
+  const request = read
+    ? rpcRequest("readState.markFile", input)
+    : rpcRequest("readState.unmarkFile", input);
+
+  return request.pipe(
+    Effect.tap((confirmed) =>
+      Effect.sync(() => {
+        if (optimistic === null || get(family.state) === optimistic) {
+          get.set(family.state, confirmed);
+        }
+      }),
+    ),
+    Effect.tapError(() =>
+      Effect.sync(() => {
+        if (optimistic !== null && get(family.state) === optimistic) {
+          get.set(family.state, previous);
+        }
+      }),
+    ),
+  );
+};
+
+const markReadAtom = connectionRuntime.fn((input: ReadMarkInput, get) =>
+  mutateReadState(input, true, get),
 );
-const unmarkReadAtom = connectionRuntime.fn(
-  (input: {
-    readonly journeyId: JourneyId;
-    readonly clusterId: ReadState["readFiles"][number]["clusterId"];
-    readonly path: RepositoryPath;
-  }) => rpcRequest("readState.unmarkFile", input),
+const unmarkReadAtom = connectionRuntime.fn((input: ReadMarkInput, get) =>
+  mutateReadState(input, false, get),
 );
 const setDisplayModeAtom = connectionRuntime.fn(
   (input: { readonly journeyId: JourneyId; readonly displayMode: ReadState["displayMode"] }) =>
@@ -284,7 +353,9 @@ export const productAtoms = {
   settingsSyncResult: settingsSyncResultAtom,
   harnesses: harnessesAtom,
   harnessStatusResult: harnessStatusResultAtom,
+  refreshHarnesses: refreshHarnessesAtom,
   refreshPullRequests: refreshPullRequestsAtom,
+  retryGitHub: retryGitHubAtom,
   startIngestion: startIngestionAtom,
   cancelIngestion: cancelIngestionAtom,
   setReviewed: setReviewedAtom,
@@ -293,6 +364,7 @@ export const productAtoms = {
   setHarness: setHarnessAtom,
   ingestionJob: (pr: PrRef) => ingestionJobFamily(rememberPr(pr)),
   journeyDocument: (pr: PrRef) => journeyDocumentFamily(rememberPr(pr)),
+  refreshJourneyDocument: refreshJourneyDocumentAtom,
   readState: (journeyId: JourneyId) => readStateFamily(journeyId),
   filePatch: (input: JourneyFileKey) => filePatchFamily(rememberFile(input)),
   fileContent: (input: JourneyFileKey) => fileContentFamily(rememberFile(input)),
