@@ -28,10 +28,38 @@ import {
 
 import * as GhCli from "./GhCli.ts";
 
-const GRAPHQL_PULL_REQUESTS_QUERY = `query ThroughlinePullRequests {
+const GRAPHQL_PAGE_SIZE = 100;
+const GRAPHQL_CONNECTION_BATCH_SIZE = 20;
+
+const GRAPHQL_PULL_REQUEST_PAGE_FRAGMENT = `fragment ThroughlinePullRequestPage on PullRequestConnection {
+  nodes {
+    number
+    title
+    author {
+      login
+      avatarUrl
+    }
+    url
+    state
+    baseRefName
+    headRefOid
+    updatedAt
+    mergedAt
+    changedFiles
+    additions
+    deletions
+  }
+  pageInfo {
+    hasNextPage
+    endCursor
+  }
+}`;
+
+const GRAPHQL_PULL_REQUESTS_QUERY = `query ThroughlinePullRequests($repositoryCursor: String) {
   viewer {
     repositories(
-      first: 100
+      first: ${GRAPHQL_PAGE_SIZE}
+      after: $repositoryCursor
       affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]
       orderBy: { field: PUSHED_AT, direction: DESC }
     ) {
@@ -41,55 +69,28 @@ const GRAPHQL_PULL_REQUESTS_QUERY = `query ThroughlinePullRequests {
           login
         }
         openPullRequests: pullRequests(
-          first: 100
+          first: ${GRAPHQL_PAGE_SIZE}
           states: OPEN
           orderBy: { field: UPDATED_AT, direction: DESC }
         ) {
-          nodes {
-            number
-            title
-            author {
-              login
-              avatarUrl
-            }
-            url
-            state
-            baseRefName
-            headRefOid
-            updatedAt
-            mergedAt
-            changedFiles
-            additions
-            deletions
-          }
+          ...ThroughlinePullRequestPage
         }
         mergedPullRequests: pullRequests(
-          first: 100
+          first: ${GRAPHQL_PAGE_SIZE}
           states: MERGED
           orderBy: { field: UPDATED_AT, direction: DESC }
         ) {
-          nodes {
-            number
-            title
-            author {
-              login
-              avatarUrl
-            }
-            url
-            state
-            baseRefName
-            headRefOid
-            updatedAt
-            mergedAt
-            changedFiles
-            additions
-            deletions
-          }
+          ...ThroughlinePullRequestPage
         }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
       }
     }
   }
-}`;
+}
+${GRAPHQL_PULL_REQUEST_PAGE_FRAGMENT}`;
 
 const RawPullRequestAuthor = Schema.Struct({
   login: Schema.String,
@@ -111,15 +112,26 @@ const RawPullRequest = Schema.Struct({
   deletions: Schema.Number,
 });
 
+const RawPageInfo = Schema.Struct({
+  hasNextPage: Schema.Boolean,
+  endCursor: Schema.NullOr(Schema.String),
+});
+
+const RawPullRequestConnection = Schema.Struct({
+  nodes: Schema.Array(Schema.NullOr(RawPullRequest)),
+  pageInfo: RawPageInfo,
+});
+
 const RawRepository = Schema.Struct({
   name: Schema.String,
   owner: Schema.Struct({ login: Schema.String }),
-  openPullRequests: Schema.Struct({
-    nodes: Schema.Array(Schema.NullOr(RawPullRequest)),
-  }),
-  mergedPullRequests: Schema.Struct({
-    nodes: Schema.Array(Schema.NullOr(RawPullRequest)),
-  }),
+  openPullRequests: RawPullRequestConnection,
+  mergedPullRequests: RawPullRequestConnection,
+});
+
+const RawRepositoryConnection = Schema.Struct({
+  nodes: Schema.Array(Schema.NullOr(RawRepository)),
+  pageInfo: RawPageInfo,
 });
 
 const RawGraphQlError = Schema.Struct({
@@ -133,12 +145,26 @@ const RawRepositoriesResponse = Schema.Struct({
       Schema.Struct({
         viewer: Schema.NullOr(
           Schema.Struct({
-            repositories: Schema.Struct({
-              nodes: Schema.Array(Schema.NullOr(RawRepository)),
-            }),
+            repositories: RawRepositoryConnection,
           }),
         ),
       }),
+    ),
+  ),
+  errors: Schema.optionalKey(Schema.Array(RawGraphQlError)),
+});
+
+const RawPullRequestPageResponse = Schema.Struct({
+  data: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Record(
+        Schema.String,
+        Schema.NullOr(
+          Schema.Struct({
+            page: RawPullRequestConnection,
+          }),
+        ),
+      ),
     ),
   ),
   errors: Schema.optionalKey(Schema.Array(RawGraphQlError)),
@@ -185,6 +211,9 @@ const RepositoryIdentity = Schema.Struct({
 
 const decodeRepositoriesResponse = Schema.decodeUnknownEffect(
   Schema.fromJsonString(RawRepositoriesResponse),
+);
+const decodePullRequestPageResponse = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(RawPullRequestPageResponse),
 );
 const decodeViewerResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(RawViewerResponse));
 const decodePrDetailResponse = Schema.decodeUnknownEffect(
@@ -421,8 +450,104 @@ const flattenOpen = (repositories: ReadonlyArray<GitHubRepository>) =>
 const flattenMerged = (repositories: ReadonlyArray<GitHubRepository>) =>
   repositories.flatMap((repository) => repository.recentlyMergedPullRequests);
 
+type RawPullRequestValue = typeof RawPullRequest.Type;
+type RawPullRequestConnectionValue = typeof RawPullRequestConnection.Type;
+
+interface RawRepositoryAccumulator {
+  readonly name: string;
+  readonly owner: { readonly login: string };
+  readonly openPullRequests: Array<RawPullRequestValue>;
+  readonly mergedPullRequests: Array<RawPullRequestValue>;
+}
+
+interface PullRequestPageRequest {
+  readonly repositoryKey: string;
+  readonly owner: string;
+  readonly name: string;
+  readonly kind: "open" | "merged";
+  readonly cursor: string;
+}
+
+const repositoryKey = (owner: string, name: string): string => JSON.stringify([owner, name]);
+
+const appendUniquePullRequests = (
+  target: Array<RawPullRequestValue>,
+  nodes: ReadonlyArray<RawPullRequestValue | null>,
+): void => {
+  const numbers = new Set(target.map((pullRequest) => pullRequest.number));
+  for (const pullRequest of nodes) {
+    if (pullRequest === null || numbers.has(pullRequest.number)) continue;
+    numbers.add(pullRequest.number);
+    target.push(pullRequest);
+  }
+};
+
+const mergedPageCanContainRecentPullRequests = (
+  connection: RawPullRequestConnectionValue,
+  mergedCutoff: DateTime.Utc,
+): boolean => {
+  const lastPullRequest = connection.nodes.findLast((pullRequest) => pullRequest !== null);
+  return (
+    lastPullRequest === undefined ||
+    DateTime.isGreaterThanOrEqualTo(lastPullRequest.updatedAt, mergedCutoff)
+  );
+};
+
+const graphQlArgs = (
+  query: string,
+  variables: Readonly<Record<string, string>> = {},
+): ReadonlyArray<string> => [
+  "api",
+  "graphql",
+  "--include",
+  "--cache",
+  "60s",
+  "-f",
+  `query=${query}`,
+  ...Object.entries(variables).flatMap(([name, value]) => ["-f", `${name}=${value}`]),
+];
+
+const pullRequestPagesQuery = (requests: ReadonlyArray<PullRequestPageRequest>): string => {
+  const variables = requests
+    .flatMap((_, index) => [
+      `$owner${index}: String!`,
+      `$name${index}: String!`,
+      `$cursor${index}: String!`,
+    ])
+    .join(", ");
+  const pages = requests
+    .map(
+      (request, index) => `page${index}: repository(owner: $owner${index}, name: $name${index}) {
+    page: pullRequests(
+      first: ${GRAPHQL_PAGE_SIZE}
+      after: $cursor${index}
+      states: ${request.kind === "open" ? "OPEN" : "MERGED"}
+      orderBy: { field: UPDATED_AT, direction: DESC }
+    ) {
+      ...ThroughlinePullRequestPage
+    }
+  }`,
+    )
+    .join("\n");
+  return `query ThroughlinePullRequestPages(${variables}) {
+  ${pages}
+}
+${GRAPHQL_PULL_REQUEST_PAGE_FRAGMENT}`;
+};
+
+const pullRequestPageVariables = (
+  requests: ReadonlyArray<PullRequestPageRequest>,
+): Readonly<Record<string, string>> =>
+  Object.fromEntries(
+    requests.flatMap((request, index) => [
+      [`owner${index}`, request.owner],
+      [`name${index}`, request.name],
+      [`cursor${index}`, request.cursor],
+    ]),
+  );
+
 const makeRepository = (
-  raw: typeof RawRepository.Type,
+  raw: RawRepositoryAccumulator,
   mergedCutoff: DateTime.Utc,
 ): Effect.Effect<GitHubRepository, GitHubReadError> =>
   Effect.gen(function* () {
@@ -455,14 +580,8 @@ const makeRepository = (
         journey: null,
       }).pipe(Effect.mapError((error) => schemaFailure("Invalid GitHub pull request", error)));
 
-    const openPullRequests = yield* Effect.forEach(
-      raw.openPullRequests.nodes.filter((pullRequest) => pullRequest !== null),
-      mapPullRequest,
-    );
-    const mergedPullRequests = yield* Effect.forEach(
-      raw.mergedPullRequests.nodes.filter((pullRequest) => pullRequest !== null),
-      mapPullRequest,
-    );
+    const openPullRequests = yield* Effect.forEach(raw.openPullRequests, mapPullRequest);
+    const mergedPullRequests = yield* Effect.forEach(raw.mergedPullRequests, mapPullRequest);
 
     return {
       ...identity,
@@ -601,6 +720,40 @@ export const make = (options: GitHubOptions = {}) =>
       return attempt(0);
     };
 
+    const ensureGraphQlSuccess = Effect.fn("GitHub.ensureGraphQlSuccess")(function* (
+      response: HttpResponse,
+      errors: ReadonlyArray<typeof RawGraphQlError.Type>,
+      context: string,
+    ) {
+      if (errors.length === 0) return;
+      if (isGraphQlRateLimit(errors)) {
+        return yield* parkForRateLimit(response);
+      }
+      return yield* makeReadError(
+        "transport",
+        `${context}: ${errors.map((error) => error.message).join("; ")}`,
+      );
+    });
+
+    const continuationCursor = Effect.fn("GitHub.continuationCursor")(function* (
+      pageInfo: typeof RawPageInfo.Type,
+      context: string,
+      previousCursor: string | null,
+    ) {
+      if (!pageInfo.hasNextPage) return null;
+      if (
+        pageInfo.endCursor === null ||
+        pageInfo.endCursor.length === 0 ||
+        pageInfo.endCursor === previousCursor
+      ) {
+        return yield* makeReadError(
+          "transport",
+          `${context} reported another page without an advancing cursor.`,
+        );
+      }
+      return pageInfo.endCursor;
+    });
+
     const fetchIdentity = Effect.gen(function* () {
       const authStatus = yield* gh
         .run({
@@ -663,41 +816,156 @@ export const make = (options: GitHubOptions = {}) =>
 
     const fetchRepositories = Effect.gen(function* () {
       yield* requireAuthenticated;
-      const response = yield* runApi([
-        "api",
-        "graphql",
-        "--include",
-        "--cache",
-        "60s",
-        "-f",
-        `query=${GRAPHQL_PULL_REQUESTS_QUERY}`,
-      ]);
-      const raw = yield* decodeRepositoriesResponse(response.body).pipe(
-        Effect.mapError((error) => schemaFailure("Invalid GitHub repositories response", error)),
-      );
-      const errors = raw.errors ?? [];
-      if (errors.length > 0) {
-        if (isGraphQlRateLimit(errors)) {
-          return yield* parkForRateLimit(response);
-        }
-        return yield* makeReadError(
-          "transport",
-          `GitHub GraphQL request failed: ${errors.map((error) => error.message).join("; ")}`,
-        );
-      }
-      const repositories = raw.data?.viewer?.repositories.nodes;
-      if (repositories === undefined) {
-        return yield* makeReadError(
-          "transport",
-          "GitHub GraphQL response did not contain the viewer's repositories.",
-        );
-      }
-
       const now = yield* DateTime.now;
       const mergedCutoff = DateTime.subtract(now, { days: 7 });
-      return yield* Effect.forEach(
-        repositories.filter((repository) => repository !== null),
-        (repository) => makeRepository(repository, mergedCutoff),
+      const repositories = new Map<string, RawRepositoryAccumulator>();
+      const pending: Array<PullRequestPageRequest> = [];
+      let repositoryCursor: string | null = null;
+
+      while (true) {
+        const response: HttpResponse = yield* runApi(
+          graphQlArgs(
+            GRAPHQL_PULL_REQUESTS_QUERY,
+            repositoryCursor === null ? {} : { repositoryCursor },
+          ),
+        );
+        const raw: typeof RawRepositoriesResponse.Type = yield* decodeRepositoriesResponse(
+          response.body,
+        ).pipe(
+          Effect.mapError((error) => schemaFailure("Invalid GitHub repositories response", error)),
+        );
+        yield* ensureGraphQlSuccess(response, raw.errors ?? [], "GitHub repositories query failed");
+        const repositoryPage: typeof RawRepositoryConnection.Type | undefined =
+          raw.data?.viewer?.repositories;
+        if (repositoryPage === undefined) {
+          return yield* makeReadError(
+            "transport",
+            "GitHub GraphQL response did not contain the viewer's repositories.",
+          );
+        }
+
+        for (const rawRepository of repositoryPage.nodes) {
+          if (rawRepository === null) continue;
+          const key = repositoryKey(rawRepository.owner.login, rawRepository.name);
+          const repository = repositories.get(key) ?? {
+            name: rawRepository.name,
+            owner: rawRepository.owner,
+            openPullRequests: [],
+            mergedPullRequests: [],
+          };
+          appendUniquePullRequests(
+            repository.openPullRequests,
+            rawRepository.openPullRequests.nodes,
+          );
+          appendUniquePullRequests(
+            repository.mergedPullRequests,
+            rawRepository.mergedPullRequests.nodes,
+          );
+          repositories.set(key, repository);
+
+          const openCursor = yield* continuationCursor(
+            rawRepository.openPullRequests.pageInfo,
+            `${rawRepository.owner.login}/${rawRepository.name} open pull requests`,
+            null,
+          );
+          if (openCursor !== null) {
+            pending.push({
+              repositoryKey: key,
+              owner: rawRepository.owner.login,
+              name: rawRepository.name,
+              kind: "open",
+              cursor: openCursor,
+            });
+          }
+
+          if (
+            rawRepository.mergedPullRequests.pageInfo.hasNextPage &&
+            mergedPageCanContainRecentPullRequests(rawRepository.mergedPullRequests, mergedCutoff)
+          ) {
+            const mergedCursor = yield* continuationCursor(
+              rawRepository.mergedPullRequests.pageInfo,
+              `${rawRepository.owner.login}/${rawRepository.name} merged pull requests`,
+              null,
+            );
+            if (mergedCursor !== null) {
+              pending.push({
+                repositoryKey: key,
+                owner: rawRepository.owner.login,
+                name: rawRepository.name,
+                kind: "merged",
+                cursor: mergedCursor,
+              });
+            }
+          }
+        }
+
+        const nextRepositoryCursor: string | null = yield* continuationCursor(
+          repositoryPage.pageInfo,
+          "GitHub repositories",
+          repositoryCursor,
+        );
+        if (nextRepositoryCursor === null) break;
+        repositoryCursor = nextRepositoryCursor;
+      }
+
+      while (pending.length > 0) {
+        const requests = pending.splice(0, GRAPHQL_CONNECTION_BATCH_SIZE);
+        const response = yield* runApi(
+          graphQlArgs(pullRequestPagesQuery(requests), pullRequestPageVariables(requests)),
+        );
+        const raw = yield* decodePullRequestPageResponse(response.body).pipe(
+          Effect.mapError((error) =>
+            schemaFailure("Invalid GitHub pull-request page response", error),
+          ),
+        );
+        yield* ensureGraphQlSuccess(
+          response,
+          raw.errors ?? [],
+          "GitHub pull-request pagination query failed",
+        );
+        if (raw.data === null || raw.data === undefined) {
+          return yield* makeReadError(
+            "transport",
+            "GitHub GraphQL response did not contain paginated pull requests.",
+          );
+        }
+
+        for (const [index, request] of requests.entries()) {
+          const page = raw.data[`page${index}`]?.page;
+          if (page === undefined) {
+            return yield* makeReadError(
+              "transport",
+              `GitHub GraphQL response omitted ${request.owner}/${request.name} ${request.kind} pull requests.`,
+            );
+          }
+          const repository = repositories.get(request.repositoryKey);
+          if (repository === undefined) {
+            return yield* Effect.die(
+              `Missing repository accumulator for ${request.owner}/${request.name}.`,
+            );
+          }
+          appendUniquePullRequests(
+            request.kind === "open" ? repository.openPullRequests : repository.mergedPullRequests,
+            page.nodes,
+          );
+
+          if (
+            request.kind === "merged" &&
+            !mergedPageCanContainRecentPullRequests(page, mergedCutoff)
+          ) {
+            continue;
+          }
+          const nextCursor = yield* continuationCursor(
+            page.pageInfo,
+            `${request.owner}/${request.name} ${request.kind} pull requests`,
+            request.cursor,
+          );
+          if (nextCursor !== null) pending.push({ ...request, cursor: nextCursor });
+        }
+      }
+
+      return yield* Effect.forEach(repositories.values(), (repository) =>
+        makeRepository(repository, mergedCutoff),
       );
     });
 

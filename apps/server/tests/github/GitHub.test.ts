@@ -60,32 +60,91 @@ const rawPullRequest = (number: number, overrides: Readonly<Record<string, unkno
   ...overrides,
 });
 
+const pageInfo = (endCursor: string | null = null) => ({
+  hasNextPage: endCursor !== null,
+  endCursor,
+});
+
+const rawRepository = (
+  name: string,
+  options: {
+    readonly owner?: string;
+    readonly open?: ReadonlyArray<unknown>;
+    readonly openCursor?: string | null;
+    readonly merged?: ReadonlyArray<unknown>;
+    readonly mergedCursor?: string | null;
+  } = {},
+) => ({
+  name,
+  owner: { login: options.owner ?? "acme" },
+  openPullRequests: {
+    nodes: options.open ?? [],
+    pageInfo: pageInfo(options.openCursor),
+  },
+  mergedPullRequests: {
+    nodes: options.merged ?? [],
+    pageInfo: pageInfo(options.mergedCursor),
+  },
+});
+
+const repositoryPageResult = (
+  repositories: ReadonlyArray<unknown>,
+  repositoryCursor: string | null = null,
+) =>
+  included(200, {
+    data: {
+      viewer: {
+        repositories: {
+          nodes: repositories,
+          pageInfo: pageInfo(repositoryCursor),
+        },
+      },
+    },
+  });
+
 const repositoriesResult = (
   options: {
     readonly open?: ReadonlyArray<unknown>;
     readonly merged?: ReadonlyArray<unknown>;
   } = {},
 ) =>
+  repositoryPageResult([
+    rawRepository("rocket", {
+      open: options.open ?? [rawPullRequest(17)],
+      merged: options.merged ?? [],
+    }),
+  ]);
+
+const pullRequestPagesResult = (
+  pages: ReadonlyArray<{
+    readonly nodes: ReadonlyArray<unknown>;
+    readonly cursor?: string | null;
+  }>,
+) =>
   included(200, {
-    data: {
-      viewer: {
-        repositories: {
-          nodes: [
-            {
-              name: "rocket",
-              owner: { login: "acme" },
-              openPullRequests: {
-                nodes: options.open ?? [rawPullRequest(17)],
-              },
-              mergedPullRequests: {
-                nodes: options.merged ?? [],
-              },
-            },
-          ],
+    data: Object.fromEntries(
+      pages.map((page, index) => [
+        `page${index}`,
+        {
+          page: {
+            nodes: page.nodes,
+            pageInfo: pageInfo(page.cursor),
+          },
         },
-      },
-    },
+      ]),
+    ),
   });
+
+const graphQlField = (args: ReadonlyArray<string>, name: string): string | undefined => {
+  for (let index = 0; index < args.length - 1; index += 1) {
+    if (args[index] !== "-f") continue;
+    const field = args[index + 1]!;
+    if (field.startsWith(`${name}=`)) {
+      return field.slice(name.length + 1);
+    }
+  }
+  return undefined;
+};
 
 const detailResult = (number: number) =>
   included(200, {
@@ -513,6 +572,200 @@ describe("GitHub", () => {
         repositories[0]?.recentlyMergedPullRequests.map((pullRequest) => pullRequest.ref.number),
         [18],
       );
+    }),
+  );
+
+  it.effect("paginates beyond one hundred viewer repositories", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const firstPage = Array.from({ length: 100 }, (_, index) =>
+        rawRepository(`repo-${index + 1}`, {
+          open: [rawPullRequest(index + 1)],
+        }),
+      );
+      let graphqlCalls = 0;
+      const service = yield* makeService(({ args }) => {
+        if (isAuthStatus(args)) {
+          return Effect.succeed({ exitCode: 0, stdout: "", stderr: "" });
+        }
+        if (isViewer(args)) {
+          return Effect.succeed(viewerResult);
+        }
+        if (isGraphQl(args)) {
+          graphqlCalls += 1;
+          const cursor = graphQlField(args, "repositoryCursor");
+          if (cursor === undefined) {
+            return Effect.succeed(repositoryPageResult(firstPage, "repository-page-2"));
+          }
+          if (cursor === "repository-page-2") {
+            return Effect.succeed(
+              repositoryPageResult([
+                rawRepository("repo-101", {
+                  open: [rawPullRequest(101)],
+                }),
+              ]),
+            );
+          }
+        }
+        return Effect.die(`Unexpected gh invocation: ${args.join(" ")}`);
+      });
+
+      const repositories = yield* service.repositories();
+
+      assert.strictEqual(repositories.length, 101);
+      assert.strictEqual(repositories[100]?.name, "repo-101");
+      assert.strictEqual(repositories[100]?.openPullRequests[0]?.ref.number, 101);
+      assert.strictEqual(graphqlCalls, 2);
+    }),
+  );
+
+  it.effect("batches overflow PR connections and follows every advancing cursor", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const rocketOpen = Array.from({ length: 100 }, (_, index) => rawPullRequest(index + 1));
+      const rocketMerged = Array.from({ length: 100 }, (_, index) =>
+        rawPullRequest(index + 1_001, {
+          state: "MERGED",
+          mergedAt: "2026-07-23T00:00:00.000Z",
+        }),
+      );
+      const satelliteOpen = Array.from({ length: 100 }, (_, index) =>
+        rawPullRequest(index + 2_001),
+      );
+      let graphqlCalls = 0;
+      let overflowCalls = 0;
+      const service = yield* makeService(({ args }) => {
+        if (isAuthStatus(args)) {
+          return Effect.succeed({ exitCode: 0, stdout: "", stderr: "" });
+        }
+        if (isViewer(args)) {
+          return Effect.succeed(viewerResult);
+        }
+        if (isGraphQl(args)) {
+          graphqlCalls += 1;
+          const query = graphQlField(args, "query") ?? "";
+          if (!query.includes("ThroughlinePullRequestPages")) {
+            return Effect.succeed(
+              repositoryPageResult([
+                rawRepository("rocket", {
+                  open: rocketOpen,
+                  openCursor: "rocket-open-2",
+                  merged: rocketMerged,
+                  mergedCursor: "rocket-merged-2",
+                }),
+                rawRepository("satellite", {
+                  open: satelliteOpen,
+                  openCursor: "satellite-open-2",
+                  merged: [
+                    rawPullRequest(3_001, {
+                      state: "MERGED",
+                      mergedAt: "2026-07-01T00:00:00.000Z",
+                      updatedAt: "2026-07-01T00:00:00.000Z",
+                    }),
+                  ],
+                  mergedCursor: "satellite-merged-2",
+                }),
+              ]),
+            );
+          }
+
+          overflowCalls += 1;
+          if (overflowCalls === 1) {
+            assert.strictEqual(graphQlField(args, "name0"), "rocket");
+            assert.strictEqual(graphQlField(args, "cursor0"), "rocket-open-2");
+            assert.strictEqual(graphQlField(args, "name1"), "rocket");
+            assert.strictEqual(graphQlField(args, "cursor1"), "rocket-merged-2");
+            assert.strictEqual(graphQlField(args, "name2"), "satellite");
+            assert.strictEqual(graphQlField(args, "cursor2"), "satellite-open-2");
+            assert.isTrue(query.includes("states: OPEN"));
+            assert.isTrue(query.includes("states: MERGED"));
+            return Effect.succeed(
+              pullRequestPagesResult([
+                {
+                  nodes: [rawPullRequest(101)],
+                  cursor: "rocket-open-3",
+                },
+                {
+                  nodes: [
+                    rawPullRequest(1_101, {
+                      state: "MERGED",
+                      mergedAt: "2026-07-24T00:00:00.000Z",
+                    }),
+                  ],
+                },
+                {
+                  nodes: [rawPullRequest(2_101)],
+                },
+              ]),
+            );
+          }
+
+          assert.strictEqual(graphQlField(args, "name0"), "rocket");
+          assert.strictEqual(graphQlField(args, "cursor0"), "rocket-open-3");
+          assert.strictEqual(graphQlField(args, "name1"), undefined);
+          return Effect.succeed(
+            pullRequestPagesResult([
+              {
+                nodes: [rawPullRequest(101), rawPullRequest(102)],
+              },
+            ]),
+          );
+        }
+        return Effect.die(`Unexpected gh invocation: ${args.join(" ")}`);
+      });
+
+      const repositories = yield* service.repositories();
+      const rocket = repositories.find((repository) => repository.name === "rocket");
+      const satellite = repositories.find((repository) => repository.name === "satellite");
+
+      assert.strictEqual(rocket?.openPullRequests.length, 102);
+      assert.deepStrictEqual(
+        rocket?.openPullRequests.slice(-2).map((pullRequest) => pullRequest.ref.number),
+        [101, 102],
+      );
+      assert.strictEqual(rocket?.recentlyMergedPullRequests.length, 101);
+      assert.strictEqual(satellite?.openPullRequests.length, 101);
+      assert.strictEqual(satellite?.recentlyMergedPullRequests.length, 0);
+      assert.strictEqual(overflowCalls, 2);
+      assert.strictEqual(graphqlCalls, 3);
+    }),
+  );
+
+  it.effect("fails visibly when a paginated connection does not advance its cursor", () =>
+    Effect.gen(function* () {
+      let graphqlCalls = 0;
+      const service = yield* makeService(({ args }) => {
+        if (isAuthStatus(args)) {
+          return Effect.succeed({ exitCode: 0, stdout: "", stderr: "" });
+        }
+        if (isViewer(args)) {
+          return Effect.succeed(viewerResult);
+        }
+        if (isGraphQl(args)) {
+          graphqlCalls += 1;
+          return Effect.succeed(
+            included(200, {
+              data: {
+                viewer: {
+                  repositories: {
+                    nodes: [],
+                    pageInfo: {
+                      hasNextPage: true,
+                      endCursor: null,
+                    },
+                  },
+                },
+              },
+            }),
+          );
+        }
+        return Effect.die(`Unexpected gh invocation: ${args.join(" ")}`);
+      });
+
+      const result = yield* service.repositories().pipe(Effect.exit);
+
+      assert.isTrue(failureHasTag(result, "GitHubReadError"));
+      assert.strictEqual(graphqlCalls, 1);
     }),
   );
 
