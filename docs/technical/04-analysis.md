@@ -14,11 +14,17 @@ AnalysisHarness {
 }
 
 AnalysisTask {
-  worktree,                                // absolute path; the agent's whole world
-  prompt,                                  // instructions + relative paths to run inputs
+  world,                                   // absolute path; repository/ + inputs/, the agent's whole world
+  prompt,                                  // instructions + paths relative to world
   outputSchema,                            // JSON Schema the result must satisfy
+  continuation?,                           // opaque adapter-owned token from a prior result
   onEvent,                                 // structured progress: started/completed/failed + activity
                                            // (current action, file, monotonic counters) from harness events
+}
+
+AnalysisResult {
+  value,
+  continuation,                            // opaque; pass back for same-thread repair turns
 }
 ```
 
@@ -34,15 +40,33 @@ That is the entire interface: detect, run-with-schema, cancel-via-scope. Everyth
 
 Harness selection: the app picks the first authenticated harness (order: Codex, Claude) unless the reviewer set one explicitly in **settings** — a small surface listing every detected harness with its install/auth state and one selection (T3 Code's provider settings page is the shape reference). The choice used is always recorded in the journey's `provenance`; changing it affects future analyses only — to apply it to an existing journey, rerun ingestion. No harness installed/authenticated is a door-level parked state with setup instructions, like `gh`.
 
+## The read-only run world
+
+Each run owns one world directory with two siblings:
+
+```
+world/
+  repository/                  # git worktree pinned to headSha
+  inputs/
+    diff/full.patch
+    diff/by-file/
+    hunks.json
+    files.json
+```
+
+The harness working directory is `world/`, and sandbox/allowlist enforcement
+permits reads only within it. Transcripts and server-authored fallback logs live
+beside `world/` in the run directory and are never exposed to the agent.
+
 ## Run inputs: the diff on disk, not in the prompt
 
-A 40,000-line diff does not travel in a prompt. Ingestion materializes run inputs into the run directory ([03](./03-github.md)) and the worktree's agent instructions point at them by path:
+A 40,000-line diff does not travel in a prompt. Ingestion materializes run inputs under `world/inputs/` ([03](./03-github.md)) and the agent instructions point at them by relative path:
 
-- `diff/full.patch` and `diff/by-file/` — the pinned diff, whole and per file
-- `hunks.json` — the seed-hunk index: every hunk id with its file and line ranges (or `fileKind`)
-- `files.json` — changed files with change kinds and rename mapping
+- `inputs/diff/full.patch` and `inputs/diff/by-file/` — the pinned diff, whole and per file
+- `inputs/hunks.json` — the seed-hunk index: every hunk id with its file and line ranges (or `fileKind`)
+- `inputs/files.json` — changed files with change kinds and rename mapping
 
-The agent reads what it needs the way agents are good at it — navigating files in a worktree, diff and surrounding codebase alike. Prompt size stays flat no matter how large the PR is.
+The agent reads what it needs the way agents are good at it — navigating `repository/`, the diff, and the surrounding codebase alike. Prompt size stays flat no matter how large the PR is.
 
 ## The staged pipeline
 
@@ -57,7 +81,7 @@ Analysis is a sequence of structured-output runs, each validated before the next
 Per the vision, analysis has no error terminal state. Each stage enforces that with a ladder of rungs:
 
 1. **Validate** — the pure validators return precise, machine-generated violation lists ("h17 unassigned", "split of h4 leaves lines 210–214 uncovered", "link tl:symbol/… does not resolve").
-2. **Repair loop** — violations go back to the same thread (both SDKs resume threads) as a correction turn, up to 2 rounds. Most failures are near-misses; precise feedback fixes them cheaply.
+2. **Repair loop** — violations go back with the previous result's opaque `continuation`, so each adapter resumes the same thread, up to 2 rounds. Most failures are near-misses; precise feedback fixes them cheaply. Continuations are process-local and need not survive a server restart because v1 jobs do not resume across restarts.
 3. **Regenerate (stage 2 only)** — narration that still fails validation after repair is discarded and rerun fresh, once. Narration runs are per-cluster and cheap, and a clean second attempt beats deterministically mutilating prose.
 4. **Deterministic completion** — at the floor, the pipeline finishes the artifact itself, honestly: unassigned hunks land in a synthesized final cluster titled for what it is ("Unplaced changes", weight Supporting, narrative saying exactly how it came to exist); invalid splits collapse back to their seed hunk; unresolvable links downgrade to plain text; an invalid hint is dropped (hints are optional aids; coverage is not). Every fallback is logged in the run directory.
 
@@ -86,14 +110,16 @@ resolving → cloning → diffing → analyzing(stage, detail) → validating �
 
 Added to `packages/contracts` (shapes per [02](./02-domain-model.md)):
 
-| RPC                                                                                       | Kind                                                                                                                                                       |
-| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `github.viewer`, `github.prs`                                                             | unary (cached; `github.prs` also as a snapshot+live stream for the welcome screen, server-enriched with each PR's journey state — exists, progress, stale) |
-| `ingestion.start`, `ingestion.cancel`                                                     | unary (door rejections are `ingestion.start`'s only errors)                                                                                                |
-| `ingestion.subscribe`                                                                     | stream                                                                                                                                                     |
-| `journey.get`, `journey.filePatch`, `journey.fileContent`, `journey.tree`                 | unary (immutable per journey — cacheable forever client-side)                                                                                              |
-| `readState.get`, `readState.markFile`, `readState.unmarkFile`, `readState.setDisplayMode` | unary                                                                                                                                                      |
-| `readState.subscribe`                                                                     | stream (multi-window consistency for free)                                                                                                                 |
-| `prState.reviewed`, `prState.hide`, `prState.dismissMerged`                               | unary                                                                                                                                                      |
-| `harness.status`                                                                          | unary (settings + welcome-screen setup surfaces)                                                                                                           |
-| `settings.get`, `settings.update`                                                         | unary (harness selection)                                                                                                                                  |
+| RPC                                                                                       | Kind                                                                                                                    |
+| ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `github.viewer`                                                                           | unary (cached identity/status)                                                                                          |
+| `github.prs`                                                                              | snapshot+live stream, server-enriched with each PR's journey state — exists, progress, stale                            |
+| `github.refreshPrs`                                                                       | unary trigger used on focus and explicit refresh; respects cache minimums and global parking                            |
+| `ingestion.start`, `ingestion.cancel`                                                     | unary (door rejections are `ingestion.start`'s only errors)                                                             |
+| `ingestion.subscribe`                                                                     | stream                                                                                                                  |
+| `journey.get`, `journey.filePatch`, `journey.fileContent`, `journey.tree`                 | unary (immutable per journey — cacheable forever client-side); file content is a discriminated text/image/binary result |
+| `readState.get`, `readState.markFile`, `readState.unmarkFile`, `readState.setDisplayMode` | unary                                                                                                                   |
+| `readState.subscribe`                                                                     | stream (multi-window consistency for free)                                                                              |
+| `prState.reviewed`, `prState.hide`, `prState.dismissMerged`                               | unary                                                                                                                   |
+| `harness.status`                                                                          | unary (settings + welcome-screen setup surfaces)                                                                        |
+| `settings.get`, `settings.update`                                                         | unary (harness selection)                                                                                               |

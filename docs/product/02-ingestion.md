@@ -30,5 +30,6 @@ Ingestion takes real time on real PRs, and the wait is a designed experience, no
 Pull requests keep moving after analysis. Throughline handles this with an explicit, simple model:
 
 - **Stale is a visible state, not a failure.** When the PR's head no longer matches the journey's pinned commit, the journey is marked **stale** — visibly, wherever the journey is shown. A stale journey remains fully readable, and read progress can still be made against it; it is simply a faithful map of an older head.
+- **The action travels with the state.** The stale indicator and its Reanalyze action appear on the welcome row and inside the open journey (header, rail, and Overview), so the reviewer never has to leave the journey merely to understand or refresh it.
 - **Reanalysis is manual and full.** The reviewer — never the app on its own — triggers reanalysis. Reanalysis is a complete rebuild against the new head: a new journey, new clusters, new narratives. There is no incremental patching of an existing journey; a journey is only ever the product of one whole analysis.
 - **Reanalysis resets read state.** A rebuilt journey is a new journey, and progress starts fresh. No partial carry-over, no guessing which old marks still apply — the coverage guarantee is only meaningful against the journey it was earned in.

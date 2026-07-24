@@ -43,6 +43,7 @@ The **project's real file tree** — not a synthetic list of changed paths. It l
 - **Changed files are marked** the way an editor marks uncommitted changes — a quiet status indicator on the row, visible up the collapsed folder chain.
 - **A filter narrows the tree to changed files only**, for when the full tree is noise. Full-tree-with-markers is the default posture; the filter is one toggle away.
 - Opening any file shows it in the middle panel with every hunk labeled by — and linked to — its home cluster, so even free reading routes back to the journey. Read marks made here and in the journey view are the same marks; there is one read state, viewed two ways.
+- A file may contain homes from several clusters. Files mode keeps an explicit current-cluster context; Mark read acknowledges only that cluster's home hunks in the open file. Following another home label switches context before exposing its corresponding mark.
 
 ## The cluster page
 
@@ -68,7 +69,7 @@ Below the narrative, every file this cluster touches, as **full file diffs**:
 One display mode at a time, per journey — switch it and it stays that way until you switch it again. On screen it reads as two controls — a **Diff | Code** toggle in the top bar, and the diff's **inline or split** arrangement in the file headers where the eye already is — but both always set the journey-wide mode. There is no per-file divergence:
 
 - **Inline** (default) — the unified diff.
-- **Just the code** — every trace of diff UI falls away, leaving the file's new state as plain code, with only a subtle marker in the margin showing which regions changed. For when the reviewer just wants to _read_ — silence, with orientation. Hints still bind here, anchored to the marked regions.
+- **Just the code** — every trace of diff UI falls away, leaving the file's new state as plain code, with only a subtle marker in the margin showing which regions changed. Every marker still carries accessible, persistent home text and a link; a color legend alone is not a home label. For when the reviewer just wants to _read_ — silence, with orientation. Hints still bind here, anchored to the marked regions.
 - **Split** — side-by-side, for the reviewers who prefer it. Available, not emphasized.
 
 The mode changes how code renders, never what counts: read state, coverage, and emphasis semantics are identical in all three.
