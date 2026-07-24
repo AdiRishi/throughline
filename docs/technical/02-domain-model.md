@@ -140,7 +140,9 @@ The split is **hybrid, blob-style**: the database holds state; bulk, non-queryab
 
 The journey stays a blob rather than relational rows because it is immutable and read whole — decomposing it into tables buys schema-migration surface without a query workload to justify it. What SQLite buys over flat files is what grows with the app: transactions (reanalysis = replace the journey row + delete its read state, atomically, in one statement batch), indexed listing for the welcome screen, and a single-writer store that won't degrade into a directory of many small files.
 
-Schema migrations run at server boot (the Effect sql migrator). The artifact blob carries `formatVersion`; an undecodable or future-versioned blob is treated as absent — re-ingest, never crash.
+**No ORM.** Data access is Effect's own SQL stack, in-tree at the pinned version: `SqliteClient`'s tagged-template statements (always parameter-bound), decoded through `SqlSchema` against the same contract schemas the wire speaks — the journey blob decodes through `Journey` on read. An external ORM would add a second schema language to drift against `packages/contracts` for a surface of four tables and a dozen statements, all owned by the one `JourneyStore` module.
+
+Schema migrations run at server boot (`SqliteMigrator`). The artifact blob carries `formatVersion`; an undecodable or future-versioned blob is treated as absent — re-ingest, never crash.
 
 ## Staleness
 
