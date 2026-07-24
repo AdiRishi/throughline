@@ -31,6 +31,7 @@ const SCRATCH = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "desktop-manag
 const ENTRY_PATH = NodePath.join(SCRATCH, "bin.mjs");
 NodeFS.writeFileSync(ENTRY_PATH, "// fake server entry\n");
 const LOG_DIR_HOME = NodePath.join(SCRATCH, "home");
+const BACKEND_LOG_FILE_LIMIT_BYTES = 8 * 1024 * 1024;
 
 // The readiness probe uses the global fetch (FetchHttpClient); answer 200.
 beforeEach(() => {
@@ -99,14 +100,20 @@ const makeScriptedSpawner = Effect.gen(function* () {
   return { spawner, spawnCount, exitCurrent, currentKilled };
 });
 
-const environmentLayer = (input?: { readonly isPackaged?: boolean; readonly entry?: string }) =>
+interface HarnessInput {
+  readonly isPackaged?: boolean;
+  readonly entry?: string;
+  readonly homeDirectory?: string;
+}
+
+const environmentLayer = (input?: HarnessInput) =>
   Layer.effect(
     DesktopEnvironment.DesktopEnvironment,
     Effect.map(Path.Path, (path) =>
       DesktopEnvironment.makeWith(
         {
           dirname: NodePath.join(SCRATCH, "dist-electron"),
-          homeDirectory: LOG_DIR_HOME,
+          homeDirectory: input?.homeDirectory ?? LOG_DIR_HOME,
           platform: "darwin",
           appVersion: "0.0.0-test",
           appPath: SCRATCH,
@@ -132,7 +139,7 @@ interface Harness {
   readonly notReadyCount: Effect.Effect<number>;
 }
 
-const makeHarness = (input?: Parameters<typeof environmentLayer>[0]) =>
+const makeHarness = (input?: HarnessInput) =>
   Effect.gen(function* () {
     const scripted = yield* makeScriptedSpawner;
     const readyLatch = yield* Deferred.make<void>();
@@ -282,12 +289,13 @@ describe("DesktopBackendManager", () => {
 
   it.effect("captures child output to logDir/server-child.log when packaged", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness({ isPackaged: true });
+      const homeDirectory = NodeFS.mkdtempSync(NodePath.join(SCRATCH, "capture-"));
+      const harness = yield* makeHarness({ homeDirectory, isPackaged: true });
       yield* harness.manager.start;
       yield* harness.awaitReady;
 
       const logPath = NodePath.join(
-        LOG_DIR_HOME,
+        homeDirectory,
         "Library",
         "Application Support",
         "throughline",
@@ -306,6 +314,95 @@ describe("DesktopBackendManager", () => {
       const contents = NodeFS.readFileSync(logPath, "utf8");
       assert.include(contents, "--- backend start pid=4242");
       assert.include(contents, "hello from server");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("rolls over an oversized legacy log and retains its newest diagnostics", () =>
+    Effect.gen(function* () {
+      const homeDirectory = NodeFS.mkdtempSync(NodePath.join(SCRATCH, "legacy-log-"));
+      const logDirectory = NodePath.join(
+        homeDirectory,
+        "Library",
+        "Application Support",
+        "throughline",
+        "logs",
+      );
+      const logPath = NodePath.join(logDirectory, "server-child.log");
+      const previousLogPath = NodePath.join(logDirectory, "server-child.1.log");
+      const earliestDiagnostic = "obsolete earliest diagnostic\n";
+      const latestDiagnostic = "\nlatest crash diagnostic\n";
+      NodeFS.mkdirSync(logDirectory, { recursive: true });
+      NodeFS.writeFileSync(
+        logPath,
+        Buffer.concat([
+          Buffer.from(earliestDiagnostic),
+          Buffer.alloc(BACKEND_LOG_FILE_LIMIT_BYTES, "x"),
+          Buffer.from(latestDiagnostic),
+        ]),
+      );
+
+      const harness = yield* makeHarness({ homeDirectory, isPackaged: true });
+      yield* harness.manager.start;
+      yield* harness.awaitReady;
+      yield* Effect.gen(function* () {
+        while (
+          !NodeFS.existsSync(logPath) ||
+          !NodeFS.readFileSync(logPath, "utf8").includes("hello from server")
+        ) {
+          yield* Effect.yieldNow;
+        }
+      });
+
+      const activeContents = NodeFS.readFileSync(logPath, "utf8");
+      const previousContents = NodeFS.readFileSync(previousLogPath, "utf8");
+      assert.include(activeContents, "--- backend start pid=4242");
+      assert.include(previousContents, latestDiagnostic.trim());
+      assert.notInclude(previousContents, earliestDiagnostic.trim());
+      assert.isAtMost(NodeFS.statSync(logPath).size, BACKEND_LOG_FILE_LIMIT_BYTES);
+      assert.isAtMost(NodeFS.statSync(previousLogPath).size, BACKEND_LOG_FILE_LIMIT_BYTES);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("rolls over at the file limit and keeps both recent runs", () =>
+    Effect.gen(function* () {
+      const homeDirectory = NodeFS.mkdtempSync(NodePath.join(SCRATCH, "rollover-log-"));
+      const logDirectory = NodePath.join(
+        homeDirectory,
+        "Library",
+        "Application Support",
+        "throughline",
+        "logs",
+      );
+      const logPath = NodePath.join(logDirectory, "server-child.log");
+      const previousLogPath = NodePath.join(logDirectory, "server-child.1.log");
+      const priorRunDiagnostic = "\nprior run crash diagnostic\n";
+      NodeFS.mkdirSync(logDirectory, { recursive: true });
+      NodeFS.writeFileSync(
+        logPath,
+        Buffer.concat([
+          Buffer.alloc(BACKEND_LOG_FILE_LIMIT_BYTES - Buffer.byteLength(priorRunDiagnostic), "y"),
+          Buffer.from(priorRunDiagnostic),
+        ]),
+      );
+
+      const harness = yield* makeHarness({ homeDirectory, isPackaged: true });
+      yield* harness.manager.start;
+      yield* harness.awaitReady;
+      yield* Effect.gen(function* () {
+        while (
+          !NodeFS.existsSync(logPath) ||
+          !NodeFS.readFileSync(logPath, "utf8").includes("hello from server")
+        ) {
+          yield* Effect.yieldNow;
+        }
+      });
+
+      const activeContents = NodeFS.readFileSync(logPath, "utf8");
+      assert.include(activeContents, "--- backend start pid=4242");
+      assert.include(activeContents, "hello from server");
+      assert.include(NodeFS.readFileSync(previousLogPath, "utf8"), priorRunDiagnostic.trim());
+      assert.isAtMost(NodeFS.statSync(logPath).size, BACKEND_LOG_FILE_LIMIT_BYTES);
+      assert.isAtMost(NodeFS.statSync(previousLogPath).size, BACKEND_LOG_FILE_LIMIT_BYTES);
     }).pipe(Effect.scoped),
   );
 });

@@ -39,6 +39,8 @@ const READINESS_INTERVAL = Duration.millis(100);
 const READINESS_REQUEST_TIMEOUT = Duration.seconds(1);
 const TERMINATE_GRACE = Duration.seconds(2);
 const HEALTH_PATH = "/.well-known/app/health";
+const BACKEND_LOG_FILE_LIMIT = FileSystem.MiB(8);
+const BACKEND_LOG_FILE_LIMIT_BYTES = Number(BACKEND_LOG_FILE_LIMIT);
 
 const encodeBootstrapEnvelopeJson = Schema.encodeEffect(
   Schema.fromJsonString(ServerBootstrapEnvelope),
@@ -110,13 +112,19 @@ interface DesktopBackendReadyCallbacks {
 /**
  * Where the child's stdout/stderr go. Dev keeps `inherit` so `pnpm dev`
  * streams to the terminal; packaged apps have no console, so output is
- * captured to `logDir/server-child.log` — otherwise a failing production
- * backend leaves no artifact at all. Appended across runs; no rotation (a
- * starter's log volume is a few lines per boot).
+ * captured to two bounded files under `logDir` — otherwise a failing
+ * production backend leaves no artifact at all. The active file and one
+ * rollover retain up to 8 MiB each, keeping the newest crash context without
+ * allowing server output to grow indefinitely.
  */
 type BackendOutputTarget =
   | { readonly _tag: "inherit" }
-  | { readonly _tag: "file"; readonly directory: string; readonly filePath: string };
+  | {
+      readonly _tag: "file";
+      readonly directory: string;
+      readonly filePath: string;
+      readonly previousFilePath: string;
+    };
 
 export interface DesktopBackendManagerShape {
   readonly start: Effect.Effect<void>;
@@ -168,6 +176,60 @@ type ManagerServices =
   | HttpClient.HttpClient;
 
 const { logInfo, logWarning, logError } = makeComponentLogger("desktop-backend");
+
+const readBackendLogTail = Effect.fn("desktop.backend.readBackendLogTail")(function* (
+  filePath: string,
+  fileSize: FileSystem.Size,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const file = yield* fileSystem.open(filePath, { flag: "r" });
+  yield* file.seek(fileSize - BACKEND_LOG_FILE_LIMIT, "start");
+  const tail = yield* file.readAlloc(BACKEND_LOG_FILE_LIMIT);
+  return Option.getOrElse(tail, () => new Uint8Array());
+}, Effect.scoped);
+
+const rotateBackendLog = Effect.fn("desktop.backend.rotateBackendLog")(function* (
+  output: Extract<BackendOutputTarget, { readonly _tag: "file" }>,
+  fileSize: FileSystem.Size,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  yield* fileSystem.remove(output.previousFilePath, { force: true });
+
+  if (fileSize <= BACKEND_LOG_FILE_LIMIT) {
+    yield* fileSystem.rename(output.filePath, output.previousFilePath);
+    return;
+  }
+
+  const tail = yield* readBackendLogTail(output.filePath, fileSize);
+  yield* fileSystem.writeFile(output.previousFilePath, tail);
+  yield* fileSystem.remove(output.filePath);
+});
+
+const appendBackendLog = Effect.fn("desktop.backend.appendBackendLog")(function* (
+  output: Extract<BackendOutputTarget, { readonly _tag: "file" }>,
+  chunk: Uint8Array,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const currentInfo = yield* fileSystem.stat(output.filePath).pipe(Effect.option);
+  const currentSize = Option.match(currentInfo, {
+    onNone: () => FileSystem.Size(0),
+    onSome: (info) => info.size,
+  });
+
+  if (
+    currentSize > 0 &&
+    (currentSize > BACKEND_LOG_FILE_LIMIT ||
+      currentSize + BigInt(chunk.byteLength) > BACKEND_LOG_FILE_LIMIT)
+  ) {
+    yield* rotateBackendLog(output, currentSize);
+  }
+
+  const retainedChunk =
+    chunk.byteLength > BACKEND_LOG_FILE_LIMIT_BYTES
+      ? chunk.slice(chunk.byteLength - BACKEND_LOG_FILE_LIMIT_BYTES)
+      : chunk;
+  yield* fileSystem.writeFile(output.filePath, retainedChunk, { flag: "a" });
+});
 
 // Resolve the backend port: the configured/default port when free on both
 // loopback stacks, otherwise a fresh ephemeral loopback port.
@@ -231,16 +293,15 @@ const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(functio
   yield* callbacks.onStarted(handle.pid);
 
   if (output._tag === "file") {
-    // Scoped file: closed when this run's scope closes. Log I/O failures must
-    // never take the backend down, so the drain is fire-and-forget with logging.
+    // Log I/O failures must never take the backend down, so the drain is
+    // fire-and-forget with logging.
     yield* Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       yield* fileSystem.makeDirectory(output.directory, { recursive: true });
-      const file = yield* fileSystem.open(output.filePath, { flag: "a" });
       const header = `--- backend start pid=${handle.pid} port=${config.port}\n`;
-      yield* file.writeAll(new TextEncoder().encode(header));
+      yield* appendBackendLog(output, new TextEncoder().encode(header));
       yield* handle.all.pipe(
-        Stream.runForEach((chunk) => file.writeAll(chunk)),
+        Stream.runForEach((chunk) => appendBackendLog(output, chunk)),
         Effect.ignore({ log: true }),
         Effect.forkScoped,
       );
@@ -293,6 +354,7 @@ export const makeManager = (
           _tag: "file",
           directory: environment.logDir,
           filePath: environment.path.join(environment.logDir, "server-child.log"),
+          previousFilePath: environment.path.join(environment.logDir, "server-child.1.log"),
         }
       : { _tag: "inherit" };
 
