@@ -81,7 +81,7 @@ renderer ── ingestion.start(prRef) ──▶ Ingestion
 ## Runtime constraints carried forward
 
 - **Effect v4 everywhere** on the server and in transport; the vendored `.repos/effect` stays the idiom reference.
-- **Persistence is SQLite via `@effect/sql-sqlite-node`** ([02](./02-domain-model.md)) — same pinned Effect version, riding Node's built-in `node:sqlite`: no native modules, verified under Electron's bundled Node (now 24.x; ADR-0006's "20.x" note is stale, though its `node20` build targets stand until deliberately revisited).
+- **Persistence is SQLite via `@effect/sql-sqlite-node`** ([02](./02-domain-model.md)) — same pinned Effect version, riding Node's built-in `node:sqlite`: no native modules, verified under Electron's bundled Node (24.x under the pinned Electron; build targets stay under that floor, per ADR-0006).
 - **The server runs under Electron's bundled Node when packaged** (ADR-0006). The harness SDKs (`@openai/codex-sdk`, `@anthropic-ai/claude-agent-sdk`) both spawn their own bundled platform binaries — they must stay **external** to the server bundle and ship as packaged dependencies, and any change here is verified against a packaged app, per ADR-0006.
 - **Auth posture unchanged** (ADR-0002): one local trust level, bearer at the WS upgrade. Journeys contain the reviewer's own code visible to their own logins; nothing new crosses a trust boundary.
 - **Analysis is read-only.** No harness run may mutate the workspace, and nothing anywhere writes to GitHub. These are enforced mechanically (sandbox modes, tool allowlists — see [04](./04-analysis.md)), not by prompt politeness.

@@ -12,7 +12,7 @@ Before a reviewer can decide whether a change is _correct_, they first have to u
 
 Throughline is a desktop app and a **PR comprehension system** — a companion to code review, not a participant in it. Point it at a pull request and an AI agent reads the whole diff (and the codebase around it), then reconstructs the development journey behind the change: an ordered sequence of **clusters**, each a coherent step with a narrative explaining what it does and why it sits where it does.
 
-The core guarantee: Throughline never summarizes the diff — it **partitions** it. Every changed line lands in exactly one home cluster, and finishing the journey provably means every line was seen. The narrative is a lens over the code, never a replacement for it.
+The core guarantee: Throughline never summarizes the diff — it **partitions** it. Every changed line lands in exactly one home cluster, and finishing the journey provably means every change was presented and acknowledged. The narrative is a lens over the code, never a replacement for it.
 
 ## The documents
 

@@ -39,7 +39,7 @@ Harness selection: the app picks the first authenticated harness (order: Codex, 
 A 40,000-line diff does not travel in a prompt. Ingestion materializes run inputs into the run directory ([03](./03-github.md)) and the worktree's agent instructions point at them by path:
 
 - `diff/full.patch` and `diff/by-file/` — the pinned diff, whole and per file
-- `hunks.json` — the seed-hunk index: every hunk id with its file and line ranges
+- `hunks.json` — the seed-hunk index: every hunk id with its file and line ranges (or `fileKind`)
 - `files.json` — changed files with change kinds and rename mapping
 
 The agent reads what it needs the way agents are good at it — navigating files in a worktree, diff and surrounding codebase alike. Prompt size stays flat no matter how large the PR is.
@@ -86,14 +86,14 @@ resolving → cloning → diffing → analyzing(stage, detail) → validating �
 
 Added to `packages/contracts` (shapes per [02](./02-domain-model.md)):
 
-| RPC                                                                                       | Kind                                                                               |
-| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `github.viewer`, `github.prs`                                                             | unary (cached; `github.prs` also as a snapshot+live stream for the welcome screen) |
-| `ingestion.start`, `ingestion.cancel`                                                     | unary (door rejections are `ingestion.start`'s only errors)                        |
-| `ingestion.subscribe`                                                                     | stream                                                                             |
-| `journey.get`, `journey.filePatch`, `journey.fileContent`, `journey.tree`                 | unary (immutable per journey — cacheable forever client-side)                      |
-| `readState.get`, `readState.markFile`, `readState.unmarkFile`, `readState.setDisplayMode` | unary                                                                              |
-| `readState.subscribe`                                                                     | stream (multi-window consistency for free)                                         |
-| `prState.reviewed`, `prState.hide`, `prState.dismissMerged`                               | unary                                                                              |
-| `harness.status`                                                                          | unary (settings + welcome-screen setup surfaces)                                   |
-| `settings.get`, `settings.update`                                                         | unary (harness selection)                                                          |
+| RPC                                                                                       | Kind                                                                                                                                                       |
+| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `github.viewer`, `github.prs`                                                             | unary (cached; `github.prs` also as a snapshot+live stream for the welcome screen, server-enriched with each PR's journey state — exists, progress, stale) |
+| `ingestion.start`, `ingestion.cancel`                                                     | unary (door rejections are `ingestion.start`'s only errors)                                                                                                |
+| `ingestion.subscribe`                                                                     | stream                                                                                                                                                     |
+| `journey.get`, `journey.filePatch`, `journey.fileContent`, `journey.tree`                 | unary (immutable per journey — cacheable forever client-side)                                                                                              |
+| `readState.get`, `readState.markFile`, `readState.unmarkFile`, `readState.setDisplayMode` | unary                                                                                                                                                      |
+| `readState.subscribe`                                                                     | stream (multi-window consistency for free)                                                                                                                 |
+| `prState.reviewed`, `prState.hide`, `prState.dismissMerged`                               | unary                                                                                                                                                      |
+| `harness.status`                                                                          | unary (settings + welcome-screen setup surfaces)                                                                                                           |
+| `settings.get`, `settings.update`                                                         | unary (harness selection)                                                                                                                                  |

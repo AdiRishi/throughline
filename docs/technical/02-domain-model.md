@@ -16,7 +16,7 @@ Journey {
     analyzedAt,
   },
   provenance: { harnessKind, model?, usage? },   // which harness built it; honesty, not UI
-  overview: Overview,
+  overview: Overview,             // { brief, whereToBegin } — the map's entries derive from clusters' mapEntry
   clusters: Cluster[],            // in journey order
   hunks: Hunk[],                  // the complete partition, every changed line
   files: FileChange[],            // every changed file, with change kind & rename tracking

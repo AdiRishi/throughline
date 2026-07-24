@@ -19,6 +19,7 @@ Throughline sits on top of GitHub and authenticates through the **GitHub CLI** (
 - **Open a PR** — the primary action; see [Ingestion](./02-ingestion.md).
 - **Mark a PR reviewed** — a manual, local declaration of "I'm done with this," independent of journey progress.
 - **Hide a PR** — remove it from view without any effect on GitHub.
+- **Open settings** — a quiet gear in the title bar; harness choice and appearance live there, off the main surface.
 
 All of this state is local, like read state — the welcome screen never writes to GitHub.
 

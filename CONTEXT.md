@@ -13,7 +13,7 @@ One describable step of the journey: a set of hunks (possibly spanning many file
 _Avoid_: step, chapter, section, group, commit
 
 **Hunk**:
-Throughline's atomic unit of placement — a contiguous run of changed lines that serves one concern. Derived from git's hunks, but may be split finer when a git hunk mixes concerns; it is never coarser.
+Throughline's atomic unit of placement — a contiguous run of changed lines that serves one concern. Derived from git's hunks, but may be split finer when a git hunk mixes concerns; it is never coarser. A changed file with no changed lines — a binary change, a pure rename, a mode change — carries one file-level hunk, so it is placeable like everything else.
 _Avoid_: chunk, fragment, excerpt, diff block
 
 **Home**:
@@ -29,7 +29,7 @@ Showing a hunk again in a cluster that is not its home, to communicate a cross-c
 _Avoid_: revisit, duplicate, re-show
 
 **Coverage**:
-The inviolable guarantee that every changed line of the pull request appears in exactly one home cluster — the homes together partition the full diff. Nothing is omitted, condensed, or left unplaced.
+The inviolable guarantee that every change in the pull request — every changed line, and every changed file with no changed lines — appears in exactly one home cluster; the homes together partition the full diff. Nothing is omitted, condensed, or left unplaced.
 _Avoid_: completeness, summarization
 
 **Weight**:
