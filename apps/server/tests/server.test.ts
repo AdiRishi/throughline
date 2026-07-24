@@ -3,8 +3,8 @@ import * as NodeHttp from "node:http";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
@@ -20,8 +20,10 @@ import * as Socket from "effect/unstable/socket/Socket";
 
 import {
   BearerSessionJson,
+  CompleteWsRpcGroup,
+  PRODUCT_WS_METHODS,
+  PrRef,
   WS_METHODS,
-  WsRpcGroup,
   type ServerLifecycleStreamEvent,
 } from "@app/contracts";
 
@@ -31,7 +33,13 @@ import { AUTH_BOOTSTRAP_PATH, HEALTH_PATH } from "../src/http.ts";
 import * as LifecycleEvents from "../src/lifecycleEvents.ts";
 import * as NotesStore from "../src/notes/NotesStore.ts";
 import * as Readiness from "../src/readiness.ts";
-import { routesLayer } from "../src/server.ts";
+import {
+  productServicesLayer,
+  routesLayer,
+  WORKSPACE_CACHE_MAX_REPOSITORIES,
+  workspaceCacheEvictionLayer,
+} from "../src/server.ts";
+import * as Workspaces from "../src/workspace/Workspaces.ts";
 
 const BOOTSTRAP_TOKEN = "boot-secret";
 
@@ -52,8 +60,10 @@ interface HarnessOptions {
 }
 
 /** The real route stack + services over the platform test server. */
-const appLayer = (options: HarnessOptions = {}) =>
-  HttpRouter.serve(routesLayer).pipe(
+const appLayer = (options: HarnessOptions = {}) => {
+  const dataDir = NodeFS.mkdtempSync(NodePath.join(SCRATCH, "data-"));
+
+  return HttpRouter.serve(routesLayer).pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         Auth.layer,
@@ -61,6 +71,7 @@ const appLayer = (options: HarnessOptions = {}) =>
           ? LifecycleEvents.layer
           : Layer.mock(LifecycleEvents.ServerLifecycleEvents)(options.lifecycleEvents),
         NotesStore.layer,
+        productServicesLayer,
         Readiness.layer,
       ),
     ),
@@ -78,17 +89,18 @@ const appLayer = (options: HarnessOptions = {}) =>
               staticDir: options.staticDir,
               devWebUrl: options.devWebUrl,
               bootstrapToken: BOOTSTRAP_TOKEN,
-              dataDir: NodePath.join(SCRATCH, "data"),
+              dataDir,
             }),
           );
         }),
       ),
     ),
-    // NodeServices provides Crypto in production; layerTest does not.
-    Layer.provideMerge(Layer.mergeAll(NodeHttpServer.layerTest, NodeCrypto.layer)),
+    Layer.provideMerge(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer)),
   );
+};
 
 const decodeBearerSession = Schema.decodeUnknownSync(BearerSessionJson);
+const decodePrRef = Schema.decodeUnknownSync(PrRef);
 
 const postJson = (path: string, body: string) =>
   HttpClient.post(path, { body: HttpBody.text(body, "application/json") });
@@ -101,7 +113,7 @@ const wsRpcProtocolLayer = (wsUrl: string) =>
     Layer.provide(RpcSerialization.layerJson),
   );
 
-const makeWsRpcClient = RpcClient.make(WsRpcGroup);
+const makeWsRpcClient = RpcClient.make(CompleteWsRpcGroup);
 type WsRpcClient =
   typeof makeWsRpcClient extends Effect.Effect<infer Client, unknown, unknown> ? Client : never;
 
@@ -270,6 +282,39 @@ describe("websocket gate", () => {
       }).pipe(Effect.provide(appLayer({ lifecycleEvents })));
     }).pipe(TestClock.withLive),
   );
+
+  it.effect("serves product state handlers through the complete RPC group", () =>
+    Effect.gen(function* () {
+      const response = yield* postJson(
+        AUTH_BOOTSTRAP_PATH,
+        JSON.stringify({ credential: BOOTSTRAP_TOKEN }),
+      );
+      const session = decodeBearerSession(yield* response.json);
+      const server = yield* HttpServer.HttpServer;
+      const address = server.address;
+      const port = typeof address === "string" || !("port" in address) ? 0 : address.port;
+      const wsUrl = `ws://127.0.0.1:${port}/ws?access_token=${encodeURIComponent(session.access_token)}`;
+      const pr = decodePrRef({ owner: "effect-ts", repo: "throughline", number: 42 });
+
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const initial = yield* client[PRODUCT_WS_METHODS.settingsGet]({});
+            const updated = yield* client[PRODUCT_WS_METHODS.prStateReviewed]({
+              pr,
+              active: true,
+            });
+            const persisted = yield* client[PRODUCT_WS_METHODS.prStateGet]({});
+            return { initial, updated, persisted };
+          }),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.deepStrictEqual(result.initial, {});
+      assert.deepStrictEqual(result.updated.reviewed, [pr]);
+      assert.deepStrictEqual(result.persisted, result.updated);
+    }).pipe(Effect.provide(appLayer())),
+  );
 });
 
 describe("static serving", () => {
@@ -327,4 +372,30 @@ describe("dev redirect", () => {
       assert.equal(response.status, 503);
     }).pipe(Effect.provide(appLayer({ devWebUrl: new URL("http://127.0.0.1:5173") }))),
   );
+});
+
+describe("startup maintenance", () => {
+  it.effect("evicts the clone cache once using the generous repository cap", () => {
+    const maximums: number[] = [];
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        yield* Layer.build(
+          workspaceCacheEvictionLayer.pipe(
+            Layer.provide(
+              Layer.mock(Workspaces.Workspaces)({
+                evictCache: (maximum) =>
+                  Effect.sync(() => {
+                    maximums.push(maximum);
+                    return [];
+                  }),
+              }),
+            ),
+          ),
+        );
+
+        assert.deepStrictEqual(maximums, [WORKSPACE_CACHE_MAX_REPOSITORIES]);
+      }),
+    );
+  });
 });

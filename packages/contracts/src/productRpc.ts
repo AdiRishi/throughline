@@ -36,6 +36,7 @@ export const PRODUCT_WS_METHODS = {
   githubViewer: "github.viewer",
   githubPrs: "github.prs",
   githubRefreshPrs: "github.refreshPrs",
+  githubRetry: "github.retry",
   ingestionStart: "ingestion.start",
   ingestionCancel: "ingestion.cancel",
   ingestionSubscribe: "ingestion.subscribe",
@@ -110,6 +111,19 @@ export const HarnessStatusResult = Schema.Struct({
 });
 export type HarnessStatusResult = typeof HarnessStatusResult.Type;
 
+export class ProductOperationError extends Schema.TaggedErrorClass<ProductOperationError>()(
+  "ProductOperationError",
+  {
+    reason: Schema.Literals(["storage", "workspace", "internal"]),
+    operation: TrimmedNonEmptyString,
+    detail: TrimmedNonEmptyString,
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 export class JourneyNotFoundError extends Schema.TaggedErrorClass<JourneyNotFoundError>()(
   "JourneyNotFoundError",
   {
@@ -134,15 +148,48 @@ export class JourneyFileNotFoundError extends Schema.TaggedErrorClass<JourneyFil
   }
 }
 
+export class ReadStateMarkInvalidError extends Schema.TaggedErrorClass<ReadStateMarkInvalidError>()(
+  "ReadStateMarkInvalidError",
+  {
+    journeyId: JourneyId,
+    clusterId: ClusterId,
+    path: RepositoryPath,
+  },
+) {
+  override get message(): string {
+    return `The file '${this.path}' is not homed in the requested cluster.`;
+  }
+}
+
+const ProductRpcError = Schema.Union([ProductOperationError, EnvironmentAuthorizationError]);
 const GitHubRpcError = Schema.Union([
   GitHubReadError,
   GitHubParkedError,
+  ProductOperationError,
   EnvironmentAuthorizationError,
 ]);
-const JourneyRpcError = Schema.Union([JourneyNotFoundError, EnvironmentAuthorizationError]);
+const JourneyRpcError = Schema.Union([
+  JourneyNotFoundError,
+  ProductOperationError,
+  EnvironmentAuthorizationError,
+]);
+const JourneyGetRpcError = Schema.Union([
+  JourneyNotFoundError,
+  GitHubReadError,
+  GitHubParkedError,
+  ProductOperationError,
+  EnvironmentAuthorizationError,
+]);
 const JourneyFileRpcError = Schema.Union([
   JourneyNotFoundError,
   JourneyFileNotFoundError,
+  ProductOperationError,
+  EnvironmentAuthorizationError,
+]);
+const ReadStateMutationRpcError = Schema.Union([
+  JourneyNotFoundError,
+  ReadStateMarkInvalidError,
+  ProductOperationError,
   EnvironmentAuthorizationError,
 ]);
 
@@ -160,6 +207,11 @@ export const WsGitHubPrsRpc = Rpc.make(PRODUCT_WS_METHODS.githubPrs, {
 });
 
 export const WsGitHubRefreshPrsRpc = Rpc.make(PRODUCT_WS_METHODS.githubRefreshPrs, {
+  payload: Schema.Struct({}),
+  error: GitHubRpcError,
+});
+
+export const WsGitHubRetryRpc = Rpc.make(PRODUCT_WS_METHODS.githubRetry, {
   payload: Schema.Struct({}),
   error: GitHubRpcError,
 });
@@ -186,7 +238,7 @@ export const WsIngestionSubscribeRpc = Rpc.make(PRODUCT_WS_METHODS.ingestionSubs
 export const WsJourneyGetRpc = Rpc.make(PRODUCT_WS_METHODS.journeyGet, {
   payload: Schema.Struct({ pr: PrRef }),
   success: JourneyDocument,
-  error: JourneyRpcError,
+  error: JourneyGetRpcError,
 });
 
 const JourneyFileInput = Schema.Struct({
@@ -228,13 +280,13 @@ export const WsReadStateGetRpc = Rpc.make(PRODUCT_WS_METHODS.readStateGet, {
 export const WsReadStateMarkFileRpc = Rpc.make(PRODUCT_WS_METHODS.readStateMarkFile, {
   payload: ReadStateFileInput,
   success: ReadState,
-  error: JourneyRpcError,
+  error: ReadStateMutationRpcError,
 });
 
 export const WsReadStateUnmarkFileRpc = Rpc.make(PRODUCT_WS_METHODS.readStateUnmarkFile, {
   payload: ReadStateFileInput,
   success: ReadState,
-  error: JourneyRpcError,
+  error: ReadStateMutationRpcError,
 });
 
 export const WsReadStateSetDisplayModeRpc = Rpc.make(PRODUCT_WS_METHODS.readStateSetDisplayMode, {
@@ -261,25 +313,25 @@ const PrStateInput = Schema.Struct({
 export const WsPrStateGetRpc = Rpc.make(PRODUCT_WS_METHODS.prStateGet, {
   payload: Schema.Struct({}),
   success: LocalPrState,
-  error: EnvironmentAuthorizationError,
+  error: ProductRpcError,
 });
 
 export const WsPrStateReviewedRpc = Rpc.make(PRODUCT_WS_METHODS.prStateReviewed, {
   payload: PrStateInput,
   success: LocalPrState,
-  error: EnvironmentAuthorizationError,
+  error: ProductRpcError,
 });
 
 export const WsPrStateHideRpc = Rpc.make(PRODUCT_WS_METHODS.prStateHide, {
   payload: PrStateInput,
   success: LocalPrState,
-  error: EnvironmentAuthorizationError,
+  error: ProductRpcError,
 });
 
 export const WsPrStateDismissMergedRpc = Rpc.make(PRODUCT_WS_METHODS.prStateDismissMerged, {
   payload: PrStateInput,
   success: LocalPrState,
-  error: EnvironmentAuthorizationError,
+  error: ProductRpcError,
 });
 
 export const WsHarnessStatusRpc = Rpc.make(PRODUCT_WS_METHODS.harnessStatus, {
@@ -291,7 +343,7 @@ export const WsHarnessStatusRpc = Rpc.make(PRODUCT_WS_METHODS.harnessStatus, {
 export const WsSettingsGetRpc = Rpc.make(PRODUCT_WS_METHODS.settingsGet, {
   payload: Schema.Struct({}),
   success: Settings,
-  error: EnvironmentAuthorizationError,
+  error: ProductRpcError,
 });
 
 export const WsSettingsUpdateRpc = Rpc.make(PRODUCT_WS_METHODS.settingsUpdate, {
@@ -299,13 +351,14 @@ export const WsSettingsUpdateRpc = Rpc.make(PRODUCT_WS_METHODS.settingsUpdate, {
     harness: Schema.NullOr(HarnessSelection),
   }),
   success: Settings,
-  error: EnvironmentAuthorizationError,
+  error: ProductRpcError,
 });
 
 export const ProductWsRpcGroup = RpcGroup.make(
   WsGitHubViewerRpc,
   WsGitHubPrsRpc,
   WsGitHubRefreshPrsRpc,
+  WsGitHubRetryRpc,
   WsIngestionStartRpc,
   WsIngestionCancelRpc,
   WsIngestionSubscribeRpc,

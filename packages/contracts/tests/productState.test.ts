@@ -4,12 +4,24 @@ import * as Schema from "effect/Schema";
 
 import { GitHubPrListStreamEvent, PrRef, PrSummary, Viewer } from "../src/github.ts";
 import { IngestionDoorRejectionError, IngestionStreamEvent } from "../src/ingestion.ts";
+import {
+  PRODUCT_WS_METHODS,
+  ProductOperationError,
+  ProductWsRpcGroup,
+  ReadStateMarkInvalidError,
+} from "../src/productRpc.ts";
 
 const decodeViewer = Schema.decodeUnknownSync(Viewer);
 const decodePr = Schema.decodeUnknownSync(Schema.toCodecJson(PrSummary));
 const decodePrRef = Schema.decodeUnknownSync(PrRef);
 const decodePrEvent = Schema.decodeUnknownSync(Schema.toCodecJson(GitHubPrListStreamEvent));
 const decodeIngestionEvent = Schema.decodeUnknownSync(Schema.toCodecJson(IngestionStreamEvent));
+const decodeProductOperationError = Schema.decodeUnknownSync(
+  Schema.toCodecJson(ProductOperationError),
+);
+const decodeReadStateMarkInvalidError = Schema.decodeUnknownSync(
+  Schema.toCodecJson(ReadStateMarkInvalidError),
+);
 
 const PR = {
   ref: { owner: "octo", repo: "app", number: 7 },
@@ -112,5 +124,34 @@ describe("ingestion contracts", () => {
     });
     assert.strictEqual(rejection._tag, "IngestionDoorRejectionError");
     assert.strictEqual(rejection.message, "The pull request is not visible.");
+  });
+});
+
+describe("product RPC contracts", () => {
+  it("exposes retry as an explicit GitHub recovery operation", () => {
+    assert.isTrue(ProductWsRpcGroup.requests.has(PRODUCT_WS_METHODS.githubRetry));
+  });
+
+  it("decodes operational and invalid-read errors from their JSON wire shapes", () => {
+    const operationError = decodeProductOperationError({
+      _tag: "ProductOperationError",
+      reason: "workspace",
+      operation: PRODUCT_WS_METHODS.journeyFileContent,
+      detail: "The pinned workspace is unavailable.",
+    });
+    assert.strictEqual(operationError.reason, "workspace");
+    assert.strictEqual(operationError.message, "The pinned workspace is unavailable.");
+
+    const invalidMark = decodeReadStateMarkInvalidError({
+      _tag: "ReadStateMarkInvalidError",
+      journeyId: "journey-1",
+      clusterId: "cluster-1",
+      path: "src/auth.ts",
+    });
+    assert.strictEqual(invalidMark.clusterId, "cluster-1");
+    assert.strictEqual(
+      invalidMark.message,
+      "The file 'src/auth.ts' is not homed in the requested cluster.",
+    );
   });
 });
