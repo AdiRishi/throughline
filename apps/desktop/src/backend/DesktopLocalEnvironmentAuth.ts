@@ -2,9 +2,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
 
 import { bootstrapRemoteBearerSession } from "@app/client-runtime/authorization";
 
@@ -14,9 +12,9 @@ import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 // renderer uses on the `/ws` upgrade. The token is minted by the shell and
 // handed to BOTH the spawned server (via fd3) and here — the "shared secret
 // handed to a trusted child" pattern. The exchange itself is the one shared
-// `bootstrapRemoteBearerSession` (same call the browser path makes). The result
-// is cached for the process lifetime; a `Semaphore(1)` collapses concurrent
-// first calls into one request.
+// `bootstrapRemoteBearerSession` (same call the browser path makes). Every
+// connection attempt mints a bearer from the current server process because a
+// supervised server restart invalidates every bearer held by the old process.
 
 export class DesktopLocalEnvironmentAuthBackendNotReadyError extends Schema.TaggedErrorClass<DesktopLocalEnvironmentAuthBackendNotReadyError>()(
   "DesktopLocalEnvironmentAuthBackendNotReadyError",
@@ -51,37 +49,23 @@ export class DesktopLocalEnvironmentAuth extends Context.Service<
 
 export const make = Effect.gen(function* () {
   const manager = yield* DesktopBackendManager.DesktopBackendManager;
-  const tokenRef = yield* Ref.make(Option.none<string>());
-  const mutex = yield* Semaphore.make(1);
 
-  const getBearerToken = mutex
-    .withPermits(1)(
-      Effect.gen(function* () {
-        const cached = yield* Ref.get(tokenRef);
-        if (Option.isSome(cached)) {
-          return cached.value;
-        }
+  const getBearerToken = Effect.gen(function* () {
+    const configOption = yield* manager.currentConfig;
+    if (Option.isNone(configOption)) {
+      return yield* new DesktopLocalEnvironmentAuthBackendNotReadyError();
+    }
+    const config = configOption.value;
 
-        const configOption = yield* manager.currentConfig;
-        if (Option.isNone(configOption)) {
-          return yield* new DesktopLocalEnvironmentAuthBackendNotReadyError();
-        }
-        const config = configOption.value;
-
-        const session = yield* bootstrapRemoteBearerSession({
-          httpBaseUrl: config.httpBaseUrl.href,
-          credential: config.bootstrapToken,
-          clientMetadata: { label: "App Desktop", deviceType: "desktop" },
-        }).pipe(
-          Effect.mapError(
-            (cause) => new DesktopLocalEnvironmentAuthSessionBootstrapError({ cause }),
-          ),
-        );
-        yield* Ref.set(tokenRef, Option.some(session.access_token));
-        return session.access_token;
-      }),
-    )
-    .pipe(Effect.withSpan("desktop.localEnvironmentAuth.getBearerToken"));
+    const session = yield* bootstrapRemoteBearerSession({
+      httpBaseUrl: config.httpBaseUrl.href,
+      credential: config.bootstrapToken,
+      clientMetadata: { label: "App Desktop", deviceType: "desktop" },
+    }).pipe(
+      Effect.mapError((cause) => new DesktopLocalEnvironmentAuthSessionBootstrapError({ cause })),
+    );
+    return session.access_token;
+  }).pipe(Effect.withSpan("desktop.localEnvironmentAuth.getBearerToken"));
 
   return DesktopLocalEnvironmentAuth.of({ getBearerToken });
 });
