@@ -18,10 +18,10 @@ import {
   type PrRef,
   type PrSummary,
 } from "@app/contracts";
-import { deriveProgress } from "@app/journey/progress";
 
 import * as GitHub from "../github/GitHub.ts";
 import * as JourneyStore from "../journeys/JourneyStore.ts";
+import { derivePullRequestJourneyState } from "../journeys/journeyView.ts";
 
 export type PullRequestIndexError =
   | GitHubReadError
@@ -85,17 +85,13 @@ export const make = Effect.gen(function* () {
         if (stored === undefined) {
           return { ...pullRequest, journey: null };
         }
-        const progress = deriveProgress(stored.journey, Option.getOrNull(stored.readState)).journey;
         return {
           ...pullRequest,
-          journey: {
-            journeyId: stored.journey.id,
-            progress: progress.fraction,
-            markedFiles: progress.markedFiles,
-            clusterFiles: progress.clusterFiles,
-            stale: stored.journey.pinned.headSha !== pullRequest.headSha,
-            pinnedHeadSha: stored.journey.pinned.headSha,
-          },
+          journey: derivePullRequestJourneyState(
+            stored.journey,
+            Option.getOrNull(stored.readState),
+            pullRequest.headSha,
+          ),
         };
       });
     });
