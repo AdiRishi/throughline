@@ -165,8 +165,10 @@ ${JSON.stringify(plan, null, 2)}
 
 Return structured output only for target cluster ${cluster.id}. Inspect repository/ and inputs/.
 Explain intent, mechanics, and consequences with observed evidence. A resurfaced hunk must belong
-to an earlier cluster. Hints must use this target cluster id and valid line anchors. Evidence links
-must use tl:hunk/<id>, tl:file/<percent-encoded-path>, or
+to an earlier cluster. Cross-file resurfacing is supported: planned home files stay first, then
+foreign files follow the first occurrence of their hunks in the resurfaced list. Hints must use
+this target cluster id and valid line anchors. Evidence links must use tl:hunk/<id>,
+tl:file/<percent-encoded-path>, or
 tl:symbol/<percent-encoded-path>#<percent-encoded-symbol>.`;
 };
 

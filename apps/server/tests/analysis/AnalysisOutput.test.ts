@@ -1,19 +1,33 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
 import {
+  CommitSha,
   FileChange,
+  JourneyId,
+  PrRef,
   SeedHunk,
   type FileChange as FileChangeValue,
   type SeedHunk as SeedHunkValue,
 } from "@app/contracts";
-import { validateCoverage } from "@app/journey/coverage";
+import { validateCoverage, validateJourney } from "@app/journey/coverage";
+import { makePinnedFileLookup } from "@app/journey/evidence";
 
-import { completePlan, PlanOutput } from "../../src/analysis/AnalysisOutput.ts";
+import {
+  assembleJourney,
+  ClusterNarrationOutput,
+  completePlan,
+  PlanOutput,
+} from "../../src/analysis/AnalysisOutput.ts";
 
 const decodeFile = Schema.decodeUnknownSync(FileChange);
 const decodeSeed = Schema.decodeUnknownSync(SeedHunk);
 const decodePlan = Schema.decodeUnknownSync(PlanOutput);
+const decodeNarration = Schema.decodeUnknownSync(ClusterNarrationOutput);
+const decodeJourneyId = Schema.decodeUnknownSync(JourneyId);
+const decodePrRef = Schema.decodeUnknownSync(PrRef);
+const decodeCommitSha = Schema.decodeUnknownSync(CommitSha);
 
 const files: ReadonlyArray<FileChangeValue> = [
   decodeFile({
@@ -113,5 +127,97 @@ describe("analysis deterministic completion", () => {
       ],
     );
     assert.deepStrictEqual(validateCoverage({ seeds, files, ...completed }), []);
+  });
+
+  it("places foreign resurfaced files after the frozen home-file order", () => {
+    const plan = completePlan(
+      decodePlan({
+        clusters: [
+          {
+            id: "core",
+            title: "Core behavior",
+            weight: "core",
+            buildsOn: [],
+            fileOrder: ["src/core.ts"],
+          },
+          {
+            id: "binding",
+            title: "Binding",
+            weight: "supporting",
+            buildsOn: ["core"],
+            fileOrder: ["src/support.ts"],
+          },
+        ],
+        hunks: [
+          {
+            id: "h7",
+            seedId: "s1",
+            path: "src/core.ts",
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            home: "core",
+          },
+          {
+            id: "h8",
+            seedId: "s2",
+            path: "src/support.ts",
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            home: "binding",
+          },
+        ],
+      }),
+      seeds,
+      files,
+    );
+    const journey = assembleJourney({
+      id: decodeJourneyId("journey-cross-file"),
+      pr: decodePrRef({ owner: "acme", repo: "rocket", number: 17 }),
+      headSha: decodeCommitSha("2222222222222222222222222222222222222222"),
+      baseSha: decodeCommitSha("1111111111111111111111111111111111111111"),
+      analyzedAt: DateTime.makeUnsafe("2026-07-25T00:00:00.000Z"),
+      harnessKind: "codex",
+      files,
+      plan,
+      overview: {
+        brief: { markdown: "The change connects a foundation to its binding." },
+        whereToBegin: { markdown: "Begin with the core behavior." },
+      },
+      narrations: new Map([
+        [
+          "binding",
+          decodeNarration({
+            clusterId: "binding",
+            narrative: { markdown: "The binding revisits the core behavior." },
+            mapEntry: { markdown: "Connects support to the core." },
+            resurfaced: [
+              {
+                hunkId: "h1",
+                note: { markdown: "Known core behavior shown from the binding." },
+              },
+            ],
+            hints: [],
+          }),
+        ],
+      ]),
+    });
+
+    assert.deepStrictEqual(journey.clusters[1]?.fileOrder, [files[1]!.path, files[0]!.path]);
+    assert.deepStrictEqual(
+      validateJourney(journey, {
+        seeds,
+        pinnedFile: makePinnedFileLookup(
+          new Map([
+            ["src/core.ts", { old: "old core\n", new: "new core\n", headExists: true }],
+            ["src/support.ts", { old: "old support\n", new: "new support\n", headExists: true }],
+          ]),
+        ),
+      }),
+      [],
+    );
   });
 });

@@ -295,32 +295,56 @@ export interface JourneyInput {
   readonly narrations: ReadonlyMap<string, ClusterNarrationOutput>;
 }
 
-export const assembleJourney = (input: JourneyInput): Journey => ({
-  formatVersion: 1,
-  id: input.id,
-  pr: input.pr,
-  pinned: {
-    headSha: input.headSha,
-    baseSha: input.baseSha,
-    analyzedAt: input.analyzedAt,
-  },
-  provenance: {
-    harnessKind: input.harnessKind,
-    ...(input.usage === undefined ? {} : { usage: input.usage }),
-  },
-  overview: input.overview,
-  clusters: input.plan.clusters.map((cluster) => {
-    const narration = input.narrations.get(cluster.id);
-    return narration === undefined
-      ? cluster
-      : {
-          ...cluster,
-          narrative: narration.narrative,
-          mapEntry: narration.mapEntry,
-          resurfaced: narration.resurfaced,
-        };
-  }),
-  hunks: input.plan.hunks,
-  files: input.files,
-  hints: input.plan.clusters.flatMap((cluster) => input.narrations.get(cluster.id)?.hints ?? []),
-});
+const narratedFileOrder = (
+  cluster: Cluster,
+  narration: ClusterNarrationOutput,
+  hunkById: ReadonlyMap<string, HunkValue>,
+): ReadonlyArray<FileChange["path"]> => {
+  const order = [...cluster.fileOrder];
+  const paths = new Set<string>(order);
+
+  for (const entry of narration.resurfaced) {
+    const path = hunkById.get(entry.hunkId)?.path;
+    if (path !== undefined && !paths.has(path)) {
+      paths.add(path);
+      order.push(path);
+    }
+  }
+
+  return order;
+};
+
+export const assembleJourney = (input: JourneyInput): Journey => {
+  const hunkById = new Map(input.plan.hunks.map((hunk) => [hunk.id as string, hunk]));
+
+  return {
+    formatVersion: 1,
+    id: input.id,
+    pr: input.pr,
+    pinned: {
+      headSha: input.headSha,
+      baseSha: input.baseSha,
+      analyzedAt: input.analyzedAt,
+    },
+    provenance: {
+      harnessKind: input.harnessKind,
+      ...(input.usage === undefined ? {} : { usage: input.usage }),
+    },
+    overview: input.overview,
+    clusters: input.plan.clusters.map((cluster) => {
+      const narration = input.narrations.get(cluster.id);
+      return narration === undefined
+        ? cluster
+        : {
+            ...cluster,
+            narrative: narration.narrative,
+            mapEntry: narration.mapEntry,
+            fileOrder: narratedFileOrder(cluster, narration, hunkById),
+            resurfaced: narration.resurfaced,
+          };
+    }),
+    hunks: input.plan.hunks,
+    files: input.files,
+    hints: input.plan.clusters.flatMap((cluster) => input.narrations.get(cluster.id)?.hints ?? []),
+  };
+};

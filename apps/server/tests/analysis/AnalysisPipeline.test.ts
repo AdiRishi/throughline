@@ -73,6 +73,24 @@ const seed: SeedHunkValue = decodeSeed({
   newStart: 1,
   newLines: 1,
 });
+const supportFile: FileChangeValue = decodeFile({
+  path: "src/support.ts",
+  oldPath: null,
+  kind: "modified",
+  oldMode: "100644",
+  newMode: "100644",
+  binary: false,
+  additions: 1,
+  deletions: 1,
+});
+const supportSeed: SeedHunkValue = decodeSeed({
+  id: "s2",
+  path: "src/support.ts",
+  oldStart: 1,
+  oldLines: 1,
+  newStart: 1,
+  newLines: 1,
+});
 
 const github = GitHub.GitHub.of({
   identity: () => Effect.die("unused"),
@@ -314,6 +332,181 @@ describe("AnalysisPipeline", () => {
         });
 
         assert.strictEqual(result.journey.overview.brief.markdown, overviewMarkdown);
+        assert.deepStrictEqual(fixture.operations, ["finalize", "replace"]);
+      }),
+    );
+
+    it.effect("preserves cross-file resurfacing through narration and final validation", () =>
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* fileSystem.writeFileString(
+          path.join(fixture.prepared.inputsDir, "content", "f000002.old"),
+          "old support\n",
+        );
+        yield* fileSystem.writeFileString(
+          path.join(fixture.prepared.inputsDir, "content", "f000002.new"),
+          "new support\n",
+        );
+        yield* fileSystem.writeFileString(
+          path.join(fixture.prepared.inputsDir, "contents.json"),
+          `${JSON.stringify({
+            version: 1,
+            entries: [
+              {
+                type: "text",
+                path: "src/core.ts",
+                oldFile: "f000001.old",
+                newFile: "f000001.new",
+              },
+              {
+                type: "text",
+                path: "src/support.ts",
+                oldFile: "f000002.old",
+                newFile: "f000002.new",
+              },
+            ],
+          })}\n`,
+        );
+        const prepared: Workspaces.PreparedWorkspace = {
+          ...fixture.prepared,
+          files: [file, supportFile],
+          hunks: [seed, supportSeed],
+          tree: [file.path, supportFile.path],
+        };
+        const crossFileFixture: Fixture = {
+          ...fixture,
+          prepared,
+          workspaces: Workspaces.Workspaces.of({
+            ...fixture.workspaces,
+            prepare: () => Effect.succeed(prepared),
+          }),
+        };
+        const harness: AnalysisHarness = {
+          kind: "codex",
+          detect: Effect.die("unused"),
+          run: (task) =>
+            Effect.gen(function* () {
+              const raw = task.prompt.startsWith("You are planning")
+                ? {
+                    clusters: [
+                      {
+                        id: "core",
+                        title: "Core behavior",
+                        weight: "core",
+                        buildsOn: [],
+                        fileOrder: ["src/core.ts"],
+                      },
+                      {
+                        id: "binding",
+                        title: "Binding",
+                        weight: "supporting",
+                        buildsOn: ["core"],
+                        fileOrder: ["src/support.ts"],
+                      },
+                    ],
+                    hunks: [
+                      {
+                        id: "h1",
+                        seedId: "s1",
+                        path: "src/core.ts",
+                        oldStart: 1,
+                        oldLines: 1,
+                        newStart: 1,
+                        newLines: 1,
+                        home: "core",
+                      },
+                      {
+                        id: "h2",
+                        seedId: "s2",
+                        path: "src/support.ts",
+                        oldStart: 1,
+                        oldLines: 1,
+                        newStart: 1,
+                        newLines: 1,
+                        home: "binding",
+                      },
+                    ],
+                  }
+                : task.prompt.startsWith("Write the overview")
+                  ? {
+                      overview: {
+                        brief: { markdown: "A core behavior connected through support." },
+                        whereToBegin: { markdown: "Begin with the core." },
+                      },
+                    }
+                  : task.prompt.includes("Target cluster: core")
+                    ? {
+                        clusterId: "core",
+                        narrative: { markdown: "Defines the core behavior." },
+                        mapEntry: { markdown: "Establishes the core." },
+                        resurfaced: [],
+                        hints: [],
+                      }
+                    : {
+                        clusterId: "binding",
+                        narrative: {
+                          markdown: "Connects support while revisiting the core behavior.",
+                        },
+                        mapEntry: { markdown: "Binds support to the core." },
+                        resurfaced: [
+                          {
+                            hunkId: "h1",
+                            note: { markdown: "The known core behavior from the binding." },
+                          },
+                        ],
+                        hints: [],
+                      };
+              const value = yield* task.decode(raw).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new HarnessRunError({
+                      kind: "codex",
+                      reason: "invalid-output",
+                      detail: "decode failed",
+                      cause,
+                    }),
+                ),
+              );
+              return { value, continuation: "continuation" };
+            }),
+        };
+        const pipeline = yield* makePipeline(crossFileFixture, harness);
+
+        const result = yield* pipeline.run({
+          pr,
+          runId: prepared.runId,
+          journeyId: decodeJourneyId("journey-cross-file"),
+          harness,
+          callbacks: {
+            onPhase: () => Effect.void,
+            onStage: () => Effect.void,
+            onHarnessEvent: () => Effect.void,
+          },
+        });
+
+        const binding = result.journey.clusters[1];
+        assert.deepStrictEqual(binding?.fileOrder, [supportFile.path, file.path]);
+        assert.deepStrictEqual(
+          binding?.resurfaced.map(({ hunkId }) => hunkId),
+          ["h1"],
+        );
+        assert.deepStrictEqual(
+          validateJourney(result.journey, {
+            seeds: [seed, supportSeed],
+            pinnedFile: makePinnedFileLookup(
+              new Map([
+                ["src/core.ts", { old: "old\n", new: "new\n", headExists: true }],
+                [
+                  "src/support.ts",
+                  { old: "old support\n", new: "new support\n", headExists: true },
+                ],
+              ]),
+            ),
+          }),
+          [],
+        );
         assert.deepStrictEqual(fixture.operations, ["finalize", "replace"]);
       }),
     );
