@@ -135,6 +135,20 @@ const makeFixture = Effect.gen(function* () {
           oldFile: "f000001.old",
           newFile: "f000001.new",
         },
+        {
+          type: "image",
+          path: "assets/logo.png",
+          oldFile: null,
+          oldMediaType: null,
+          newFile: "f000002.new",
+          newMediaType: "image/png",
+        },
+        {
+          type: "binary",
+          path: "assets/archive.bin",
+          oldSize: 64,
+          newSize: 128,
+        },
       ],
     })}\n`,
   );
@@ -245,6 +259,65 @@ const validPlan = {
 
 describe("AnalysisPipeline", () => {
   it.layer(NodeServices.layer)("staged orchestration", (it) => {
+    it.effect("accepts file evidence for images and binaries present at the pinned head", () =>
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture;
+        const overviewMarkdown =
+          "[Image](tl:file/assets%2Flogo.png) and [archive](tl:file/assets%2Farchive.bin).";
+        const harness: AnalysisHarness = {
+          kind: "codex",
+          detect: Effect.die("unused"),
+          run: (task) =>
+            Effect.gen(function* () {
+              const raw = task.prompt.startsWith("You are planning")
+                ? validPlan
+                : task.prompt.startsWith("Write the overview")
+                  ? {
+                      overview: {
+                        brief: { markdown: overviewMarkdown },
+                        whereToBegin: { markdown: "Begin with the core." },
+                      },
+                    }
+                  : {
+                      clusterId: "core",
+                      narrative: { markdown: "Narrative." },
+                      mapEntry: { markdown: "Map entry." },
+                      resurfaced: [],
+                      hints: [],
+                    };
+              const value = yield* task.decode(raw).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new HarnessRunError({
+                      kind: "codex",
+                      reason: "invalid-output",
+                      detail: "decode failed",
+                      cause,
+                    }),
+                ),
+              );
+              return { value, continuation: "continuation" };
+            }),
+        };
+        const pipeline = yield* makePipeline(fixture, harness);
+
+        const result = yield* pipeline.run({
+          pr,
+          runId: fixture.prepared.runId,
+          journeyId: decodeJourneyId("journey-non-text"),
+          harness,
+          callbacks: {
+            onPhase: () => Effect.void,
+            onStage: () => Effect.void,
+            onHarnessEvent: () => Effect.void,
+          },
+        });
+
+        assert.strictEqual(result.journey.overview.brief.markdown, overviewMarkdown);
+        assert.deepStrictEqual(fixture.operations, ["finalize", "replace"]);
+      }),
+    );
+
     it.effect(
       "repairs twice, regenerates stage two once, then saves a valid fallback atomically",
       () =>
@@ -377,7 +450,7 @@ describe("AnalysisPipeline", () => {
             validateJourney(result.journey, {
               seeds: [seed],
               pinnedFile: makePinnedFileLookup(
-                new Map([["src/core.ts", { old: "old\n", new: "new\n" }]]),
+                new Map([["src/core.ts", { old: "old\n", new: "new\n", headExists: true }]]),
               ),
             }),
             [],

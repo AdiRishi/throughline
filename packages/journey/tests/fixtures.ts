@@ -41,6 +41,7 @@ const PINNED_FILES = new Map([
     {
       old: lines(20),
       new: lines(21, { 10: "export const alpha = 1" }),
+      headExists: true,
     },
   ],
   [
@@ -48,9 +49,10 @@ const PINNED_FILES = new Map([
     {
       old: lines(8),
       new: lines(10, { 6: "alpha()", 7: "beta()" }),
+      headExists: true,
     },
   ],
-  ["asset.bin", { old: null, new: null }],
+  ["asset.bin", { old: null, new: null, headExists: true }],
 ]);
 
 export const pinnedFile: PinnedFileLookup = (path) => PINNED_FILES.get(path);

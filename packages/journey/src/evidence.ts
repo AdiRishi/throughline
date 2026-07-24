@@ -40,6 +40,7 @@ export interface LocatedEvidenceLink {
 export interface PinnedFile {
   readonly old: string | null;
   readonly new: string | null;
+  readonly headExists: boolean;
 }
 
 export type PinnedFileLookup = (path: string) => PinnedFile | undefined;
@@ -242,7 +243,7 @@ export const validateEvidenceLinks = (
     }
 
     const file = input.pinnedFile(link.path);
-    if (file === undefined || file.new === null) {
+    if (file === undefined || !file.headExists) {
       violations.push({
         code: "evidence-file-missing",
         uri: link.uri,

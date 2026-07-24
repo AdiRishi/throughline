@@ -19,7 +19,11 @@ import {
   type PrRef,
 } from "@app/contracts";
 import { validateJourney, type JourneyViolation } from "@app/journey/coverage";
-import { makePinnedFileLookup, type PinnedFileLookup } from "@app/journey/evidence";
+import {
+  makePinnedFileLookup,
+  type PinnedFile,
+  type PinnedFileLookup,
+} from "@app/journey/evidence";
 
 import * as GitHub from "../github/GitHub.ts";
 import {
@@ -240,14 +244,15 @@ export const make = Effect.gen(function* () {
           pipelineError("artifact-corrupt", `${manifestPath} has an invalid shape.`, cause),
         ),
       );
-      const pinned = new Map<
-        string,
-        { readonly old: string | null; readonly new: string | null }
-      >();
+      const pinned = new Map<string, PinnedFile>();
 
       for (const entry of manifest.entries) {
         if (entry.type !== "text") {
-          pinned.set(entry.path, { old: null, new: null });
+          pinned.set(entry.path, {
+            old: null,
+            new: null,
+            headExists: entry.type === "image" ? entry.newFile !== null : entry.newSize !== null,
+          });
           continue;
         }
         const readSide = (filename: string | null) =>
@@ -267,6 +272,7 @@ export const make = Effect.gen(function* () {
         pinned.set(entry.path, {
           old: yield* readSide(entry.oldFile),
           new: yield* readSide(entry.newFile),
+          headExists: entry.newFile !== null,
         });
       }
 

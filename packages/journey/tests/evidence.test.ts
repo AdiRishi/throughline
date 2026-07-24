@@ -66,7 +66,9 @@ describe("evidence resolution", () => {
 
   it("reports unknown hunks, deleted head files, and absent symbols independently", () => {
     const deletedHead = (path: string) =>
-      path === "deleted.ts" ? { old: "export const old = 1", new: null } : pinnedFile(path);
+      path === "deleted.ts"
+        ? { old: "export const old = 1", new: null, headExists: false }
+        : pinnedFile(path);
     const markdown = [
       "[hunk](tl:hunk/h404)",
       "[file](tl:file/deleted.ts)",
@@ -85,6 +87,28 @@ describe("evidence resolution", () => {
         "evidence-symbol-missing",
         "evidence-invalid-uri",
       ],
+    );
+  });
+
+  it("resolves head file links for non-text files without inventing symbol text", () => {
+    const pinnedNonText = (path: string) =>
+      path === "assets/logo.png"
+        ? { old: null, new: null, headExists: true }
+        : path === "deleted.bin"
+          ? { old: null, new: null, headExists: false }
+          : undefined;
+    const markdown = [
+      "[image](tl:file/assets%2Flogo.png)",
+      "[symbol](tl:symbol/assets%2Flogo.png#Logo)",
+      "[deleted](tl:file/deleted.bin)",
+    ].join(" ");
+
+    assert.deepEqual(
+      validateEvidenceLinks(markdown, {
+        hunkIds: new Set(),
+        pinnedFile: pinnedNonText,
+      }).map((violation) => violation.code),
+      ["evidence-symbol-missing", "evidence-file-missing"],
     );
   });
 });
