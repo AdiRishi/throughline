@@ -4,6 +4,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -28,11 +29,15 @@ import {
   type Settings,
 } from "@app/contracts";
 
+import * as ServerConfig from "../config.ts";
+
 const JourneyJson = Schema.fromJsonString(Schema.toCodecJson(Journey));
+const LocalPrStateJson = Schema.fromJsonString(Schema.toCodecJson(LocalPrState));
 const ReadStateJson = Schema.fromJsonString(Schema.toCodecJson(ReadStateSchema));
 const SettingsJson = Schema.fromJsonString(Schema.toCodecJson(SettingsSchema));
 
 const decodeJourney = Schema.decodeUnknownEffect(JourneyJson);
+const decodeLocalPrState = Schema.decodeUnknownEffect(LocalPrStateJson);
 const encodeJourney = Schema.encodeUnknownEffect(JourneyJson);
 const decodeReadState = Schema.decodeUnknownEffect(ReadStateJson);
 const encodeReadState = Schema.encodeUnknownEffect(ReadStateJson);
@@ -42,6 +47,27 @@ const encodeSettings = Schema.encodeUnknownEffect(SettingsJson);
 interface JourneyRow {
   readonly artifact_json: string;
   readonly run_dir: string;
+}
+
+interface LegacyJourneyRow {
+  readonly owner: string;
+  readonly repo: string;
+  readonly number: number;
+  readonly journey_id: string;
+  readonly run_id: string;
+  readonly head_sha: string;
+  readonly base_sha: string;
+  readonly analyzed_at: string;
+  readonly harness_kind: string;
+  readonly journey_json: string;
+}
+
+interface LegacyPrStateRow {
+  readonly state_json: string;
+}
+
+interface TableColumnRow {
+  readonly name: string;
 }
 
 interface PrStateRow {
@@ -99,7 +125,7 @@ export class JourneyStore extends Context.Service<
   }
 >()("@app/server/journeys/JourneyStore") {}
 
-const initialMigration = Effect.gen(function* () {
+const createJourneysTable = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
     CREATE TABLE journeys (
@@ -117,12 +143,20 @@ const initialMigration = Effect.gen(function* () {
     )
   `;
   yield* sql`CREATE INDEX journeys_analyzed_at ON journeys(analyzed_at DESC)`;
+});
+
+const createReadStateTable = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
   yield* sql`
     CREATE TABLE read_state (
       journey_id TEXT PRIMARY KEY,
       state_json TEXT NOT NULL
     )
   `;
+});
+
+const createPrStateTable = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
   yield* sql`
     CREATE TABLE pr_state (
       owner TEXT NOT NULL,
@@ -132,6 +166,10 @@ const initialMigration = Effect.gen(function* () {
       PRIMARY KEY (owner, repo, pr_number, kind)
     )
   `;
+});
+
+const createSettingsTable = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
   yield* sql`
     CREATE TABLE settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -139,6 +177,90 @@ const initialMigration = Effect.gen(function* () {
     )
   `;
 });
+
+const initialMigration = Effect.gen(function* () {
+  yield* createJourneysTable;
+  yield* createReadStateTable;
+  yield* createPrStateTable;
+  yield* createSettingsTable;
+});
+
+const productSchemaMigration = (path: Path.Path, dataDir: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const journeyColumns = yield* sql<TableColumnRow>`PRAGMA table_info(journeys)`;
+    const hasProductJourneys = journeyColumns.some(
+      (column) => column.name === "pr_number" || column.name === "artifact_json",
+    );
+    if (!hasProductJourneys) {
+      const legacyJourneys = yield* sql<LegacyJourneyRow>`SELECT
+        owner, repo, number, journey_id, run_id, head_sha, base_sha,
+        analyzed_at, harness_kind, journey_json
+        FROM journeys`;
+      const readStateColumns = yield* sql<TableColumnRow>`PRAGMA table_info(read_state)`;
+
+      yield* sql`DROP INDEX IF EXISTS journeys_analyzed_at`;
+      if (readStateColumns.length > 0) {
+        yield* sql`ALTER TABLE read_state RENAME TO legacy_read_state_v1`;
+      }
+      yield* sql`ALTER TABLE journeys RENAME TO legacy_journeys_v1`;
+      yield* createJourneysTable;
+      yield* createReadStateTable;
+
+      for (const row of legacyJourneys) {
+        const runDir = path.join(
+          dataDir,
+          "runs",
+          row.owner,
+          row.repo,
+          String(row.number),
+          row.run_id,
+        );
+        yield* sql`INSERT INTO journeys (
+          owner, repo, pr_number, journey_id, head_sha, base_sha,
+          analyzed_at, harness_kind, run_dir, artifact_json
+        ) VALUES (
+          ${row.owner}, ${row.repo}, ${row.number}, ${row.journey_id},
+          ${row.head_sha}, ${row.base_sha}, ${row.analyzed_at},
+          ${row.harness_kind}, ${runDir}, ${row.journey_json}
+        )`;
+      }
+      if (readStateColumns.length > 0) {
+        yield* sql`INSERT INTO read_state (journey_id, state_json)
+          SELECT journey_id, state_json
+          FROM legacy_read_state_v1
+          WHERE journey_id IN (SELECT journey_id FROM journeys)`;
+        yield* sql`DROP TABLE legacy_read_state_v1`;
+      }
+      yield* sql`DROP TABLE legacy_journeys_v1`;
+    }
+
+    const prStateColumns = yield* sql<TableColumnRow>`PRAGMA table_info(pr_state)`;
+    const hasProductPrState = prStateColumns.some((column) => column.name === "owner");
+    if (!hasProductPrState) {
+      const legacyRows = yield* sql<LegacyPrStateRow>`SELECT state_json FROM pr_state WHERE id = 1`;
+      const legacyState =
+        legacyRows[0] === undefined
+          ? { reviewed: [], hidden: [], dismissedMerged: [] }
+          : yield* decodeLocalPrState(legacyRows[0].state_json).pipe(
+              Effect.orElseSucceed(() => ({
+                reviewed: [],
+                hidden: [],
+                dismissedMerged: [],
+              })),
+            );
+
+      yield* sql`ALTER TABLE pr_state RENAME TO legacy_pr_state_v1`;
+      yield* createPrStateTable;
+      for (const kind of ["reviewed", "hidden", "dismissedMerged"] as const) {
+        for (const pr of legacyState[kind]) {
+          yield* sql`INSERT INTO pr_state (owner, repo, pr_number, kind)
+            VALUES (${pr.owner}, ${pr.repo}, ${pr.number}, ${kind})`;
+        }
+      }
+      yield* sql`DROP TABLE legacy_pr_state_v1`;
+    }
+  });
 
 function rowsToPrState(rows: ReadonlyArray<PrStateRow>): LocalPrState {
   const refs = (kind: PrStateRow["kind"]) =>
@@ -154,8 +276,13 @@ function rowsToPrState(rows: ReadonlyArray<PrStateRow>): LocalPrState {
 
 export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const config = yield* ServerConfig.ServerConfig;
+  const path = yield* Path.Path;
   yield* SqliteMigrator.run({
-    loader: SqliteMigrator.fromRecord({ "1_initial": initialMigration }),
+    loader: SqliteMigrator.fromRecord({
+      "1_initial": initialMigration,
+      "2_product_schema": productSchemaMigration(path, config.dataDir),
+    }),
   }).pipe(Effect.orDie);
 
   const readBusState = yield* SynchronizedRef.make<ReadBusState>({ sequence: 0 });
