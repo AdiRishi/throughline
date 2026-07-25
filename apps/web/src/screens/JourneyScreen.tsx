@@ -218,7 +218,7 @@ function ReadingControls({
   readonly readState: ReadState;
   readonly focus: CodeFocus | null;
   readonly onFocus: (focus: CodeFocus) => void;
-  readonly onMark: (path: string) => void;
+  readonly onMark: ((path: string) => void) | undefined;
 }) {
   const changes = useMemo(
     () =>
@@ -274,7 +274,7 @@ function ReadingControls({
       ) {
         return;
       }
-      if (event.key === "r") {
+      if (event.key === "r" && onMark !== undefined) {
         const path =
           (focus !== null && paths.includes(focus.path) ? focus.path : undefined) ??
           paths.find(
@@ -367,6 +367,8 @@ function LoadedJourney({
   const startIngestion = useAtomSet(productAtoms.startIngestion);
   const [optimisticReadState, setOptimisticReadState] = useState<ReadState | null>(null);
   const [focus, setFocus] = useState<CodeFocus | null>(null);
+  const [visiblePath, setVisiblePath] = useState<string | null>(null);
+  const [openFiles, setOpenFiles] = useState<ReadonlyArray<string>>([]);
   const [narrativeOpen, setNarrativeOpen] = useState(true);
   const [guidanceOpen, setGuidanceOpen] = useState(true);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -423,8 +425,14 @@ function LoadedJourney({
   useEffect(() => {
     if (desiredPaths.length > 0) {
       loadFiles({ journeyId: journey.id, paths: desiredPaths });
+      setVisiblePath(desiredPaths[0] ?? null);
     }
   }, [desiredPaths, journey.id, loadFiles]);
+  useEffect(() => {
+    if (filePath !== null) {
+      setOpenFiles((current) => (current.includes(filePath) ? current : [...current, filePath]));
+    }
+  }, [filePath]);
 
   const tree = resultValue(treeResult);
   const filesCandidate = resultValue(filesResult);
@@ -434,14 +442,20 @@ function LoadedJourney({
     desiredPaths.every((path) => filesCandidate.patches.some((patch) => patch.path === path))
       ? filesCandidate
       : null;
+  const treePaths = useMemo(
+    () =>
+      tree?.entries.filter((entry) => entry.kind !== "directory").map((entry) => entry.path) ?? [],
+    [tree],
+  );
   const readState = optimisticReadState;
+  const latestPullRequest = pullRequests.pullRequests.find(
+    (pr) =>
+      pr.ref.owner === journey.pr.owner &&
+      pr.ref.repo === journey.pr.repo &&
+      pr.ref.number === journey.pr.number,
+  );
   const stale =
-    pullRequests.pullRequests.find(
-      (pr) =>
-        pr.ref.owner === journey.pr.owner &&
-        pr.ref.repo === journey.pr.repo &&
-        pr.ref.number === journey.pr.number,
-    )?.journey.stale ?? false;
+    latestPullRequest !== undefined && latestPullRequest.headSha !== journey.pinned.headSha;
 
   useEffect(() => {
     if (AsyncResult.isFailure(markResult) || AsyncResult.isFailure(displayResult)) {
@@ -547,9 +561,7 @@ function LoadedJourney({
             journey={journey}
             readState={readState}
             view={location.view}
-            treePaths={tree.entries
-              .filter((entry) => entry.kind !== "directory")
-              .map((entry) => entry.path)}
+            treePaths={treePaths}
             stale={stale}
             onOverview={onOverview}
             onCluster={onCluster}
@@ -592,34 +604,61 @@ function LoadedJourney({
                     )}
                   </header>
                 ) : (
-                  <header className="free-file-header">
-                    <div>
-                      <p className="eyebrow">Free reading</p>
-                      <h2>{filePath}</h2>
-                    </div>
-                    <DisplayControls mode={readState.displayMode} onChange={changeMode} />
-                    <div className="file-home-actions">
-                      {journey.clusters
-                        .filter(
-                          (cluster) => filePath !== null && cluster.fileOrder.includes(filePath),
-                        )
-                        .map((cluster) => {
-                          const read = readState.readFiles.some(
-                            (entry) => entry.clusterId === cluster.id && entry.path === filePath,
-                          );
-                          return (
-                            <button
-                              key={cluster.id}
-                              onClick={() => {
-                                if (filePath !== null) mark(cluster, filePath);
-                              }}
-                            >
-                              {read ? "Read" : "Mark read"} · {cluster.title}
-                            </button>
-                          );
-                        })}
-                    </div>
-                  </header>
+                  <>
+                    <nav className="file-tabs" aria-label="Open files">
+                      {openFiles.map((path) => (
+                        <div key={path} className={path === filePath ? "active" : ""}>
+                          <button className="file-tab-open" onClick={() => onFile(path)}>
+                            {path}
+                          </button>
+                          <button
+                            className="file-tab-close"
+                            aria-label={`Close ${path}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              const remaining = openFiles.filter((candidate) => candidate !== path);
+                              setOpenFiles(remaining);
+                              if (path === filePath) {
+                                const replacement = remaining.at(-1);
+                                if (replacement === undefined) onOverview();
+                                else onFile(replacement);
+                              }
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </nav>
+                    <header className="free-file-header">
+                      <div>
+                        <p className="eyebrow">Free reading</p>
+                        <h2>{filePath}</h2>
+                      </div>
+                      <DisplayControls mode={readState.displayMode} onChange={changeMode} />
+                      <div className="file-home-actions">
+                        {journey.clusters
+                          .filter(
+                            (cluster) => filePath !== null && cluster.fileOrder.includes(filePath),
+                          )
+                          .map((cluster) => {
+                            const read = readState.readFiles.some(
+                              (entry) => entry.clusterId === cluster.id && entry.path === filePath,
+                            );
+                            return (
+                              <button
+                                key={cluster.id}
+                                onClick={() => {
+                                  if (filePath !== null) mark(cluster, filePath);
+                                }}
+                              >
+                                {read ? "Read" : "Mark read"} · {cluster.title}
+                              </button>
+                            );
+                          })}
+                      </div>
+                    </header>
+                  </>
                 )}
                 {files === null ? (
                   <div className="diff-placeholder">Loading pinned files…</div>
@@ -633,9 +672,12 @@ function LoadedJourney({
                       mode={readState.displayMode}
                       readState={readState}
                       focus={focus}
-                      onMarkFile={(path) => mark(selectedCluster, path)}
+                      onMarkFile={
+                        view.type === "cluster" ? (path) => mark(selectedCluster, path) : undefined
+                      }
                       onModeChange={changeMode}
                       onOpenCluster={onCluster}
+                      onVisiblePath={setVisiblePath}
                     />
                     <ReadingControls
                       journey={journey}
@@ -644,7 +686,9 @@ function LoadedJourney({
                       readState={readState}
                       focus={focus}
                       onFocus={setFocus}
-                      onMark={(path) => mark(selectedCluster, path)}
+                      onMark={
+                        view.type === "cluster" ? (path) => mark(selectedCluster, path) : undefined
+                      }
                     />
                   </>
                 )}
@@ -693,6 +737,9 @@ function LoadedJourney({
                     (hint) =>
                       hint.clusterId === selectedCluster.id &&
                       (filePath === null || hint.anchor.path === filePath) &&
+                      (filePath !== null ||
+                        visiblePath === null ||
+                        hint.anchor.path === visiblePath) &&
                       !(readState.displayMode === "just-the-code" && hint.anchor.side === "old"),
                   )
                   .map((hint) => (

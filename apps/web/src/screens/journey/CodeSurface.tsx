@@ -1,4 +1,4 @@
-import { parsePatchFiles, type CodeViewItem, type DiffLineAnnotation } from "@pierre/diffs";
+import { parseDiffFromFile, type CodeViewItem, type DiffLineAnnotation } from "@pierre/diffs";
 import { CodeView, type CodeViewHandle } from "@pierre/diffs/react";
 import { useEffect, useMemo, useRef } from "react";
 
@@ -85,7 +85,13 @@ function fileItem(
   );
   const annotations = annotationsFor(journey, cluster, path, mode);
   const content = files.contents.find((candidate) => candidate.path === path);
-  if (content?.oldEncoding === "base64" || content?.newEncoding === "base64") return null;
+  if (
+    imageMimeType(path) !== null ||
+    content?.oldEncoding === "base64" ||
+    content?.newEncoding === "base64"
+  ) {
+    return null;
+  }
   if (mode === "just-the-code") {
     const renderedContent =
       content?.newEncoding === "text"
@@ -113,10 +119,27 @@ function fileItem(
     };
   }
 
-  const patch = files.patches.find((candidate) => candidate.path === path);
-  const parsed = patch === undefined ? [] : parsePatchFiles(patch.patch, `${journey.id}:${path}`);
-  const fileDiff = parsed.flatMap((item) => item.files)[0];
-  if (fileDiff === undefined) {
+  if (content === undefined) {
+    return null;
+  }
+  if (content.oldContent === null && content.newContent === null) {
+    return null;
+  }
+  const file = journey.files.find((candidate) => candidate.path === path);
+  const fileDiff = parseDiffFromFile(
+    {
+      name: file?.oldPath ?? path,
+      contents: content.oldContent ?? "",
+      cacheKey: `${journey.id}:${journey.pinned.baseSha}:${file?.oldPath ?? path}`,
+    },
+    {
+      name: path,
+      contents: content.newContent ?? "",
+      cacheKey: `${journey.id}:${journey.pinned.headSha}:${path}`,
+    },
+    { context: 3 },
+  );
+  if (fileDiff.hunks.length === 0) {
     const renderedContent =
       content?.newEncoding === "text"
         ? content.newContent
@@ -162,6 +185,8 @@ function imageMimeType(path: string): string | null {
       return "image/jpeg";
     case "png":
       return "image/png";
+    case "svg":
+      return "image/svg+xml";
     case "webp":
       return "image/webp";
     default:
@@ -197,18 +222,22 @@ function NonTextChange({
   readonly file: FileChange;
   readonly content: FileContent | undefined;
   readonly read: boolean;
-  readonly onMark: () => void;
+  readonly onMark: (() => void) | undefined;
 }) {
   const mime = imageMimeType(file.path);
+  const source = (value: string, encoding: "text" | "base64") =>
+    encoding === "base64"
+      ? `data:${mime};base64,${value}`
+      : `data:${mime};charset=utf-8,${encodeURIComponent(value)}`;
   const images =
     mime === null
       ? []
       : [
-          ...(content?.oldEncoding === "base64" && content.oldContent !== null
-            ? [{ label: "Before", source: `data:${mime};base64,${content.oldContent}` }]
+          ...(content?.oldContent !== null && content?.oldContent !== undefined
+            ? [{ label: "Before", source: source(content.oldContent, content.oldEncoding) }]
             : []),
-          ...(content?.newEncoding === "base64" && content.newContent !== null
-            ? [{ label: "After", source: `data:${mime};base64,${content.newContent}` }]
+          ...(content?.newContent !== null && content?.newContent !== undefined
+            ? [{ label: "After", source: source(content.newContent, content.newEncoding) }]
             : []),
         ];
   return (
@@ -218,7 +247,9 @@ function NonTextChange({
           <code>{file.path}</code>
           <span>{changeDescription(file)}</span>
         </div>
-        <button onClick={onMark}>{read ? "Mark unread" : "Mark read"}</button>
+        {onMark !== undefined && (
+          <button onClick={onMark}>{read ? "Mark unread" : "Mark read"}</button>
+        )}
       </header>
       {images.length > 0 ? (
         <div className="image-change">
@@ -247,6 +278,7 @@ export function CodeSurface({
   onMarkFile,
   onModeChange,
   onOpenCluster,
+  onVisiblePath,
 }: {
   readonly journey: Journey;
   readonly cluster: Cluster;
@@ -255,9 +287,10 @@ export function CodeSurface({
   readonly mode: DisplayMode;
   readonly readState: ReadState;
   readonly focus: CodeFocus | null;
-  readonly onMarkFile: (path: string) => void;
+  readonly onMarkFile: ((path: string) => void) | undefined;
   readonly onModeChange: (mode: DisplayMode) => void;
   readonly onOpenCluster: (clusterId: ClusterId) => void;
+  readonly onVisiblePath: (path: string) => void;
 }) {
   const viewRef = useRef<CodeViewHandle<ReviewAnnotation>>(null);
   const items = useMemo(
@@ -274,6 +307,19 @@ export function CodeSurface({
     const file = journey.files.find((candidate) => candidate.path === path);
     return file === undefined ? [] : [file];
   });
+  const options = useMemo(
+    () => ({
+      diffStyle: mode === "split" ? ("split" as const) : ("unified" as const),
+      theme: { dark: "github-dark-default", light: "github-light-default" },
+      themeType: "system" as const,
+      overflow: "scroll" as const,
+      diffIndicators: "bars" as const,
+      expandUnchanged: false,
+      expansionLineCount: 20,
+      stickyHeaders: true,
+    }),
+    [mode],
+  );
 
   useEffect(() => {
     if (focus === null || !items.some((item) => item.id === focus.path)) return;
@@ -298,17 +344,13 @@ export function CodeSurface({
           ref={viewRef}
           className="cluster-code-view"
           items={items}
-          disableWorkerPool
-          options={{
-            diffStyle: mode === "split" ? "split" : "unified",
-            theme: { dark: "github-dark-default", light: "github-light-default" },
-            themeType: "system",
-            overflow: "scroll",
-            diffIndicators: "bars",
-            expandUnchanged: false,
-            expansionLineCount: 20,
-            stickyHeaders: true,
+          onScroll={(scrollTop, viewer) => {
+            const visible = items.findLast(
+              (item) => (viewer.getTopForItem(item.id) ?? Infinity) <= scrollTop + 120,
+            );
+            if (visible !== undefined) onVisiblePath(visible.id);
           }}
+          options={options}
           renderCustomHeader={(item) => {
             const read = readState.readFiles.some(
               (entry) => entry.clusterId === cluster.id && entry.path === item.id,
@@ -322,9 +364,11 @@ export function CodeSurface({
                       {mode === "split" ? "Inline" : "Split"}
                     </button>
                   )}
-                  <button onClick={() => onMarkFile(item.id)}>
-                    {read ? "Mark unread" : "Mark read"}
-                  </button>
+                  {onMarkFile !== undefined && (
+                    <button onClick={() => onMarkFile(item.id)}>
+                      {read ? "Mark unread" : "Mark read"}
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -357,7 +401,7 @@ export function CodeSurface({
             file={file}
             content={files.contents.find((candidate) => candidate.path === file.path)}
             read={read}
-            onMark={() => onMarkFile(file.path)}
+            onMark={onMarkFile === undefined ? undefined : () => onMarkFile(file.path)}
           />
         );
       })}

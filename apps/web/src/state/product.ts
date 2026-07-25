@@ -107,6 +107,7 @@ const readState = Atom.family((journeyId: JourneyId) =>
 
 export const productAtoms = {
   pullRequests,
+  pullRequestsResult,
   ingestion,
   readState,
   viewer: connectionRuntime.atom(requestForEachSession(rpcRequest("github.viewer", {}))),

@@ -16,7 +16,8 @@ The core guarantee: Throughline never summarizes the diff — it **partitions** 
 
 ## The documents
 
-This project is being built documentation-first. The docs are the product right now:
+This project is documentation-first: the specifications define the product, and the implementation
+is kept aligned with them.
 
 | Document                                   | What it holds                                                                                          |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
@@ -51,4 +52,5 @@ pnpm dev            # server + web UI in your browser, with HMR
 pnpm dev:desktop    # the Electron shell
 pnpm check          # typecheck + lint + format
 pnpm test           # vitest across every package
+pnpm build          # production builds for server, web, and desktop
 ```

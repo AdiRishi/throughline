@@ -267,6 +267,45 @@ export const make = Effect.gen(function* () {
           yield* runGit(["--git-dir", repository, "merge-base", baseRef, fetchedHead]),
         ).trim();
 
+        const priorWorktrees = UTF8.decode(
+          yield* runGit(["--git-dir", repository, "worktree", "list", "--porcelain"]),
+        )
+          .split("\n")
+          .flatMap((line) =>
+            line.startsWith("worktree ") ? [line.slice("worktree ".length)] : [],
+          );
+        const prRunsRoot = path.join(
+          config.dataDir,
+          "runs",
+          detail.ref.owner,
+          detail.ref.repo,
+          String(detail.ref.number),
+        );
+        const canonicalPrRunsRoot = yield* fileSystem
+          .realPath(prRunsRoot)
+          .pipe(Effect.orElseSucceed(() => path.resolve(prRunsRoot)));
+        for (const priorWorktree of priorWorktrees) {
+          const canonicalPriorWorktree = yield* fileSystem
+            .realPath(priorWorktree)
+            .pipe(Effect.orElseSucceed(() => path.resolve(priorWorktree)));
+          const relative = path.relative(canonicalPrRunsRoot, canonicalPriorWorktree);
+          if (
+            priorWorktree !== worktree &&
+            relative !== "" &&
+            relative !== ".." &&
+            !relative.startsWith(`..${path.sep}`) &&
+            !path.isAbsolute(relative)
+          ) {
+            yield* runGit([
+              "--git-dir",
+              repository,
+              "worktree",
+              "remove",
+              "--force",
+              priorWorktree,
+            ]).pipe(Effect.ignore);
+          }
+        }
         yield* runGit(["--git-dir", repository, "worktree", "prune"]);
         yield* runGit([
           "--git-dir",

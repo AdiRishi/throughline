@@ -155,12 +155,14 @@ function PrRow({
   localState,
   onAnalyze,
   onDismiss,
+  onUpdateState,
 }: {
   readonly pr: PullRequestSummary;
   readonly job: IngestionJob | undefined;
   readonly localState: LocalPrState;
   readonly onAnalyze: (pr: PrRef) => void;
   readonly onDismiss?: (pr: PrRef) => void;
+  readonly onUpdateState: (kind: "reviewed" | "hidden", pr: PrRef, value: boolean) => void;
 }) {
   const reviewed = isIn(localState.reviewed, pr.ref);
   return (
@@ -192,6 +194,12 @@ function PrRow({
         )}
       </div>
       <div className="pr-action">
+        <div className="pr-local-actions">
+          <button onClick={() => onUpdateState("reviewed", pr.ref, !reviewed)}>
+            {reviewed ? "Undo reviewed" : "Mark reviewed"}
+          </button>
+          <button onClick={() => onUpdateState("hidden", pr.ref, true)}>Hide</button>
+        </div>
         {pr.journey.exists || job?.phase.type === "complete" ? (
           <div className="journey-actions">
             <Link
@@ -238,8 +246,10 @@ function PrRow({
 export function WelcomeScreen() {
   const navigate = useNavigate();
   const pullRequestView = useAtomValue(productAtoms.pullRequests);
+  const pullRequestsResult = useAtomValue(productAtoms.pullRequestsResult);
   const ingestion = useAtomValue(productAtoms.ingestion);
   const viewerResult = useAtomValue(productAtoms.viewer);
+  const harnessesResult = useAtomValue(productAtoms.harnesses);
   const prStateResult = useAtomValue(productAtoms.prState);
   const [prStateUpdateResult, updatePrState] = useAtom(productAtoms.updatePrState);
   const [startResult, startIngestion] = useAtom(productAtoms.startIngestion);
@@ -331,6 +341,10 @@ export function WelcomeScreen() {
       </main>
     );
   }
+  const harnesses = AsyncResult.isSuccess(harnessesResult) ? harnessesResult.value : [];
+  const analysisReady = AsyncResult.isSuccess(harnessesResult)
+    ? harnesses.some((harness) => harness.auth === "authenticated")
+    : null;
 
   return (
     <main className="welcome-page">
@@ -352,6 +366,21 @@ export function WelcomeScreen() {
           </button>
         </div>
       </section>
+
+      {AsyncResult.isFailure(pullRequestsResult) && (
+        <section className="setup-banner">
+          <strong>GitHub is temporarily unavailable.</strong>
+          <p>{String(pullRequestsResult.cause)}</p>
+        </section>
+      )}
+
+      {analysisReady === false && (
+        <section className="setup-banner">
+          <strong>Connect an analysis harness to build journeys.</strong>
+          <p>Authenticate Codex or Claude Code, then choose it in settings.</p>
+          <Link to="/settings">Open settings →</Link>
+        </section>
+      )}
 
       {addOpen && (
         <form
@@ -422,6 +451,7 @@ export function WelcomeScreen() {
                   job={jobFor(pr.ref)}
                   localState={localState}
                   onAnalyze={analyze}
+                  onUpdateState={(kind, pr, value) => updatePrState({ kind, pr, value })}
                 />
               ))}
             </section>
@@ -439,6 +469,7 @@ export function WelcomeScreen() {
               job={jobFor(pr.ref)}
               localState={localState}
               onAnalyze={analyze}
+              onUpdateState={(kind, pr, value) => updatePrState({ kind, pr, value })}
               onDismiss={(pr) => updatePrState({ kind: "dismissedMerged", pr, value: true })}
             />
           ))}

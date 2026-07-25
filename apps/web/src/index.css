@@ -394,6 +394,33 @@ a {
   text-align: right;
 }
 
+.pr-local-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 5px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.pr-row:hover .pr-local-actions,
+.pr-row:focus-within .pr-local-actions {
+  opacity: 1;
+}
+
+.pr-local-actions button {
+  border: 0;
+  background: transparent;
+  padding: 4px 6px;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 8px;
+}
+
+.pr-local-actions button:hover {
+  color: var(--text);
+}
+
 .text-action {
   border: 0;
   background: none;
@@ -1142,6 +1169,51 @@ a {
   margin-bottom: 26px;
 }
 
+.file-tabs {
+  display: flex;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-subtle);
+}
+
+.file-tabs > div {
+  display: flex;
+  min-width: 0;
+  max-width: 240px;
+  align-items: center;
+  border-right: 1px solid var(--line);
+}
+
+.file-tabs > div.active {
+  background: var(--surface);
+}
+
+.file-tabs button {
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 8px;
+}
+
+.file-tabs > div.active button {
+  color: var(--text);
+}
+
+.file-tab-open {
+  overflow: hidden;
+  padding: 8px 5px 8px 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-tab-close {
+  padding: 7px 9px 7px 5px;
+  color: var(--text-faint);
+  font-size: 12px !important;
+}
+
 .cluster-story h2,
 .free-file-header h2 {
   margin: 0;
@@ -1492,6 +1564,38 @@ a {
   background: color-mix(in srgb, var(--red) 7%, var(--surface));
   color: var(--red);
   font-size: 11px;
+}
+
+.setup-banner {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 20px;
+  margin-bottom: 18px;
+  border: 1px solid var(--line);
+  background: var(--surface-subtle);
+  padding: 13px 15px;
+  color: var(--text-soft);
+  font-size: 10px;
+}
+
+.setup-banner strong {
+  color: var(--text);
+}
+
+.setup-banner p {
+  grid-column: 1;
+  margin: 0;
+}
+
+.setup-banner a {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-decoration: none;
+  text-transform: uppercase;
 }
 
 .cluster-rail li button.active {
@@ -1889,6 +1993,12 @@ a {
 
   .tree-panel > * {
     height: 240px;
+  }
+}
+
+@media (hover: none) {
+  .pr-local-actions {
+    opacity: 1;
   }
 }
 

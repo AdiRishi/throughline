@@ -87,7 +87,11 @@ export class GitHubUnavailableError extends Schema.TaggedErrorClass<GitHubUnavai
     detail: TrimmedNonEmptyString,
     resetAt: Schema.optionalKey(Schema.DateTimeUtc),
   },
-) {}
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
 
 export const DoorRejectionReason = Schema.Literals([
   "invalid-url",
@@ -104,7 +108,11 @@ export class IngestionDoorError extends Schema.TaggedErrorClass<IngestionDoorErr
     reason: DoorRejectionReason,
     detail: TrimmedNonEmptyString,
   },
-) {}
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
 
 export const HarnessAuthState = Schema.Literals(["authenticated", "unauthenticated", "unknown"]);
 export type HarnessAuthState = typeof HarnessAuthState.Type;
