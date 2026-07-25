@@ -771,8 +771,9 @@ function buildCodeViewItem(input: {
   const annotationSignature = hunks
     .map((hunk) => `${hunk.id}:${hunk.home}:${resurfacedIds.has(hunk.id) ? "r" : ""}`)
     .join("|");
+  const renderKind = displayMode === "just-the-code" ? "code" : "diff";
   const version = stableHash(
-    `${journey.id}:${displayMode}:${clusterId ?? ""}:${collapsed}:${annotationSignature}:${resource.ready}:${resource.error ?? ""}`,
+    `${journey.id}:${renderKind}:${clusterId ?? ""}:${collapsed}:${annotationSignature}:${resource.ready}:${resource.error ?? ""}`,
   );
 
   if (
