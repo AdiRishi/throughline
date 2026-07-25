@@ -149,9 +149,7 @@ Journey plan:
 ${plan}`;
 }
 
-function deterministicPlan(
-  seeds: ReadonlyArray<SeedHunk>,
-): ReadonlyArray<{
+function deterministicPlan(seeds: ReadonlyArray<SeedHunk>): ReadonlyArray<{
   title: string;
   weight: "core" | "supporting" | "mechanical";
   seedIds: string[];

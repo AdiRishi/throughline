@@ -3,7 +3,6 @@
 export * from "./baseSchemas.ts";
 export * from "./auth.ts";
 export * from "./server.ts";
-export * from "./notes.ts";
 export * from "./journey.ts";
 export * from "./github.ts";
 export * from "./productState.ts";

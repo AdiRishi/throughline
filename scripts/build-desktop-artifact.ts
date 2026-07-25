@@ -19,6 +19,13 @@ const REPO_ROOT = NodePath.dirname(NodePath.dirname(NodeURL.fileURLToPath(import
 
 const APP_ID = "com.arsoftware.throughline";
 const PRODUCT_NAME = "Throughline";
+const SERVER_RUNTIME_PACKAGES = [
+  "@openai/codex-sdk",
+  "@anthropic-ai/claude-agent-sdk",
+  "@anthropic-ai/sdk",
+  "@modelcontextprotocol/sdk",
+  "zod",
+] as const;
 
 function arg(name: string, fallback: string): string {
   const index = process.argv.indexOf(`--${name}`);
@@ -114,6 +121,17 @@ function main(): void {
       "utf8",
     ),
   ) as { readonly version: string };
+  const serverRuntimeDependencies = Object.fromEntries(
+    SERVER_RUNTIME_PACKAGES.map((packageName) => {
+      const manifest = JSON.parse(
+        NodeFS.readFileSync(
+          NodePath.join(REPO_ROOT, "apps/server/node_modules", packageName, "package.json"),
+          "utf8",
+        ),
+      ) as { readonly version: string };
+      return [packageName, manifest.version];
+    }),
+  );
 
   NodeFS.writeFileSync(
     NodePath.join(stage, "package.json"),
@@ -124,6 +142,7 @@ function main(): void {
         main: "apps/desktop/dist-electron/main.cjs",
         dependencies: {
           "electron-updater": desktopPackageJson.dependencies["electron-updater"],
+          ...serverRuntimeDependencies,
         },
         devDependencies: {
           electron: electronPackageJson.version,
@@ -154,7 +173,7 @@ function main(): void {
     productName: PRODUCT_NAME,
     directories: { output: NodePath.join(REPO_ROOT, "release/dist") },
     files: ["**/*"],
-    asarUnpack: ["apps/server/**"],
+    asarUnpack: ["apps/server/**", "node_modules/@openai/**", "node_modules/@anthropic-ai/**"],
     mac: { target: [target], category: "public.app-category.developer-tools" },
     win: { target: [target] },
     linux: { target: [target], category: "Development" },

@@ -55,6 +55,7 @@ export const WS_METHODS = {
   readStateUnmarkFile: "readState.unmarkFile",
   readStateSetDisplayMode: "readState.setDisplayMode",
   readStateSubscribe: "readState.subscribe",
+  prStateGet: "prState.get",
   prStateReviewed: "prState.reviewed",
   prStateHide: "prState.hide",
   prStateDismissMerged: "prState.dismissMerged",
@@ -179,6 +180,12 @@ export const WsReadStateSubscribeRpc = Rpc.make(WS_METHODS.readStateSubscribe, {
   stream: true,
 });
 
+export const WsPrStateGetRpc = Rpc.make(WS_METHODS.prStateGet, {
+  payload: Schema.Struct({}),
+  success: LocalPrState,
+  error: Authorized,
+});
+
 export const WsPrStateReviewedRpc = Rpc.make(WS_METHODS.prStateReviewed, {
   payload: PrStateAction,
   success: LocalPrState,
@@ -233,6 +240,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsReadStateUnmarkFileRpc,
   WsReadStateSetDisplayModeRpc,
   WsReadStateSubscribeRpc,
+  WsPrStateGetRpc,
   WsPrStateReviewedRpc,
   WsPrStateHideRpc,
   WsPrStateDismissMergedRpc,

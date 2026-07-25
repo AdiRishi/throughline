@@ -2,11 +2,8 @@
  * WebSocket RPC route + handler registration.
  *
  * `/ws` upgrades to the Effect RPC websocket protocol after a bearer-auth gate.
- * The `WsRpcGroup` methods are registered via `WsRpcGroup.toLayer`:
- *  - `server.getConfig` / `server.echo` (unary transport templates)
- *  - `server.subscribeTicks` (stream template)
- *  - `server.subscribeLifecycle` (stream, ordered push bus)
- *  - `notes.*` (the sample domain: unary mutations + a push-bus subscription)
+ * The `WsRpcGroup` exposes server lifecycle, GitHub discovery, ingestion,
+ * immutable journey artifacts, reading state, local PR state, and settings.
  *
  * @module ws
  */
@@ -166,6 +163,7 @@ const makeWsRpcLayer = () =>
         [WS_METHODS.readStateUnmarkFile]: (input) => journeys.markFile({ ...input, read: false }),
         [WS_METHODS.readStateSetDisplayMode]: (input) => journeys.setDisplayMode(input),
         [WS_METHODS.readStateSubscribe]: (input) => journeys.readStateChanges(input.journeyId),
+        [WS_METHODS.prStateGet]: () => journeys.getPrState,
         [WS_METHODS.prStateReviewed]: (input) => journeys.setPrState("reviewed", input),
         [WS_METHODS.prStateHide]: (input) => journeys.setPrState("hidden", input),
         [WS_METHODS.prStateDismissMerged]: (input) => journeys.setPrState("dismissedMerged", input),
