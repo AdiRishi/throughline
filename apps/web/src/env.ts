@@ -10,6 +10,10 @@ export interface ConnectionTarget {
   readonly wsBaseUrl: string;
 }
 
+export function toHttpEndpoint(httpBaseUrl: string, path: string): string {
+  return new URL(path, httpBaseUrl).toString();
+}
+
 /** Turn a ws(s) URL into its http(s) origin form. */
 export function toHttpOrigin(wsUrl: string): string {
   const url = new URL(wsUrl);

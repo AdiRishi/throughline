@@ -28,7 +28,7 @@ import * as Tracer from "effect/Tracer";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 
-import { isElectron, resolveConnectionTarget } from "../env.ts";
+import { isElectron, resolveConnectionTarget, toHttpEndpoint } from "../env.ts";
 
 export const OTLP_TRACES_PATH = "/api/observability/v1/traces";
 
@@ -84,7 +84,7 @@ export function configureClientTracing(config: ClientTracingConfig = {}): Promis
 }
 
 async function applyClientTracingConfig(config: ClientTracingConfig): Promise<void> {
-  const otlpTracesUrl = `${resolveConnectionTarget().httpBaseUrl}${OTLP_TRACES_PATH}`;
+  const otlpTracesUrl = toHttpEndpoint(resolveConnectionTarget().httpBaseUrl, OTLP_TRACES_PATH);
   const exportIntervalMs = Math.max(10, config.exportIntervalMs ?? DEFAULT_EXPORT_INTERVAL_MS);
   const nextConfigKey = `${otlpTracesUrl}|${exportIntervalMs}`;
 
