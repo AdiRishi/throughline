@@ -14,7 +14,7 @@ import { Flag } from "effect/unstable/cli";
  * Resolves the fully-materialized `ServerConfig` from (in precedence order)
  * command flags, the bootstrap envelope, and environment variables. The
  * bootstrap token comes from: `--bootstrap-fd` envelope, else `APP_BOOTSTRAP_TOKEN`,
- * else a freshly generated random token (logged, for dev convenience).
+ * else a freshly generated random token.
  *
  * @module cli/config
  */
@@ -116,14 +116,11 @@ export const resolveServerConfig = Effect.fn("cli.resolveServerConfig")(function
   if (bootstrapToken === undefined || bootstrapToken.trim().length === 0) {
     const bytes = yield* crypto.randomBytes(32).pipe(Effect.orDie);
     bootstrapToken = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-    yield* Effect.logInfo("generated bootstrap token (dev)", {
-      bootstrapToken,
-    });
   }
 
   return ServerConfig.make({
     appName: ServerConfig.APP_NAME,
-    version: ServerConfig.APP_VERSION,
+    version: bootstrap?.appVersion ?? ServerConfig.APP_VERSION,
     startedAt,
     host,
     port,

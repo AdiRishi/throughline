@@ -1,0 +1,566 @@
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { Link } from "@tanstack/react-router";
+import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
+import { AsyncResult } from "effect/unstable/reactivity";
+import { useEffect, useState } from "react";
+
+import type {
+  DesktopTheme,
+  DesktopUpdateChannel,
+  DesktopUpdateState,
+  HarnessStatus,
+} from "@app/contracts";
+
+import {
+  ArrowLeftIcon,
+  CheckIcon,
+  MonitorIcon,
+  MoonIcon,
+  SunIcon,
+} from "../../components/Icons.tsx";
+import { useTheme } from "../../hooks/useTheme.ts";
+import { localApi } from "../../localApi.ts";
+import { productAtoms } from "../../state/product.ts";
+import {
+  automaticHarnessKind,
+  harnessReadiness,
+  isHarnessSelection,
+  type HarnessReadiness,
+} from "./model.ts";
+import {
+  canChangeUpdateChannel,
+  updateAction as resolveUpdateAction,
+  updateActionLabel,
+  updateInstallConfirmation,
+  updateStatusDescription,
+} from "./updateModel.ts";
+
+const THEMES: ReadonlyArray<{
+  readonly value: DesktopTheme;
+  readonly label: string;
+  readonly description: string;
+  readonly icon: typeof SunIcon;
+}> = [
+  {
+    value: "light",
+    label: "Light",
+    description: "A cool paper surface for bright rooms.",
+    icon: SunIcon,
+  },
+  {
+    value: "dark",
+    label: "Dark",
+    description: "The editor-receded reading surface.",
+    icon: MoonIcon,
+  },
+  {
+    value: "system",
+    label: "System",
+    description: "Follow this device’s appearance.",
+    icon: MonitorIcon,
+  },
+];
+
+export function SettingsPage() {
+  const settings = useAtomValue(productAtoms.settings);
+  const settingsResult = useAtomValue(productAtoms.settingsSyncResult);
+  const harnesses = useAtomValue(productAtoms.harnesses);
+  const harnessStatusResult = useAtomValue(productAtoms.harnessStatusResult);
+  const refreshHarnessesResult = useAtomValue(productAtoms.refreshHarnesses);
+  const setHarnessResult = useAtomValue(productAtoms.setHarness);
+  const refreshHarnesses = useAtomSet(productAtoms.refreshHarnesses);
+  const setHarness = useAtomSet(productAtoms.setHarness);
+  const { setTheme, theme } = useTheme();
+  const host = localApi();
+  const [openingLogsFolder, setOpeningLogsFolder] = useState(false);
+  const [logsFolderError, setLogsFolderError] = useState<string | null>(null);
+  const [updateState, setUpdateState] = useState<DesktopUpdateState | null>(null);
+  const [updateActionPending, setUpdateActionPending] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+
+  const automatic = automaticHarnessKind(harnesses);
+  const orderedHarnesses = harnesses.toSorted((left, right) => {
+    const order = (kind: string) => (kind === "codex" ? 0 : kind === "claude" ? 1 : 2);
+    return order(left.kind) - order(right.kind) || left.kind.localeCompare(right.kind);
+  });
+
+  useEffect(() => {
+    const refreshOnFocus = () => {
+      if (document.visibilityState === "visible") {
+        refreshHarnesses(undefined);
+      }
+    };
+    window.addEventListener("focus", refreshOnFocus);
+    return () => window.removeEventListener("focus", refreshOnFocus);
+  }, [refreshHarnesses]);
+
+  useEffect(() => {
+    let active = true;
+    let receivedPush = false;
+    const unsubscribe = host.onUpdateState((state) => {
+      receivedPush = true;
+      if (active) {
+        setUpdateState(state);
+        setUpdateError(null);
+      }
+    });
+    void host
+      .getUpdateState()
+      .then((state) => {
+        if (active && !receivedPush) setUpdateState(state);
+      })
+      .catch(() => {
+        if (active && !receivedPush) {
+          setUpdateError("Throughline couldn’t read the updater state.");
+        }
+      });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [host]);
+
+  const openLogsFolder = async () => {
+    setOpeningLogsFolder(true);
+    setLogsFolderError(null);
+    try {
+      if (!(await host.openLogsFolder())) {
+        setLogsFolderError("Throughline couldn’t open the logs folder.");
+      }
+    } catch {
+      setLogsFolderError("Throughline couldn’t open the logs folder.");
+    } finally {
+      setOpeningLogsFolder(false);
+    }
+  };
+
+  const setUpdateChannel = async (channel: DesktopUpdateChannel) => {
+    if (
+      updateState === null ||
+      channel === updateState.channel ||
+      !canChangeUpdateChannel(updateState)
+    ) {
+      return;
+    }
+    setUpdateActionPending(true);
+    setUpdateError(null);
+    try {
+      setUpdateState(await host.setUpdateChannel(channel));
+    } catch {
+      setUpdateError("Throughline couldn’t change the update channel.");
+    } finally {
+      setUpdateActionPending(false);
+    }
+  };
+
+  const runUpdateAction = async () => {
+    if (updateState === null || updateActionPending) return;
+    const action = resolveUpdateAction(updateState);
+    if (action === "none") return;
+    if (action === "install" && !(await host.confirm(updateInstallConfirmation(updateState)))) {
+      return;
+    }
+
+    setUpdateActionPending(true);
+    setUpdateError(null);
+    try {
+      if (action === "check") {
+        const result = await host.checkForUpdate();
+        setUpdateState(result.state);
+      } else if (action === "download") {
+        const result = await host.downloadUpdate();
+        setUpdateState(result.state);
+      } else {
+        const result = await host.installUpdate();
+        setUpdateState(result.state);
+      }
+    } catch {
+      setUpdateError(`Throughline couldn’t ${action} the update.`);
+    } finally {
+      setUpdateActionPending(false);
+    }
+  };
+
+  return (
+    <main className="settings-page">
+      <Link className="back-link" to="/">
+        <ArrowLeftIcon />
+        Back to reviews
+      </Link>
+
+      <header className="settings-heading">
+        <p className="eyebrow">Settings</p>
+        <h1>Keep the machinery quiet.</h1>
+        <p>
+          Choose which signed-in agent constructs future journeys and how Throughline meets your
+          editor.
+        </p>
+      </header>
+
+      <section className="settings-section" aria-labelledby="harness-heading">
+        <div className="settings-section-heading">
+          <div>
+            <h2 id="harness-heading">Analysis harness</h2>
+            <p>
+              Throughline runs the selected harness read-only. Changing this affects future
+              analyses, not saved journeys.
+            </p>
+          </div>
+          <div className="settings-heading-actions">
+            {settings.harness === undefined && automatic !== null ? (
+              <span className="selection-note">Using {displayHarnessName(automatic)}</span>
+            ) : null}
+            <button
+              className="button button-secondary button-small"
+              type="button"
+              disabled={refreshHarnessesResult.waiting}
+              onClick={() => refreshHarnesses(undefined)}
+            >
+              {refreshHarnessesResult.waiting ? "Checking…" : "Check again"}
+            </button>
+          </div>
+        </div>
+
+        <div className="selection-list" role="radiogroup" aria-label="Analysis harness">
+          <label
+            className="selection-row"
+            data-selected={settings.harness === undefined || undefined}
+          >
+            <input
+              className="sr-only"
+              type="radio"
+              name="analysis-harness"
+              checked={settings.harness === undefined}
+              onChange={() => setHarness(null)}
+            />
+            <SelectionMark selected={settings.harness === undefined} />
+            <span className="selection-copy">
+              <strong>Automatic</strong>
+              <span>Use the first authenticated harness: Codex, then Claude.</span>
+            </span>
+            <span className="selection-status">
+              {automatic === null ? "No harness ready" : displayHarnessName(automatic)}
+            </span>
+          </label>
+
+          {AsyncResult.isFailure(harnessStatusResult) ? (
+            <div className="settings-empty" role="alert">
+              Harness detection stopped. Check again when the local server is ready.
+            </div>
+          ) : !AsyncResult.isSuccess(harnessStatusResult) ? (
+            <div className="settings-loading" aria-busy="true">
+              Detecting local harnesses…
+            </div>
+          ) : orderedHarnesses.length === 0 ? (
+            <div className="settings-empty">
+              No harnesses were detected. Install Codex or Claude Code, sign in once, then return
+              here.
+            </div>
+          ) : (
+            orderedHarnesses.map((harness) => {
+              const selectableKind = isHarnessSelection(harness.kind) ? harness.kind : null;
+              const selectable =
+                selectableKind !== null && harnessReadiness(harness) === "ready"
+                  ? selectableKind
+                  : null;
+              return (
+                <HarnessSelectionRow
+                  key={harness.kind}
+                  harness={harness}
+                  selected={settings.harness === selectableKind}
+                  onSelect={selectable === null ? undefined : () => setHarness(selectable)}
+                />
+              );
+            })
+          )}
+        </div>
+
+        {AsyncResult.isFailure(settingsResult) || AsyncResult.isFailure(setHarnessResult) ? (
+          <p className="action-error" role="alert">
+            {AsyncResult.isFailure(setHarnessResult)
+              ? causeMessage(setHarnessResult.cause)
+              : AsyncResult.isFailure(settingsResult)
+                ? causeMessage(settingsResult.cause)
+                : null}
+          </p>
+        ) : null}
+      </section>
+
+      <section className="settings-section" aria-labelledby="appearance-heading">
+        <div className="settings-section-heading">
+          <div>
+            <h2 id="appearance-heading">Appearance</h2>
+            <p>The code, tree, and journey surfaces follow this choice together.</p>
+          </div>
+        </div>
+
+        <div className="theme-options" role="radiogroup" aria-label="Appearance">
+          {THEMES.map((option) => {
+            const ThemeIcon = option.icon;
+            const selected = theme === option.value;
+            return (
+              <label
+                key={option.value}
+                className="theme-option"
+                data-selected={selected || undefined}
+              >
+                <input
+                  className="sr-only"
+                  type="radio"
+                  name="appearance"
+                  checked={selected}
+                  onChange={() => setTheme(option.value)}
+                />
+                <ThemeIcon />
+                <span>
+                  <strong>{option.label}</strong>
+                  <small>{option.description}</small>
+                </span>
+                <SelectionMark selected={selected} />
+              </label>
+            );
+          })}
+        </div>
+      </section>
+
+      {host.isDesktop ? (
+        <section className="settings-section" aria-labelledby="updates-heading">
+          <div className="settings-section-heading">
+            <div>
+              <h2 id="updates-heading">Updates</h2>
+              <p>Keep the desktop host current without interrupting a review.</p>
+            </div>
+          </div>
+
+          {updateState === null ? (
+            <div className="settings-loading" aria-busy="true">
+              Reading updater state…
+            </div>
+          ) : (
+            <>
+              <div className="update-status-row">
+                <span className="diagnostics-copy">
+                  <strong>
+                    Version {updateState.currentVersion}
+                    {updateState.channel === "nightly" ? " · Nightly" : ""}
+                  </strong>
+                  <span role={updateState.message === null ? undefined : "alert"}>
+                    {updateStatusDescription(updateState)}
+                  </span>
+                </span>
+                <button
+                  className="button button-secondary"
+                  type="button"
+                  disabled={
+                    updateActionPending ||
+                    resolveUpdateAction(updateState) === "none" ||
+                    updateState.status === "checking" ||
+                    updateState.status === "downloading"
+                  }
+                  onClick={() => void runUpdateAction()}
+                >
+                  {updateActionPending ? "Working…" : updateActionLabel(updateState)}
+                </button>
+              </div>
+
+              {updateState.status === "downloading" ? (
+                <progress
+                  className="update-progress"
+                  aria-label="Update download progress"
+                  max={100}
+                  value={updateState.downloadPercent ?? undefined}
+                />
+              ) : null}
+
+              <fieldset className="update-channel-fieldset">
+                <legend>Update channel</legend>
+                <p>Stable follows full releases. Nightly follows preview desktop releases.</p>
+                <div className="update-channel-options">
+                  {(
+                    [
+                      ["latest", "Stable", "Finished releases for day-to-day use."],
+                      ["nightly", "Nightly", "The newest desktop build, updated frequently."],
+                    ] as const
+                  ).map(([channel, label, description]) => (
+                    <label
+                      key={channel}
+                      className="selection-row"
+                      data-selected={updateState.channel === channel || undefined}
+                      data-disabled={
+                        !canChangeUpdateChannel(updateState) || updateActionPending || undefined
+                      }
+                    >
+                      <input
+                        className="sr-only"
+                        type="radio"
+                        name="update-channel"
+                        checked={updateState.channel === channel}
+                        disabled={!canChangeUpdateChannel(updateState) || updateActionPending}
+                        onChange={() => void setUpdateChannel(channel)}
+                      />
+                      <SelectionMark selected={updateState.channel === channel} />
+                      <span className="selection-copy">
+                        <strong>{label}</strong>
+                        <span>{description}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
+              {updateState.releaseNotes.length === 0 ? null : (
+                <div className="update-release-notes">
+                  <strong>What’s changed</strong>
+                  {updateState.releaseNotes.map((releaseNote) => (
+                    <section key={releaseNote.version}>
+                      <small>{releaseNote.version}</small>
+                      <ul>
+                        {releaseNote.items.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </section>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {updateError === null ? null : (
+            <p className="diagnostics-error" role="alert">
+              {updateError}
+            </p>
+          )}
+        </section>
+      ) : null}
+
+      {host.isDesktop ? (
+        <section className="settings-section" aria-labelledby="diagnostics-heading">
+          <div className="settings-section-heading">
+            <div>
+              <h2 id="diagnostics-heading">Diagnostics</h2>
+              <p>Find the local records Throughline keeps for troubleshooting.</p>
+            </div>
+          </div>
+
+          <div className="diagnostics-row">
+            <span className="diagnostics-copy">
+              <strong>Application logs</strong>
+              <span>Desktop startup, local server output, and operational failures.</span>
+            </span>
+            <button
+              className="button button-secondary"
+              type="button"
+              disabled={openingLogsFolder}
+              onClick={() => void openLogsFolder()}
+            >
+              {openingLogsFolder ? "Opening…" : "Open logs folder"}
+            </button>
+          </div>
+          {logsFolderError === null ? null : (
+            <p className="diagnostics-error" role="alert">
+              {logsFolderError}
+            </p>
+          )}
+        </section>
+      ) : null}
+    </main>
+  );
+}
+
+function HarnessSelectionRow({
+  harness,
+  selected,
+  onSelect,
+}: {
+  readonly harness: HarnessStatus;
+  readonly selected: boolean;
+  readonly onSelect: (() => void) | undefined;
+}) {
+  const readiness = harnessReadiness(harness);
+  const guidance = harnessGuidance(harness.kind, readiness);
+
+  return (
+    <label
+      className="selection-row harness-row"
+      data-selected={selected || undefined}
+      data-disabled={onSelect === undefined || undefined}
+    >
+      <input
+        className="sr-only"
+        type="radio"
+        name="analysis-harness"
+        checked={selected}
+        disabled={onSelect === undefined}
+        onChange={onSelect}
+      />
+      <SelectionMark selected={selected} />
+      <span className="selection-copy">
+        <strong>
+          {displayHarnessName(harness.kind)}
+          {harness.version === null ? null : (
+            <span className="version-label">v{harness.version}</span>
+          )}
+        </strong>
+        <span>{guidance}</span>
+      </span>
+      <HarnessStatusLabel readiness={readiness} />
+    </label>
+  );
+}
+
+function HarnessStatusLabel({ readiness }: { readonly readiness: HarnessReadiness }) {
+  const label = {
+    ready: "Authenticated",
+    "sign-in": "Sign in required",
+    "not-installed": "Not installed",
+    unknown: "Auth unknown",
+  }[readiness];
+
+  return (
+    <span className="selection-status" data-readiness={readiness}>
+      {label}
+    </span>
+  );
+}
+
+function SelectionMark({ selected }: { readonly selected: boolean }) {
+  return (
+    <span className="selection-mark" data-selected={selected || undefined} aria-hidden>
+      {selected ? <CheckIcon /> : null}
+    </span>
+  );
+}
+
+function displayHarnessName(kind: string): string {
+  if (kind === "codex") {
+    return "Codex";
+  }
+  if (kind === "claude") {
+    return "Claude Code";
+  }
+  return kind;
+}
+
+function harnessGuidance(kind: string, readiness: HarnessReadiness): string {
+  if (readiness === "ready") {
+    return "Ready to construct new journeys in a read-only workspace.";
+  }
+  if (readiness === "not-installed") {
+    return `Install ${displayHarnessName(kind)}, then sign in once. Throughline will detect it automatically.`;
+  }
+  if (readiness === "sign-in") {
+    return kind === "claude"
+      ? "Sign in with Claude Code or run claude setup-token, then return here."
+      : "Run codex login, then return here.";
+  }
+  return "Installed, but authentication could not be confirmed. Open the harness and verify its login.";
+}
+
+function causeMessage(cause: Cause.Cause<unknown>): string {
+  const error = Option.getOrNull(Cause.findErrorOption(cause));
+  return error instanceof Error && error.message.length > 0
+    ? error.message
+    : "The setting was not saved. Try again when the local server is ready.";
+}

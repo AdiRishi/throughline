@@ -52,6 +52,14 @@ export class ElectronApp extends Context.Service<
       name: Parameters<Electron.App["setPath"]>[0],
       path: string,
     ) => Effect.Effect<void>;
+    readonly setName: (name: string) => Effect.Effect<void>;
+    readonly setAboutPanelOptions: (
+      options: Electron.AboutPanelOptionsOptions,
+    ) => Effect.Effect<void>;
+    readonly setAppUserModelId: (id: string) => Effect.Effect<void>;
+    readonly setDesktopName: (desktopName: string) => Effect.Effect<void>;
+    readonly setDockIcon: (iconPath: string) => Effect.Effect<void>;
+    readonly appendCommandLineSwitch: (switchName: string, value?: string) => Effect.Effect<void>;
     readonly requestSingleInstanceLock: Effect.Effect<boolean>;
     readonly on: <Args extends ReadonlyArray<unknown>>(
       eventName: string,
@@ -105,6 +113,37 @@ export const make = ElectronApp.of({
   setPath: (name, path) =>
     Effect.sync(() => {
       Electron.app.setPath(name, path);
+    }),
+  setName: (name) =>
+    Effect.sync(() => {
+      Electron.app.setName(name);
+    }),
+  setAboutPanelOptions: (options) =>
+    Effect.sync(() => {
+      Electron.app.setAboutPanelOptions(options);
+    }),
+  setAppUserModelId: (id) =>
+    Effect.sync(() => {
+      Electron.app.setAppUserModelId(id);
+    }),
+  setDesktopName: (desktopName) =>
+    Effect.sync(() => {
+      const linuxApp = Electron.app as Electron.App & {
+        setDesktopName?: (value: string) => void;
+      };
+      linuxApp.setDesktopName?.(desktopName);
+    }),
+  setDockIcon: (iconPath) =>
+    Effect.sync(() => {
+      Electron.app.dock?.setIcon(iconPath);
+    }),
+  appendCommandLineSwitch: (switchName, value) =>
+    Effect.sync(() => {
+      if (value === undefined) {
+        Electron.app.commandLine.appendSwitch(switchName);
+        return;
+      }
+      Electron.app.commandLine.appendSwitch(switchName, value);
     }),
   requestSingleInstanceLock: Effect.sync(() => Electron.app.requestSingleInstanceLock()),
   on: addScopedAppListener,

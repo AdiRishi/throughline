@@ -16,10 +16,18 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "catalog:",
+    "@anthropic-ai/sdk": "catalog:",
     "@app/contracts": "workspace:*",
+    "@app/journey": "workspace:*",
     "@app/shared": "workspace:*",
     "@effect/platform-node": "catalog:",
-    "effect": "catalog:"
+    "@effect/sql-sqlite-node": "catalog:",
+    "@modelcontextprotocol/sdk": "catalog:",
+    "@openai/codex": "catalog:",
+    "@openai/codex-sdk": "catalog:",
+    "effect": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

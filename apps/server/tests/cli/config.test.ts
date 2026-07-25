@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -48,17 +49,24 @@ function withBootstrapFd<A, E, R>(
 
 describe("resolveServerConfig", () => {
   it.effect("prefers the bootstrap fd envelope over inherited environment values", () =>
-    withBootstrapFd({ desktopBootstrapToken: "fd-token", port: 19731 }, (fd) =>
-      Effect.gen(function* () {
-        const config = yield* resolveServerConfig({
-          ...baseFlags,
-          bootstrapFd: Option.some(fd),
-        });
+    withBootstrapFd(
+      {
+        desktopBootstrapToken: "fd-token",
+        port: 19731,
+        appVersion: "1.2.3-nightly.20260725.2",
+      },
+      (fd) =>
+        Effect.gen(function* () {
+          const config = yield* resolveServerConfig({
+            ...baseFlags,
+            bootstrapFd: Option.some(fd),
+          });
 
-        assert.equal(config.bootstrapToken, "fd-token");
-        assert.equal(config.port, 19731);
-        assert.equal(config.devWebUrl?.href, "http://127.0.0.1:5173/");
-      }),
+          assert.equal(config.bootstrapToken, "fd-token");
+          assert.equal(config.port, 19731);
+          assert.equal(config.version, "1.2.3-nightly.20260725.2");
+          assert.equal(config.devWebUrl?.href, "http://127.0.0.1:5173/");
+        }),
     ).pipe(
       Effect.provideService(HostProcessEnvironment, {
         APP_BOOTSTRAP_TOKEN: "env-token",
@@ -82,6 +90,22 @@ describe("resolveServerConfig", () => {
         Effect.provideService(HostProcessEnvironment, { APP_BOOTSTRAP_TOKEN: "env-token" }),
       );
       assert.equal(defaulted.dataDir, NodePath.join(NodeOS.homedir(), ".throughline"));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("never emits a generated bootstrap credential through the logger", () =>
+    Effect.gen(function* () {
+      const records: string[] = [];
+      const logger = Logger.map(Logger.formatJson, (record) => {
+        records.push(record);
+      });
+      const config = yield* resolveServerConfig(baseFlags).pipe(
+        Effect.provideService(HostProcessEnvironment, {}),
+        Effect.provide(Logger.layer([logger])),
+      );
+
+      assert.match(config.bootstrapToken, /^[0-9a-f]{64}$/u);
+      assert.notInclude(records.join("\n"), config.bootstrapToken);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

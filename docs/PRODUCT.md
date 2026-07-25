@@ -50,6 +50,8 @@ Read tracking is built in from v1 and is **local-only** — nothing is ever writ
 
 - The unit of marking is **a file within a cluster**. Marking it read collapses it.
 - A cluster's progress is the fraction of its homed hunks read; the journey's progress aggregates across clusters.
+- A path touched by more than one cluster has one read mark per `(cluster, path)`. In Files mode, marking read applies to the currently selected cluster's home hunks in that file; switching home changes the mark being viewed.
+- File counts and coverage percentages are distinct: counts report marked cluster-file entries, while percentages are always weighted by homed hunks.
 - Progress persists across sessions and survives app restarts.
 - Read state is the mechanism that makes the coverage guarantee tangible: the journey's progress reaching 100% _is_ the proof that nothing was omitted — every line was presented at its home and acknowledged there.
 

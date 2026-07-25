@@ -34,7 +34,18 @@ The pin is load-bearing: every line range, anchor, and evidence link in the arti
 2. **The agent may only refine.** During analysis the agent may split a seed hunk into finer contiguous sub-ranges when it mixes concerns — never merge, never omit, never invent. A refinement of a partition is still a partition, so the agent structurally cannot break coverage; it can only fail to _assign_, which the validator catches.
 3. **Files without textual hunks are still covered.** A changed file that yields no changed lines — a binary change, a pure rename, a mode/symlink/submodule change, an emptied or empty-added file — contributes exactly one synthetic **file-level hunk** at seed time, carrying a `fileKind` instead of line ranges. It is homed, validated, and counted like any other hunk (the agent may never split one), so the partition covers every changed _file_, not merely every changed line.
 
+Before assignment there is a distinct seed shape. A seed never has a home, so
+the deterministic parser cannot manufacture an apparently final artifact:
+
 ```ts
+SeedHunk {
+  id: SeedHunkId,
+  path,
+  oldStart, oldLines,
+  newStart, newLines,
+  fileKind?,
+}
+
 Hunk {
   id: HunkId,                     // "h12" — dense, ordered by (path, position)
   path,                           // new path (old path for pure deletions)
@@ -45,6 +56,10 @@ Hunk {
   home: ClusterId,
 }
 ```
+
+The pipeline canonicalizes final dense `HunkId`s only after validating the
+agent's assignments and refinements. `seedId` always names the immutable seed
+the final hunk refines.
 
 **Coverage, formalized.** For each changed file, the changed-line set is (removed old-side line numbers) ∪ (added new-side line numbers). The journey is valid iff the hunks' ranges partition that set exactly — no line uncovered, no line covered twice — every changed file with no changed lines carries exactly one file-level hunk, and every hunk names exactly one existing home cluster. `@app/journey/coverage` implements this as a pure validator returning a precise violation list (used verbatim in the repair loop, [04](./04-analysis.md)); the server refuses to persist a journey that fails it. The guarantee is a checked invariant, not a prompt instruction.
 
@@ -122,7 +137,14 @@ Settings {
 
 ## Persistence
 
-One SQLite database, owned by `JourneyStore`, under a server-owned data root (passed by the shell from Electron's `userData`; a per-checkout default in dev). The driver is **`@effect/sql-sqlite-node`** — it ships at the same pinned Effect version and sits on Node's built-in `node:sqlite`, so there is no native module to rebuild and it is verified working under Electron's bundled Node.
+One SQLite database, owned by `JourneyStore`, under a server-owned data root.
+The desktop shell passes its Electron application-data root: `throughline` for
+an installed app and the isolated sibling `throughline-dev` for a development
+shell. The plain-browser development runner uses the per-checkout
+`.throughline-data` root. The driver is **`@effect/sql-sqlite-node`** — it ships
+at the same pinned Effect version and sits on Node's built-in `node:sqlite`, so
+there is no native module to rebuild and it is verified working under
+Electron's bundled Node.
 
 ```
 <dataRoot>/
@@ -131,14 +153,14 @@ One SQLite database, owned by `JourneyStore`, under a server-owned data root (pa
   workspaces/<owner>/<repo>/              // one bare clone per repository; worktrees per run (see 03)
 ```
 
-The split is **hybrid, blob-style**: the database holds state; bulk, non-queryable artifacts stay files.
+The split is **hybrid, blob-style**: the database holds state; bulk, non-queryable artifacts stay files. A run is first materialized under a staging sibling and atomically renamed to its final directory. Only then does the SQLite transaction replace the journey row with the new `runId`; the previous run is cleaned after that commit. A database row therefore never points at a partial run, and a failed reanalysis leaves the previous journey and its sidecars intact.
 
-| Table        | Shape                                                                                                                                                                                       |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `journeys`   | One row per PR: indexed metadata columns (PR ref, `journeyId`, pinned SHAs, `analyzedAt`, provenance) + the `Journey` artifact as a JSON blob, decoded through its contract schema on read. |
-| `read_state` | One row per journey: `ReadState` as above.                                                                                                                                                  |
-| `pr_state`   | `LocalPrState` marks.                                                                                                                                                                       |
-| `settings`   | App settings.                                                                                                                                                                               |
+| Table        | Shape                                                                                                                                                                                                |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `journeys`   | One row per PR: indexed metadata columns (PR ref, `journeyId`, `runId`, pinned SHAs, `analyzedAt`, provenance) + the `Journey` artifact as a JSON blob, decoded through its contract schema on read. |
+| `read_state` | One row per journey: `ReadState` as above.                                                                                                                                                           |
+| `pr_state`   | `LocalPrState` marks.                                                                                                                                                                                |
+| `settings`   | App settings.                                                                                                                                                                                        |
 
 The journey stays a blob rather than relational rows because it is immutable and read whole — decomposing it into tables buys schema-migration surface without a query workload to justify it. What SQLite buys over flat files is what grows with the app: transactions (reanalysis = replace the journey row + delete its read state, atomically, in one statement batch), indexed listing for the welcome screen, and a single-writer store that won't degrade into a directory of many small files.
 
@@ -148,4 +170,4 @@ Schema migrations run at server boot (`SqliteMigrator`). The artifact blob carri
 
 ## Staleness
 
-Never stored. A journey is stale iff its pinned `headSha` differs from the PR's current head as reported by the `GitHub` module's cached view — computed at the moment of display, so it can't be stale about being stale.
+Never stored. A journey is stale iff its pinned `headSha` differs from the latest PR head Throughline can observe. Viewer-affiliated rows carry that head in the GraphQL list; a locally saved journey absent from that list first uses the `GitHub` module's cached `pr()` detail read. If that read is unavailable, parked, or returns not-found, the immutable PR detail in the journey's finalized run preserves the row without claiming an unseen head change. `PullRequestIndex` derives stale state only after uniting those sources with `JourneyStore.listMetadata`.

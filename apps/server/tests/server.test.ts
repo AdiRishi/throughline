@@ -3,11 +3,12 @@ import * as NodeHttp from "node:http";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
@@ -20,18 +21,27 @@ import * as Socket from "effect/unstable/socket/Socket";
 
 import {
   BearerSessionJson,
+  CompleteWsRpcGroup,
+  IngestionJob,
+  PRODUCT_WS_METHODS,
+  PrRef,
   WS_METHODS,
-  WsRpcGroup,
   type ServerLifecycleStreamEvent,
 } from "@app/contracts";
 
+import * as Ingestion from "../src/analysis/Ingestion.ts";
 import * as Auth from "../src/auth.ts";
 import * as ServerConfig from "../src/config.ts";
 import { AUTH_BOOTSTRAP_PATH, HEALTH_PATH } from "../src/http.ts";
 import * as LifecycleEvents from "../src/lifecycleEvents.ts";
-import * as NotesStore from "../src/notes/NotesStore.ts";
 import * as Readiness from "../src/readiness.ts";
-import { routesLayer } from "../src/server.ts";
+import {
+  productServicesLayer,
+  routesLayer,
+  WORKSPACE_CACHE_MAX_REPOSITORIES,
+  workspaceCacheEvictionLayer,
+} from "../src/server.ts";
+import * as Workspaces from "../src/workspace/Workspaces.ts";
 
 const BOOTSTRAP_TOKEN = "boot-secret";
 
@@ -52,15 +62,17 @@ interface HarnessOptions {
 }
 
 /** The real route stack + services over the platform test server. */
-const appLayer = (options: HarnessOptions = {}) =>
-  HttpRouter.serve(routesLayer).pipe(
+const appLayer = (options: HarnessOptions = {}) => {
+  const dataDir = NodeFS.mkdtempSync(NodePath.join(SCRATCH, "data-"));
+
+  return HttpRouter.serve(routesLayer).pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         Auth.layer,
         options.lifecycleEvents === undefined
           ? LifecycleEvents.layer
           : Layer.mock(LifecycleEvents.ServerLifecycleEvents)(options.lifecycleEvents),
-        NotesStore.layer,
+        productServicesLayer,
         Readiness.layer,
       ),
     ),
@@ -78,17 +90,19 @@ const appLayer = (options: HarnessOptions = {}) =>
               staticDir: options.staticDir,
               devWebUrl: options.devWebUrl,
               bootstrapToken: BOOTSTRAP_TOKEN,
-              dataDir: NodePath.join(SCRATCH, "data"),
+              dataDir,
             }),
           );
         }),
       ),
     ),
-    // NodeServices provides Crypto in production; layerTest does not.
-    Layer.provideMerge(Layer.mergeAll(NodeHttpServer.layerTest, NodeCrypto.layer)),
+    Layer.provideMerge(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer)),
   );
+};
 
 const decodeBearerSession = Schema.decodeUnknownSync(BearerSessionJson);
+const decodeIngestionJob = Schema.decodeUnknownSync(Schema.toCodecJson(IngestionJob));
+const decodePrRef = Schema.decodeUnknownSync(PrRef);
 
 const postJson = (path: string, body: string) =>
   HttpClient.post(path, { body: HttpBody.text(body, "application/json") });
@@ -101,7 +115,7 @@ const wsRpcProtocolLayer = (wsUrl: string) =>
     Layer.provide(RpcSerialization.layerJson),
   );
 
-const makeWsRpcClient = RpcClient.make(WsRpcGroup);
+const makeWsRpcClient = RpcClient.make(CompleteWsRpcGroup);
 type WsRpcClient =
   typeof makeWsRpcClient extends Effect.Effect<infer Client, unknown, unknown> ? Client : never;
 
@@ -270,6 +284,43 @@ describe("websocket gate", () => {
       }).pipe(Effect.provide(appLayer({ lifecycleEvents })));
     }).pipe(TestClock.withLive),
   );
+
+  it.effect("serves product state handlers through the complete RPC group", () =>
+    Effect.gen(function* () {
+      const response = yield* postJson(
+        AUTH_BOOTSTRAP_PATH,
+        JSON.stringify({ credential: BOOTSTRAP_TOKEN }),
+      );
+      const session = decodeBearerSession(yield* response.json);
+      const server = yield* HttpServer.HttpServer;
+      const address = server.address;
+      const port = typeof address === "string" || !("port" in address) ? 0 : address.port;
+      const wsUrl = `ws://127.0.0.1:${port}/ws?access_token=${encodeURIComponent(session.access_token)}`;
+      const pr = decodePrRef({ owner: "effect-ts", repo: "throughline", number: 42 });
+
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const config = yield* client[WS_METHODS.serverGetConfig]({});
+            const initial = yield* client[PRODUCT_WS_METHODS.settingsGet]({});
+            const updated = yield* client[PRODUCT_WS_METHODS.prStateReviewed]({
+              pr,
+              active: true,
+            });
+            const persisted = yield* client[PRODUCT_WS_METHODS.prStateGet]({});
+            return { config, initial, updated, persisted };
+          }),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.strictEqual(result.config.appName, "Test App");
+      assert.strictEqual(result.config.version, "0.0.0-test");
+      assert.isTrue(DateTime.isUtc(result.config.startedAt));
+      assert.deepStrictEqual(result.initial, {});
+      assert.deepStrictEqual(result.updated.reviewed, [pr]);
+      assert.deepStrictEqual(result.persisted, result.updated);
+    }).pipe(Effect.provide(appLayer())),
+  );
 });
 
 describe("static serving", () => {
@@ -326,5 +377,84 @@ describe("dev redirect", () => {
       const response = yield* rawGet(HEALTH_PATH);
       assert.equal(response.status, 503);
     }).pipe(Effect.provide(appLayer({ devWebUrl: new URL("http://127.0.0.1:5173") }))),
+  );
+});
+
+describe("workspace cache maintenance", () => {
+  it.effect("continues capping the clone cache when one completion eviction fails", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const consumed = yield* Deferred.make<void>();
+        const pr = decodePrRef({ owner: "octo", repo: "widgets", number: 42 });
+        const resolving = decodeIngestionJob({
+          id: "job-41",
+          pr,
+          phase: "resolving",
+          queuePosition: null,
+          startedAt: "2026-07-25T00:00:00.000Z",
+          updatedAt: "2026-07-25T00:00:10.000Z",
+          activity: null,
+          journeyId: null,
+          failure: null,
+        });
+        const completed = decodeIngestionJob({
+          id: "job-42",
+          pr,
+          phase: "complete",
+          queuePosition: null,
+          startedAt: "2026-07-25T00:00:00.000Z",
+          updatedAt: "2026-07-25T00:01:00.000Z",
+          activity: null,
+          journeyId: "job-42",
+          failure: null,
+        });
+        const nextCompleted = decodeIngestionJob({
+          id: "job-43",
+          pr: decodePrRef({ owner: "octo", repo: "gadgets", number: 7 }),
+          phase: "complete",
+          queuePosition: null,
+          startedAt: "2026-07-25T00:02:00.000Z",
+          updatedAt: "2026-07-25T00:03:00.000Z",
+          activity: null,
+          journeyId: "job-43",
+          failure: null,
+        });
+        const maximums: number[] = [];
+
+        yield* Layer.build(
+          workspaceCacheEvictionLayer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.mock(Ingestion.Ingestion)({
+                  changes: Stream.make(resolving, completed, nextCompleted).pipe(
+                    Stream.ensuring(Deferred.succeed(consumed, undefined)),
+                  ),
+                }),
+                Layer.mock(Workspaces.Workspaces)({
+                  evictCache: (maximum) =>
+                    Effect.gen(function* () {
+                      maximums.push(maximum);
+                      if (maximums.length === 2) {
+                        return yield* new Workspaces.WorkspaceError({
+                          reason: "io",
+                          detail: "temporary filesystem failure",
+                        });
+                      }
+                      return [];
+                    }),
+                }),
+              ),
+            ),
+          ),
+        );
+
+        yield* Deferred.await(consumed);
+        assert.deepStrictEqual(maximums, [
+          WORKSPACE_CACHE_MAX_REPOSITORIES,
+          WORKSPACE_CACHE_MAX_REPOSITORIES,
+          WORKSPACE_CACHE_MAX_REPOSITORIES,
+        ]);
+      }),
+    ),
   );
 });

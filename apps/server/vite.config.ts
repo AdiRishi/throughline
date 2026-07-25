@@ -8,9 +8,15 @@ const nodeBuiltinIds = new Set([
   ...NodeModule.builtinModules,
   ...NodeModule.builtinModules.map((moduleName) => `node:${moduleName}`),
 ]);
+const externalHarnessSdkIds = ["@anthropic-ai/claude-agent-sdk", "@openai/codex-sdk"];
 
 function isExternalCliDependency(id: string): boolean {
-  return nodeBuiltinIds.has(id);
+  return (
+    nodeBuiltinIds.has(id) ||
+    externalHarnessSdkIds.some(
+      (packageName) => id === packageName || id.startsWith(`${packageName}/`),
+    )
+  );
 }
 
 export default defineConfig({
@@ -23,8 +29,9 @@ export default defineConfig({
     sourcemap: true,
     emptyOutDir: true,
     minify: false,
-    // The bundle's floor is Electron's bundled Node (v20.18) — the shell spawns
-    // dist/bin.mjs via ELECTRON_RUN_AS_NODE — even though dev runs on Node 22+.
+    // Keep the target conservatively below Electron 41's bundled Node 24.x.
+    // The shell spawns dist/bin.mjs via ELECTRON_RUN_AS_NODE, so the workspace
+    // Node used in development is not the runtime floor.
     target: "node20",
     rollupOptions: {
       external: isExternalCliDependency,

@@ -55,6 +55,25 @@ export type RpcStreamFailure<TTag extends StreamRpcTag> =
   RpcMethod<TTag> extends (input: never) => Stream.Stream<unknown, infer E, unknown> ? E : never;
 
 const isRpcClientError = Schema.is(RpcClientError.RpcClientError);
+const isRpcUnavailableError = Schema.is(RpcUnavailableError);
+
+export const isRpcTransportFailureCause = (cause: Cause.Cause<unknown>): boolean =>
+  cause.reasons.length > 0 &&
+  cause.reasons.every(
+    (reason) =>
+      reason._tag === "Fail" &&
+      (isRpcUnavailableError(reason.error) ||
+        (isRpcClientError(reason.error) && reason.error.reason._tag !== "RpcClientDefect")),
+  );
+
+const transportRecoveringRequest = <A, E>(
+  operation: () => Effect.Effect<A, E, ConnectionSupervisor>,
+): Stream.Stream<A, E, ConnectionSupervisor> =>
+  Stream.fromEffect(operation()).pipe(
+    Stream.catchCause((cause) =>
+      isRpcTransportFailureCause(cause) ? Stream.empty : Stream.failCause(cause),
+    ),
+  );
 
 /** Resolve the live session or fail fast so callers see "disconnected" as an error. */
 const currentSession = Effect.fn("clientRuntime.rpc.currentSession")(function* (method: string) {
@@ -82,16 +101,40 @@ export const request = Effect.fn("clientRuntime.rpc.request")(function* <TTag ex
   return yield* method(input);
 });
 
+export const requestOnEachSession = <A, E>(
+  operation: () => Effect.Effect<A, E, ConnectionSupervisor>,
+): Stream.Stream<A, E, ConnectionSupervisor> =>
+  Stream.unwrap(
+    Effect.map(ConnectionSupervisor, (supervisor) =>
+      SubscriptionRef.changes(supervisor.session).pipe(
+        Stream.switchMap(
+          Option.match({
+            onNone: () => Stream.empty,
+            onSome: () => transportRecoveringRequest(operation),
+          }),
+        ),
+      ),
+    ),
+  ).pipe(Stream.withSpan("clientRuntime.rpc.requestOnEachSession"));
+
+export const requestOnEachSessionAndAfter = <A, E, TriggerError>(
+  trigger: Stream.Stream<unknown, TriggerError, ConnectionSupervisor>,
+  operation: () => Effect.Effect<A, E, ConnectionSupervisor>,
+): Stream.Stream<A, E | TriggerError, ConnectionSupervisor> =>
+  Stream.merge(
+    requestOnEachSession(operation),
+    trigger.pipe(Stream.flatMap(() => transportRecoveringRequest(operation))),
+  ).pipe(Stream.withSpan("clientRuntime.rpc.requestOnEachSessionAndAfter"));
+
 /**
  * Subscribe to a streaming RPC. The returned stream watches the supervisor's
  * `session` ref and, on every reconnect, tears down the old subscription and
  * re-attaches to the fresh session — so a consumer subscribes once and keeps
  * receiving pushes across drops. While disconnected the stream is simply empty.
  *
- * Failure semantics: a pure transport failure (`RpcClientError`, i.e. the socket
- * dropped mid-stream) is logged and swallowed — the next session re-attaches us.
- * Every other failure (a domain error the server actually returned) propagates
- * to the consumer.
+ * Failure semantics: built-in transport failures from sockets, HTTP, or workers
+ * are logged and swallowed so the next session can re-attach. Protocol defects
+ * and domain failures propagate to the consumer.
  */
 export const subscribe = <TTag extends StreamRpcTag>(
   tag: TTag,
@@ -110,12 +153,7 @@ export const subscribe = <TTag extends StreamRpcTag>(
               return Stream.suspend(() =>
                 method(input).pipe(
                   Stream.catchCause((cause) => {
-                    const isTransportFailure =
-                      cause.reasons.length > 0 &&
-                      cause.reasons.every(
-                        (reason) => reason._tag === "Fail" && isRpcClientError(reason.error),
-                      );
-                    if (isTransportFailure) {
+                    if (isRpcTransportFailureCause(cause)) {
                       // Go quiet; the session ref will emit None then a fresh
                       // session, which re-attaches this subscription.
                       return Stream.fromEffect(

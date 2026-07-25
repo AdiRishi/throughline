@@ -34,6 +34,7 @@ const ElectronWindowOperation = Schema.Literals([
   "reveal-window",
   "load-url",
   "send-window-message",
+  "destroy-window",
   "add-window-listener",
   "set-open-handler",
 ]);
@@ -101,6 +102,10 @@ export class ElectronWindow extends Context.Service<
       ...args: readonly unknown[]
     ) => Effect.Effect<void>;
     readonly sendAll: (channel: string, ...args: readonly unknown[]) => Effect.Effect<void>;
+    readonly destroyAll: Effect.Effect<void>;
+    readonly syncAllAppearance: <E, R>(
+      sync: (window: Electron.BrowserWindow) => Effect.Effect<void, E, R>,
+    ) => Effect.Effect<void, E, R>;
     /** Register a one-shot `ready-to-show` listener (fires when first painted). */
     readonly onReadyToShow: (
       window: Electron.BrowserWindow,
@@ -284,6 +289,31 @@ export const make = Effect.gen(function* () {
             cause,
           }),
       }).pipe(Effect.orDie),
+    destroyAll: Effect.gen(function* () {
+      for (const window of yield* listWindows) {
+        yield* Effect.try({
+          try: () => window.destroy(),
+          catch: (cause) =>
+            new ElectronWindowOperationError({
+              operation: "destroy-window",
+              platform,
+              windowId: window.id,
+              channel: null,
+              cause,
+            }),
+        }).pipe(Effect.orDie);
+      }
+    }),
+    syncAllAppearance: Effect.fn("desktop.electron.window.syncAllAppearance")(function* <E, R>(
+      sync: (window: Electron.BrowserWindow) => Effect.Effect<void, E, R>,
+    ) {
+      for (const window of yield* listWindows) {
+        if (yield* isWindowDestroyed(window)) {
+          continue;
+        }
+        yield* sync(window);
+      }
+    }),
     onReadyToShow: (window, handler) =>
       Effect.try({
         try: () => {

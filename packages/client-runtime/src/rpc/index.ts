@@ -9,7 +9,10 @@ export {
   RpcUnavailableError,
   type StreamRpcTag,
   type UnaryRpcTag,
+  isRpcTransportFailureCause,
   request,
+  requestOnEachSession,
+  requestOnEachSessionAndAfter,
   subscribe,
 } from "./client.ts";
 export { makeWsRpcProtocolClient, type WsRpcProtocolClient } from "./protocol.ts";

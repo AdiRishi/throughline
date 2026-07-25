@@ -22,7 +22,7 @@ export const cli = Command.make("app-server", {
 
 // Run unconditionally — this bundle is only ever the process entrypoint. We
 // deliberately avoid an `import.meta.main` guard: it is `undefined` on the Node
-// bundled with Electron (v20.18), where the desktop shell spawns this server,
+// bundled with Electron, where the desktop shell spawns this server,
 // which would make the CLI silently no-op.
 Command.run(cli, { version: APP_VERSION }).pipe(
   Effect.scoped,

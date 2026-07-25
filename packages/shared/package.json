@@ -19,6 +19,14 @@
     "./atomicWrite": {
       "types": "./src/atomicWrite.ts",
       "import": "./src/atomicWrite.ts"
+    },
+    "./rotatingLog": {
+      "types": "./src/rotatingLog.ts",
+      "import": "./src/rotatingLog.ts"
+    },
+    "./safeLog": {
+      "types": "./src/safeLog.ts",
+      "import": "./src/safeLog.ts"
     }
   },
   "scripts": {

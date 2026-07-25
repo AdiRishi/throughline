@@ -3,14 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#0b0b0c" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ebe9e3" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#12141a" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <script>
       // Pre-mount theme guard: toggle `.dark` before React renders so there is
       // no flash of the wrong theme. Mirrors the logic in hooks/useTheme.ts.
       (() => {
         try {
-          const stored = window.localStorage.getItem("app:theme");
+          const stored =
+            window.desktopBridge?.getTheme() ?? window.localStorage.getItem("app:theme");
           const theme =
             stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
           const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -37,8 +40,8 @@
         margin: 0;
       }
       body {
-        background: #ffffff;
-        color: #18181b;
+        background: #f1f0ec;
+        color: #202329;
         font-family:
           ui-sans-serif,
           system-ui,
@@ -47,8 +50,8 @@
           sans-serif;
       }
       html.dark body {
-        background: #0b0b0c;
-        color: #fafafa;
+        background: #0f1116;
+        color: #e8ebf0;
       }
       #boot-splash {
         display: flex;
@@ -57,10 +60,10 @@
         justify-content: center;
       }
       #boot-splash-dot {
-        width: 14px;
-        height: 14px;
-        border-radius: 9999px;
-        background: #a1a1aa;
+        width: 24px;
+        height: 3px;
+        border-radius: 1px;
+        background: #e2a44e;
         animation: boot-pulse 1.1s ease-in-out infinite;
       }
       @keyframes boot-pulse {

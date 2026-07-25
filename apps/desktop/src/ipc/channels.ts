@@ -3,11 +3,14 @@
 // can't drift.
 
 export const GET_APP_INFO_CHANNEL = "desktop:get-app-info";
+export const GET_THEME_CHANNEL = "desktop:get-theme";
+export const GET_WINDOW_FULLSCREEN_STATE_CHANNEL = "desktop:get-window-fullscreen-state";
 export const GET_SERVER_BOOTSTRAP_CHANNEL = "desktop:get-server-bootstrap";
 export const GET_BEARER_TOKEN_CHANNEL = "desktop:get-bearer-token";
 
 export const SET_THEME_CHANNEL = "desktop:set-theme";
 export const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
+export const OPEN_LOGS_FOLDER_CHANNEL = "desktop:open-logs-folder";
 export const CONFIRM_CHANNEL = "desktop:confirm";
 export const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 export const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
@@ -21,3 +24,4 @@ export const INSTALL_UPDATE_CHANNEL = "desktop:update-install";
 // Push channels (main → renderer via webContents.send).
 export const UPDATE_STATE_CHANNEL = "desktop:update-state";
 export const MENU_ACTION_CHANNEL = "desktop:menu-action";
+export const WINDOW_FULLSCREEN_STATE_CHANNEL = "desktop:window-fullscreen-state";

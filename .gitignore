@@ -8,3 +8,6 @@ dist-electron/
 .DS_Store
 release/
 .playwright-mcp/
+.throughline-data/
+.pnpm-store/
+.electron-runtime/

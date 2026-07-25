@@ -9,11 +9,12 @@ import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import { installDesktopIpcHandlers } from "../ipc/DesktopIpcHandlers.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopUpdater from "../updates/DesktopUpdater.ts";
-import * as DesktopWindow from "../window/DesktopWindow.ts";
+import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopLifecycle from "./DesktopLifecycle.ts";
-import { makeComponentLogger } from "./DesktopObservability.ts";
+import { DesktopFileLog, makeComponentLogger } from "./DesktopObservability.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as DesktopState from "./DesktopState.ts";
 
@@ -25,6 +26,9 @@ import * as DesktopState from "./DesktopState.ts";
 const { logInfo: logStartupInfo, logError: logStartupError } =
   makeComponentLogger("desktop-startup");
 const { logInfo: logBootstrapInfo } = makeComponentLogger("desktop-bootstrap");
+
+const APP_USER_MODEL_ID = "com.arsoftware.throughline";
+const LINUX_DESKTOP_ID = "throughline";
 
 const makeRunId = Crypto.Crypto.pipe(
   Effect.flatMap((crypto) => crypto.randomUUIDv4),
@@ -43,7 +47,10 @@ const handleFatalStartupError = Effect.fn("desktop.startup.handleFatalStartupErr
   yield* logStartupError("fatal startup error", { stage, message });
   const wasQuitting = yield* Ref.getAndSet(state.quitting, true);
   if (!wasQuitting) {
-    yield* electronDialog.showErrorBox("App failed to start", `Stage: ${stage}\n${message}`);
+    yield* electronDialog.showErrorBox(
+      "Throughline failed to start",
+      `Stage: ${stage}\n${message}`,
+    );
   }
   yield* shutdown.request;
   yield* electronApp.quit;
@@ -71,11 +78,24 @@ const startup = Effect.gen(function* () {
   const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
   const settings = yield* DesktopAppSettings.DesktopAppSettings;
   const updater = yield* DesktopUpdater.DesktopUpdater;
-  const window = yield* DesktopWindow.DesktopWindow;
+  const shellEnvironment = yield* DesktopShellEnvironment.DesktopShellEnvironment;
+  const applicationMenu = yield* DesktopApplicationMenu.DesktopApplicationMenu;
   const electronTheme = yield* ElectronTheme.ElectronTheme;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
 
+  yield* shellEnvironment.installIntoProcess;
   yield* electronApp.setPath("userData", environment.baseDir);
+  yield* electronApp.setName(environment.displayName);
+  if (environment.platform === "win32") {
+    yield* electronApp.setAppUserModelId(
+      environment.isDevelopment ? `${APP_USER_MODEL_ID}.dev` : APP_USER_MODEL_ID,
+    );
+  }
+  if (environment.platform === "linux") {
+    const desktopId = environment.isDevelopment ? `${LINUX_DESKTOP_ID}-dev` : LINUX_DESKTOP_ID;
+    yield* electronApp.appendCommandLineSwitch("class", desktopId);
+    yield* electronApp.setDesktopName(`${desktopId}.desktop`);
+  }
 
   const loaded = yield* settings.load;
   yield* electronTheme.setSource(loaded.theme).pipe(Effect.ignore({ log: true }));
@@ -88,9 +108,16 @@ const startup = Effect.gen(function* () {
     Effect.catchCause((cause) => fatalStartupCause("whenReady", cause)),
   );
   yield* logStartupInfo("app ready");
+  if (environment.platform === "darwin") {
+    yield* electronApp.setDockIcon(environment.iconPngPath);
+  }
+  yield* electronApp.setAboutPanelOptions({
+    applicationName: environment.displayName,
+    applicationVersion: environment.appVersion,
+  });
 
   yield* updater.configure;
-  yield* window.installApplicationMenu;
+  yield* applicationMenu.configure;
   yield* bootstrap.pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
 }).pipe(Effect.withSpan("desktop.startup"));
 
@@ -102,9 +129,22 @@ const scopedProgram = Effect.scoped(
 
     const shutdown = yield* DesktopShutdown.DesktopShutdown;
     const manager = yield* DesktopBackendManager.DesktopBackendManager;
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    const fileLog = yield* DesktopFileLog;
 
-    yield* Effect.addFinalizer(() => manager.stop.pipe(Effect.ensuring(shutdown.markComplete)));
+    yield* Effect.addFinalizer(() =>
+      manager.stop.pipe(
+        Effect.andThen(logStartupInfo("desktop process stopped")),
+        Effect.andThen(fileLog.flush),
+        Effect.ensuring(shutdown.markComplete),
+      ),
+    );
 
+    yield* logStartupInfo("desktop process starting", {
+      version: environment.appVersion,
+      mode: environment.isDevelopment ? "development" : "packaged",
+      logFile: environment.path.join(environment.logDir, "desktop.log"),
+    });
     yield* startup;
     yield* shutdown.awaitRequest;
   }),

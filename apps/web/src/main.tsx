@@ -4,6 +4,12 @@ import ReactDOM from "react-dom/client";
 import "./index.css";
 
 import { AppRoot } from "./AppRoot.tsx";
+import { isElectron } from "./env.ts";
+import { syncDocumentWindowControlsOverlayClass } from "./windowControlsOverlay.ts";
+
+if (isElectron) {
+  syncDocumentWindowControlsOverlayClass();
+}
 
 const root = document.getElementById("root");
 if (!root) {

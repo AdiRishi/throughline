@@ -1,8 +1,11 @@
+import * as Schema from "effect/Schema";
 import { contextBridge, ipcRenderer } from "electron";
 
-import type { DesktopBridge } from "@app/contracts";
+import { DesktopUpdateState, type DesktopBridge } from "@app/contracts";
 
 import * as IpcChannels from "./ipc/channels.ts";
+
+const isDesktopUpdateState = Schema.is(DesktopUpdateState);
 
 // The context-isolation bridge. Each method delegates to `ipcRenderer` and the
 // object is typed with `satisfies DesktopBridge`, so main, preload, and renderer
@@ -18,6 +21,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     }
     return result as ReturnType<DesktopBridge["getAppInfo"]>;
   },
+  getTheme: () =>
+    ipcRenderer.sendSync(IpcChannels.GET_THEME_CHANNEL) as ReturnType<DesktopBridge["getTheme"]>,
+  getWindowFullscreenState: () =>
+    ipcRenderer.sendSync(IpcChannels.GET_WINDOW_FULLSCREEN_STATE_CHANNEL) === true,
   getServerBootstrap: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_SERVER_BOOTSTRAP_CHANNEL);
     if (typeof result !== "object" || result === null) {
@@ -29,6 +36,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
 
   setTheme: (theme) => ipcRenderer.invoke(IpcChannels.SET_THEME_CHANNEL, theme),
   openExternal: (url) => ipcRenderer.invoke(IpcChannels.OPEN_EXTERNAL_CHANNEL, url),
+  openLogsFolder: () => ipcRenderer.invoke(IpcChannels.OPEN_LOGS_FOLDER_CHANNEL),
   confirm: (message) => ipcRenderer.invoke(IpcChannels.CONFIRM_CHANNEL, message),
   pickFolder: (options) => ipcRenderer.invoke(IpcChannels.PICK_FOLDER_CHANNEL, options),
   showContextMenu: (items, position) =>
@@ -45,8 +53,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   installUpdate: () => ipcRenderer.invoke(IpcChannels.INSTALL_UPDATE_CHANNEL),
   onUpdateState: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, state: unknown) => {
-      if (typeof state !== "object" || state === null) return;
-      listener(state as Parameters<typeof listener>[0]);
+      if (!isDesktopUpdateState(state)) return;
+      listener(state);
     };
     ipcRenderer.on(IpcChannels.UPDATE_STATE_CHANNEL, wrapped);
     return () => {
@@ -62,6 +70,16 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.on(IpcChannels.MENU_ACTION_CHANNEL, wrapped);
     return () => {
       ipcRenderer.removeListener(IpcChannels.MENU_ACTION_CHANNEL, wrapped);
+    };
+  },
+  onWindowFullscreenStateChange: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, fullscreen: unknown) => {
+      if (typeof fullscreen !== "boolean") return;
+      listener(fullscreen);
+    };
+    ipcRenderer.on(IpcChannels.WINDOW_FULLSCREEN_STATE_CHANNEL, wrapped);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.WINDOW_FULLSCREEN_STATE_CHANNEL, wrapped);
     };
   },
 } satisfies DesktopBridge);

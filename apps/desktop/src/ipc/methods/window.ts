@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -40,6 +41,25 @@ export const getAppInfo = DesktopIpc.makeSyncIpcMethod({
   handler: Effect.fn("desktop.ipc.window.getAppInfo")(function* () {
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     return environment.appInfo;
+  }),
+});
+
+export const getTheme = DesktopIpc.makeSyncIpcMethod({
+  channel: IpcChannels.GET_THEME_CHANNEL,
+  result: DesktopTheme,
+  handler: Effect.fn("desktop.ipc.window.getTheme")(function* () {
+    const settings = yield* DesktopAppSettings.DesktopAppSettings;
+    return (yield* settings.get).theme;
+  }),
+});
+
+export const getWindowFullscreenState = DesktopIpc.makeSyncIpcMethod({
+  channel: IpcChannels.GET_WINDOW_FULLSCREEN_STATE_CHANNEL,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.window.getWindowFullscreenState")(function* () {
+    const electronWindow = yield* ElectronWindow.ElectronWindow;
+    const window = yield* electronWindow.currentMainOrFirst;
+    return Option.isSome(window) && window.value.isFullScreen();
   }),
 });
 
@@ -88,6 +108,19 @@ export const openExternal = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.window.openExternal")(function* (url) {
     const shell = yield* ElectronShell.ElectronShell;
     return yield* shell.openExternal(url);
+  }),
+});
+
+export const openLogsFolder = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.OPEN_LOGS_FOLDER_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.window.openLogsFolder")(function* () {
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const shell = yield* ElectronShell.ElectronShell;
+    yield* fileSystem.makeDirectory(environment.logDir, { recursive: true });
+    return yield* shell.openPath(environment.logDir);
   }),
 });
 

@@ -3,8 +3,9 @@
  *
  * The desktop shell mints a one-time bootstrap token and hands it to the
  * spawned server over an inherited file descriptor. The envelope is a single
- * JSON line `{ "desktopBootstrapToken": string, "port"?: number }`. Reading a
- * secret off an fd keeps it out of argv/env where other processes could see it.
+ * JSON line carrying the token plus optional shell-owned port and app version.
+ * Reading a secret off an fd keeps it out of argv/env where other processes
+ * could see it.
  *
  * @module bootstrap
  */

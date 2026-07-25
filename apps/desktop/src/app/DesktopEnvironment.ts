@@ -8,7 +8,7 @@ import * as Path from "effect/Path";
 import type { DesktopAppInfo } from "@app/contracts";
 
 import type { DesktopSettings } from "../settings/DesktopAppSettings.ts";
-import { DEFAULT_DESKTOP_SETTINGS } from "../settings/DesktopAppSettings.ts";
+import { resolveDefaultDesktopSettings } from "../settings/DesktopAppSettings.ts";
 
 // All the derived, environment-dependent facts the rest of the shell reads:
 // paths, dev-vs-prod, branding, and where the server entry lives. It is built
@@ -32,6 +32,8 @@ export interface MakeDesktopEnvironmentInput {
   readonly appDataDirectory: Option.Option<string>;
   /** `XDG_CONFIG_HOME`, if set (Linux config root). */
   readonly xdgConfigHome: Option.Option<string>;
+  /** `APPIMAGE`, if this Linux process was launched from an AppImage. */
+  readonly appImagePath: Option.Option<string>;
   /** `APP_SERVER_ENTRY` override, if set. */
   readonly serverEntryOverride: Option.Option<string>;
   /** `APP_SERVER_PORT`, if set. */
@@ -51,6 +53,7 @@ export class DesktopEnvironment extends Context.Service<
     readonly appPath: string;
     readonly resourcesPath: string;
     readonly homeDirectory: string;
+    readonly appImagePath: Option.Option<string>;
     /**
      * Base app-data dir under the platform's config root (AppData/Roaming,
      * Library/Application Support, XDG config) — settings + logs live under
@@ -59,6 +62,9 @@ export class DesktopEnvironment extends Context.Service<
     readonly baseDir: string;
     readonly desktopSettingsPath: string;
     readonly logDir: string;
+    readonly appUpdateYmlPath: string;
+    readonly iconPngPath: string;
+    readonly windowIconPath: string;
     readonly preloadPath: string;
     /** Absolute path to the server entry to spawn. */
     readonly backendEntryPath: string;
@@ -98,17 +104,26 @@ export function makeWith(
       : platform === "darwin"
         ? path.join(input.homeDirectory, "Library", "Application Support")
         : Option.getOrElse(input.xdgConfigHome, () => path.join(input.homeDirectory, ".config"));
-  const baseDir = path.join(appDataDirectory, "throughline");
+  const baseDir = path.join(appDataDirectory, isDevelopment ? "throughline-dev" : "throughline");
   const logDir = path.join(baseDir, "logs");
   const desktopSettingsPath = path.join(baseDir, "desktop-settings.json");
+  const appUpdateYmlPath = input.isPackaged
+    ? path.join(input.resourcesPath, "app-update.yml")
+    : path.join(input.appPath, "dev-app-update.yml");
+  const desktopResourcesPath = path.join(input.dirname, "../resources");
+  const iconPngPath = path.join(desktopResourcesPath, "icon.png");
+  const windowIconPath = path.join(
+    desktopResourcesPath,
+    input.platform === "win32" ? "icon.ico" : "icon.png",
+  );
   const preloadPath = path.join(input.dirname, "preload.cjs");
 
   // Resolve the server entry to spawn. Priority:
   //   1. APP_SERVER_ENTRY override (used by the dev runner).
   //   2. Packaged: the bundled server under Electron's app path.
   //   3. Dev default: the server's built dist relative to this monorepo.
-  // The dev runner points APP_SERVER_ENTRY at the server's src/bin.ts (run via
-  // tsx) or its built dist/bin.mjs, so most local setups exercise branch (1).
+  // The dev runner points APP_SERVER_ENTRY at the built dist/bin.mjs, so local
+  // desktop development exercises branch (1).
   const backendEntryPath = Option.match(input.serverEntryOverride, {
     onSome: (override) => override,
     onNone: () =>
@@ -134,9 +149,13 @@ export function makeWith(
     appPath: input.appPath,
     resourcesPath: input.resourcesPath,
     homeDirectory: input.homeDirectory,
+    appImagePath: input.appImagePath,
     baseDir,
     desktopSettingsPath,
     logDir,
+    appUpdateYmlPath,
+    iconPngPath,
+    windowIconPath,
     preloadPath,
     backendEntryPath,
     backendCwd,
@@ -145,7 +164,7 @@ export function makeWith(
     devServerUrl: input.devServerUrl,
     appInfo,
     displayName,
-    defaultDesktopSettings: DEFAULT_DESKTOP_SETTINGS,
+    defaultDesktopSettings: resolveDefaultDesktopSettings(input.appVersion),
   });
 }
 
@@ -169,6 +188,10 @@ export function layer(
       const path = yield* Path.Path;
       const appDataDirectory = yield* Config.string("APPDATA").pipe(Config.option);
       const xdgConfigHome = yield* Config.string("XDG_CONFIG_HOME").pipe(Config.option);
+      const appImagePath = yield* Config.string("APPIMAGE").pipe(
+        Config.option,
+        Effect.map(Option.filter((value) => value.trim().length > 0)),
+      );
       const serverEntryOverride = yield* Config.string("APP_SERVER_ENTRY").pipe(Config.option);
       const configuredBackendPort = yield* Config.port("APP_SERVER_PORT").pipe(Config.option);
       const devServerUrl = yield* Config.url("APP_DEV_WEB_URL").pipe(Config.option);
@@ -177,6 +200,7 @@ export function layer(
           ...metadata,
           appDataDirectory,
           xdgConfigHome,
+          appImagePath,
           serverEntryOverride,
           configuredBackendPort,
           devServerUrl,

@@ -42,13 +42,23 @@ export class ElectronUpdaterQuitAndInstallError extends Schema.TaggedErrorClass<
   "ElectronUpdaterQuitAndInstallError",
   {
     channel: Schema.NullOr(Schema.String),
+    isSilent: Schema.Boolean,
+    isForceRunAfter: Schema.Boolean,
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Electron updater failed to quit and install the update on channel ${this.channel ?? "default"}.`;
+    return `Electron updater failed to quit and install the update on channel ${this.channel ?? "default"} (silent: ${this.isSilent}, force run after: ${this.isForceRunAfter}).`;
   }
 }
+
+export const ElectronUpdaterError = Schema.Union([
+  ElectronUpdaterCheckForUpdatesError,
+  ElectronUpdaterDownloadUpdateError,
+  ElectronUpdaterQuitAndInstallError,
+]);
+export type ElectronUpdaterError = typeof ElectronUpdaterError.Type;
+export const isElectronUpdaterError = Schema.is(ElectronUpdaterError);
 
 export class ElectronUpdater extends Context.Service<
   ElectronUpdater,
@@ -57,6 +67,10 @@ export class ElectronUpdater extends Context.Service<
     readonly setAutoDownload: (value: boolean) => Effect.Effect<void>;
     readonly setAutoInstallOnAppQuit: (value: boolean) => Effect.Effect<void>;
     readonly setChannel: (channel: string) => Effect.Effect<void>;
+    readonly setAllowPrerelease: (value: boolean) => Effect.Effect<void>;
+    readonly allowDowngrade: Effect.Effect<boolean>;
+    readonly setAllowDowngrade: (value: boolean) => Effect.Effect<void>;
+    readonly setFullChangelog: (value: boolean) => Effect.Effect<void>;
     readonly checkForUpdates: Effect.Effect<void, ElectronUpdaterCheckForUpdatesError>;
     readonly downloadUpdate: Effect.Effect<void, ElectronUpdaterDownloadUpdateError>;
     readonly quitAndInstall: (options: {
@@ -91,6 +105,22 @@ export const make = ElectronUpdater.of({
       autoUpdater.channel = channel;
       return Effect.void;
     }),
+  setAllowPrerelease: (value) =>
+    Effect.suspend(() => {
+      autoUpdater.allowPrerelease = value;
+      return Effect.void;
+    }),
+  allowDowngrade: Effect.sync(() => autoUpdater.allowDowngrade),
+  setAllowDowngrade: (value) =>
+    Effect.suspend(() => {
+      autoUpdater.allowDowngrade = value;
+      return Effect.void;
+    }),
+  setFullChangelog: (value) =>
+    Effect.suspend(() => {
+      autoUpdater.fullChangelog = value;
+      return Effect.void;
+    }),
   checkForUpdates: Effect.suspend(() => {
     const channel = autoUpdater.channel;
     return Effect.tryPromise({
@@ -110,7 +140,13 @@ export const make = ElectronUpdater.of({
       const channel = autoUpdater.channel;
       return Effect.try({
         try: () => autoUpdater.quitAndInstall(isSilent, isForceRunAfter),
-        catch: (cause) => new ElectronUpdaterQuitAndInstallError({ channel, cause }),
+        catch: (cause) =>
+          new ElectronUpdaterQuitAndInstallError({
+            channel,
+            isSilent,
+            isForceRunAfter,
+            cause,
+          }),
       });
     }),
   on: (eventName, listener) => {

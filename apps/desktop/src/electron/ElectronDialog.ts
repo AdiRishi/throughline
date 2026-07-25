@@ -48,6 +48,20 @@ export class ElectronDialogShowErrorBoxError extends Schema.TaggedErrorClass<Ele
   }
 }
 
+export class ElectronDialogShowMessageBoxError extends Schema.TaggedErrorClass<ElectronDialogShowMessageBoxError>()(
+  "ElectronDialogShowMessageBoxError",
+  {
+    ownerWindowId: Schema.NullOr(Schema.Number),
+    type: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    const owner = this.ownerWindowId === null ? "the application" : `window ${this.ownerWindowId}`;
+    return `Failed to show an Electron ${this.type} message box for ${owner}.`;
+  }
+}
+
 export interface ElectronDialogPickFolderInput {
   readonly owner: Option.Option<Electron.BrowserWindow>;
   readonly defaultPath: Option.Option<string>;
@@ -68,6 +82,10 @@ export class ElectronDialog extends Context.Service<
     readonly confirm: (
       input: ElectronDialogConfirmInput,
     ) => Effect.Effect<boolean, ElectronDialogConfirmError>;
+    readonly showMessageBox: (input: {
+      readonly owner: Option.Option<Electron.BrowserWindow>;
+      readonly options: Electron.MessageBoxOptions;
+    }) => Effect.Effect<Electron.MessageBoxReturnValue, ElectronDialogShowMessageBoxError>;
     readonly showErrorBox: (title: string, content: string) => Effect.Effect<void>;
   }
 >()("@app/desktop/electron/ElectronDialog") {}
@@ -137,6 +155,25 @@ export const make = ElectronDialog.of({
         }),
     });
     return result.response === CONFIRM_BUTTON_INDEX;
+  }),
+  showMessageBox: Effect.fn("desktop.electron.dialog.showMessageBox")(function* (input) {
+    const ownerWindowId = Option.match(input.owner, {
+      onNone: () => null,
+      onSome: (owner) => owner.id,
+    });
+    return yield* Effect.tryPromise({
+      try: () =>
+        Option.match(input.owner, {
+          onNone: () => Electron.dialog.showMessageBox(input.options),
+          onSome: (owner) => Electron.dialog.showMessageBox(owner, input.options),
+        }),
+      catch: (cause) =>
+        new ElectronDialogShowMessageBoxError({
+          ownerWindowId,
+          type: input.options.type ?? "none",
+          cause,
+        }),
+    });
   }),
   showErrorBox: (title, content) =>
     Effect.try({

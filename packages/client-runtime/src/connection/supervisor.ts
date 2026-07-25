@@ -21,7 +21,7 @@ import {
 
 /**
  * Capped exponential backoff. Attempt 1 waits 1s, then 2s, 4s, 8s, capped at
- * 16s. A tiny table keeps the "simple" promise of this starter's supervisor.
+ * 16s. The fixed table keeps the retry policy explicit.
  */
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
 const MAX_RETRY_DELAY_MS = 16_000;

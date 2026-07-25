@@ -1,7 +1,12 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import { DesktopUpdateChannel, DesktopUpdateState } from "@app/contracts";
+import {
+  DesktopUpdateActionResult,
+  DesktopUpdateChannel,
+  DesktopUpdateCheckResult,
+  DesktopUpdateState,
+} from "@app/contracts";
 
 import * as DesktopUpdater from "../../updates/DesktopUpdater.ts";
 import * as IpcChannels from "../channels.ts";
@@ -20,39 +25,39 @@ export const getUpdateState = DesktopIpc.makeIpcMethod({
 export const setUpdateChannel = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.SET_UPDATE_CHANNEL_CHANNEL,
   payload: DesktopUpdateChannel,
-  result: Schema.Void,
+  result: DesktopUpdateState,
   handler: Effect.fn("desktop.ipc.updates.setChannel")(function* (channel) {
     const updater = yield* DesktopUpdater.DesktopUpdater;
-    yield* updater.setChannel(channel);
+    return yield* updater.setChannel(channel);
   }),
 });
 
 export const checkForUpdate = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.CHECK_FOR_UPDATE_CHANNEL,
   payload: Schema.Void,
-  result: Schema.Void,
+  result: DesktopUpdateCheckResult,
   handler: Effect.fn("desktop.ipc.updates.check")(function* () {
     const updater = yield* DesktopUpdater.DesktopUpdater;
-    yield* updater.check;
+    return yield* updater.check("settings");
   }),
 });
 
 export const downloadUpdate = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.DOWNLOAD_UPDATE_CHANNEL,
   payload: Schema.Void,
-  result: Schema.Void,
+  result: DesktopUpdateActionResult,
   handler: Effect.fn("desktop.ipc.updates.download")(function* () {
     const updater = yield* DesktopUpdater.DesktopUpdater;
-    yield* updater.download;
+    return yield* updater.download;
   }),
 });
 
 export const installUpdate = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.INSTALL_UPDATE_CHANNEL,
   payload: Schema.Void,
-  result: Schema.Void,
+  result: DesktopUpdateActionResult,
   handler: Effect.fn("desktop.ipc.updates.install")(function* () {
     const updater = yield* DesktopUpdater.DesktopUpdater;
-    yield* updater.install;
+    return yield* updater.install;
   }),
 });

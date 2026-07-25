@@ -1,8 +1,14 @@
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+
+import { safeDiagnosticErrorType } from "@app/shared/safeLog";
+
+import { makeComponentLogger } from "../app/DesktopObservability.ts";
 
 // The IPC registration service + codec-validated method helpers. `handle`/
 // `handleSync` register a channel and, via `Effect.acquireRelease`, remove it
@@ -82,6 +88,14 @@ export class DesktopIpc extends Context.Service<
   }
 >()("@app/desktop/ipc/DesktopIpc") {}
 
+const { logWarning } = makeComponentLogger("desktop-ipc");
+
+const logInvocationFailure = (channel: string, cause: Cause.Cause<unknown>) =>
+  logWarning("desktop IPC operation failed", {
+    channel,
+    errorType: safeDiagnosticErrorType(Cause.squash(cause)),
+  });
+
 export const make = (ipcMain: DesktopIpcMain): DesktopIpc["Service"] =>
   DesktopIpc.of({
     handle: Effect.fn("desktop.ipc.registerInvoke")(function* <E, R>({
@@ -91,6 +105,7 @@ export const make = (ipcMain: DesktopIpcMain): DesktopIpc["Service"] =>
       yield* Effect.annotateCurrentSpan({ channel });
       const context = yield* Effect.context<R>();
       const runPromise = Effect.runPromiseWith(context);
+      const callbackAnnotations = yield* References.CurrentLogAnnotations;
 
       yield* Effect.acquireRelease(
         Effect.try({
@@ -101,7 +116,11 @@ export const make = (ipcMain: DesktopIpcMain): DesktopIpc["Service"] =>
                 Effect.gen(function* () {
                   yield* Effect.annotateCurrentSpan({ channel });
                   return yield* handler(raw);
-                }).pipe(Effect.annotateLogs({ channel }), Effect.withSpan("desktop.ipc.invoke")),
+                }).pipe(
+                  Effect.tapCause((cause) => logInvocationFailure(channel, cause)),
+                  Effect.annotateLogs({ ...callbackAnnotations, channel }),
+                  Effect.withSpan("desktop.ipc.invoke"),
+                ),
               ),
             );
           },
@@ -132,6 +151,7 @@ export const make = (ipcMain: DesktopIpcMain): DesktopIpc["Service"] =>
       yield* Effect.annotateCurrentSpan({ channel });
       const context = yield* Effect.context<R>();
       const runSync = Effect.runSyncWith(context);
+      const callbackAnnotations = yield* References.CurrentLogAnnotations;
 
       yield* Effect.acquireRelease(
         Effect.try({
@@ -143,7 +163,8 @@ export const make = (ipcMain: DesktopIpcMain): DesktopIpc["Service"] =>
                   yield* Effect.annotateCurrentSpan({ channel });
                   return yield* handler();
                 }).pipe(
-                  Effect.annotateLogs({ channel }),
+                  Effect.tapCause((cause) => logInvocationFailure(channel, cause)),
+                  Effect.annotateLogs({ ...callbackAnnotations, channel }),
                   Effect.withSpan("desktop.ipc.invokeSync"),
                 ),
               );

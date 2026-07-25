@@ -1,5 +1,5 @@
 /**
- * ServerConfig - runtime configuration for the starter server.
+ * ServerConfig - runtime configuration for the Throughline server.
  *
  * The whole server bottoms out at this single service. It is resolved once at
  * startup from environment variables + the bootstrap envelope, then provided as

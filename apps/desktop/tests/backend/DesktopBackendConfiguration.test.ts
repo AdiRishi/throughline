@@ -22,6 +22,7 @@ const desktopEnvironmentLayer = Layer.effect(
         resourcesPath: "/app/resources",
         appDataDirectory: Option.none(),
         xdgConfigHome: Option.none(),
+        appImagePath: Option.none(),
         serverEntryOverride: Option.some("/app/apps/server/dist/bin.mjs"),
         configuredBackendPort: Option.none(),
         devServerUrl: Option.none(),
@@ -45,6 +46,7 @@ const developmentEnvironmentLayer = Layer.effect(
         resourcesPath: "/app/resources",
         appDataDirectory: Option.none(),
         xdgConfigHome: Option.none(),
+        appImagePath: Option.none(),
         serverEntryOverride: Option.some("/app/apps/server/dist/bin.mjs"),
         configuredBackendPort: Option.none(),
         devServerUrl: Option.some(new URL("http://127.0.0.1:5733")),
@@ -79,6 +81,7 @@ describe("DesktopBackendConfiguration", () => {
           resourcesPath: "/Applications/App.app/Contents/Resources",
           appDataDirectory: Option.none(),
           xdgConfigHome: Option.none(),
+          appImagePath: Option.none(),
           serverEntryOverride: Option.none(),
           configuredBackendPort: Option.none(),
           devServerUrl: Option.none(),
@@ -120,6 +123,7 @@ describe("DesktopBackendConfiguration", () => {
       assert.equal(config.env.APP_DATA_DIR, "/home/user/Library/Application Support/throughline");
       assert.equal(config.bootstrapEnvelope.port, 19731);
       assert.equal(config.bootstrapEnvelope.desktopBootstrapToken, config.bootstrapToken);
+      assert.equal(config.bootstrapEnvelope.appVersion, "0.0.0");
       assert.match(config.bootstrapToken, /^[0-9a-f]{48}$/);
     }).pipe(Effect.provide(testLayer)),
   );
@@ -132,6 +136,10 @@ describe("DesktopBackendConfiguration", () => {
 
       assert.equal(config.env.APP_DEV_WEB_URL, "http://127.0.0.1:5733/");
       assert.equal(config.env.APP_SERVER_HOST, undefined);
+      assert.equal(
+        config.env.APP_DATA_DIR,
+        "/home/user/Library/Application Support/throughline-dev",
+      );
     }).pipe(Effect.provide(developmentTestLayer)),
   );
 });
