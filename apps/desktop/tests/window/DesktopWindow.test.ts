@@ -189,6 +189,16 @@ function makeTestLayer(input: {
 }
 
 describe("DesktopWindow", () => {
+  it("versions packaged renderer navigations so an upgrade cannot reuse stale HTML", () => {
+    assert.equal(
+      DesktopWindow.resolvePackagedApplicationUrl(
+        new URL("http://127.0.0.1:13773"),
+        "1.4.2-beta.1",
+      ),
+      "http://127.0.0.1:13773/?throughline-app-version=1.4.2-beta.1",
+    );
+  });
+
   it("restores only bounds that still fit on a connected display", () => {
     const persisted = { x: 100, y: 80, width: 1100, height: 780 };
     assert.strictEqual(

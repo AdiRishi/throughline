@@ -121,6 +121,12 @@ function resolveApplicationUrl(
   });
 }
 
+export function resolvePackagedApplicationUrl(httpBaseUrl: URL, appVersion: string): string {
+  const url = new URL(httpBaseUrl);
+  url.searchParams.set("throughline-app-version", appVersion);
+  return url.toString();
+}
+
 export function isSameOriginRendererNavigation(input: {
   readonly applicationUrl: string;
   readonly navigationUrl: string;
@@ -560,7 +566,10 @@ export const make = Effect.gen(function* () {
       // a concurrent `activate` (dock click) can't create a window against the
       // stale default-port URL.
       if (!environment.isDevelopment) {
-        yield* Ref.set(applicationUrlRef, config.httpBaseUrl.href);
+        yield* Ref.set(
+          applicationUrlRef,
+          resolvePackagedApplicationUrl(config.httpBaseUrl, environment.appVersion),
+        );
       }
       yield* Ref.set(backendReadyRef, true);
       yield* logInfo("backend ready", { url: config.httpBaseUrl.href });

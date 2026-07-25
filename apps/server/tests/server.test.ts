@@ -302,10 +302,12 @@ describe("static serving", () => {
     Effect.gen(function* () {
       const index = yield* HttpClient.get("/");
       assert.equal(index.status, 200);
+      assert.equal(index.headers["cache-control"], "no-store");
       assert.include(yield* index.text, "INDEX_SENTINEL");
 
       const asset = yield* HttpClient.get("/assets/app.js");
       assert.equal(asset.status, 200);
+      assert.equal(asset.headers["cache-control"], "private, max-age=3600");
       assert.include(yield* asset.text, "APP_JS_SENTINEL");
     }).pipe(Effect.provide(appLayer({ staticDir: STATIC_ROOT }))),
   );
@@ -314,6 +316,7 @@ describe("static serving", () => {
     Effect.gen(function* () {
       const response = yield* HttpClient.get("/settings/updates");
       assert.equal(response.status, 200);
+      assert.equal(response.headers["cache-control"], "no-store");
       assert.include(yield* response.text, "INDEX_SENTINEL");
     }).pipe(Effect.provide(appLayer({ staticDir: STATIC_ROOT }))),
   );
