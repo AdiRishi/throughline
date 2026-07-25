@@ -166,7 +166,7 @@ async function main(): Promise<void> {
       cwd: REPO_ROOT,
       stdio: "inherit",
     });
-    children.push(run("@app/desktop", "start", desktopEnv));
+    children.push(run("@app/desktop", "dev", desktopEnv));
   }
 
   // SIGTERM everything, give children a short grace period to exit cleanly,
