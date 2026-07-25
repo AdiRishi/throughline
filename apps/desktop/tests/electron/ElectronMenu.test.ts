@@ -10,12 +10,11 @@ import { HostProcessPlatform } from "@app/shared/hostProcess";
 
 const { buildFromTemplateMock, createFromNamedImageMock, setApplicationMenuMock } = vi.hoisted(
   () => ({
-    buildFromTemplateMock:
-      vi.fn<
-        (template: Electron.MenuItemConstructorOptions[]) => {
-          popup: (options: Electron.PopupOptions) => void;
-        }
-      >(),
+    buildFromTemplateMock: vi.fn<
+      (template: Electron.MenuItemConstructorOptions[]) => {
+        popup: (options: Electron.PopupOptions) => void;
+      }
+    >(),
     createFromNamedImageMock: vi.fn<() => Electron.NativeImage>(),
     setApplicationMenuMock: vi.fn<(menu: Electron.Menu | null) => void>(),
   }),
