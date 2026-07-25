@@ -23,6 +23,7 @@ import {
 import * as GitHub from "../github/GitHub.ts";
 import * as JourneyStore from "../journeys/JourneyStore.ts";
 import { derivePullRequestJourneyState } from "../journeys/journeyView.ts";
+import { fromLiveSubscription } from "../liveSubscription.ts";
 import * as Workspaces from "../workspace/Workspaces.ts";
 
 export type PullRequestIndexError =
@@ -287,7 +288,7 @@ export const make = Effect.gen(function* () {
           pullRequests: current.pullRequests,
           refreshedAt: current.refreshedAt,
         };
-        const live = Stream.fromSubscription(subscription).pipe(
+        const live = fromLiveSubscription(subscription).pipe(
           Stream.filter((event) => event.sequence > snapshot.sequence),
         );
         return Stream.concat(Stream.make(snapshot as GitHubPrListStreamEvent), live);

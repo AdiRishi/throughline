@@ -18,6 +18,8 @@ import * as Stream from "effect/Stream";
 
 import type { ServerLifecycleStreamEvent, ServerLifecyclePhase } from "@app/contracts";
 
+import { fromLivePubSub } from "./liveSubscription.ts";
+
 /** A publish request: the phase + the wall-clock instant, sequence assigned here. */
 export interface LifecycleEventInput {
   readonly phase: ServerLifecyclePhase;
@@ -63,7 +65,7 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.tap((event) => PubSub.publish(pubsub, event))),
     snapshot: Ref.get(state),
     get stream() {
-      return Stream.fromPubSub(pubsub);
+      return fromLivePubSub(pubsub);
     },
   } satisfies ServerLifecycleEvents["Service"];
 });

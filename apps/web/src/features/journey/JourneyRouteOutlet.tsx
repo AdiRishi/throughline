@@ -17,7 +17,11 @@ import type {
 
 import { RefreshIcon } from "../../components/Icons.tsx";
 import { connectionAtoms } from "../../state/connection.ts";
-import { productAtoms } from "../../state/product.ts";
+import {
+  makeIngestionStartRequest,
+  ownsIngestionStartRequest,
+  productAtoms,
+} from "../../state/product.ts";
 import {
   JourneyContextProvider,
   readMarkKey,
@@ -99,6 +103,7 @@ function JourneyResolver({ pr }: { readonly pr: PrRef }) {
   const job = useAtomValue(ingestionAtoms.value);
   const ingestionHydrated = useAtomValue(ingestionAtoms.hydrated);
   const startResult = useAtomValue(productAtoms.startIngestion);
+  const activeStartRequestId = useAtomValue(productAtoms.activeIngestionStartRequestId);
   const cancelResult = useAtomValue(productAtoms.cancelIngestion);
   const serverConfig = useAtomValue(connectionAtoms.serverConfig);
   const startIngestion = useAtomSet(productAtoms.startIngestion);
@@ -108,6 +113,7 @@ function JourneyResolver({ pr }: { readonly pr: PrRef }) {
   const previousServerEpoch = useRef<number | null>(null);
   const [lostRun, setLostRun] = useState<IngestionRunKind | null>(null);
   const [retainedTerminalJob, setRetainedTerminalJob] = useState<IngestionJob | null>(null);
+  const [ownedStartRequestId, setOwnedStartRequestId] = useState<number | null>(null);
   const latestJob = useRef(job);
   const suppressedJobId = useRef<IngestionJob["id"] | null>(null);
   const mountedJourneyId = useRef<JourneyDocument["journey"]["id"] | null>(null);
@@ -115,6 +121,12 @@ function JourneyResolver({ pr }: { readonly pr: PrRef }) {
   latestJob.current = job;
   const currentJob = visibleIngestionJob(job, suppressedJobId.current);
   const visibleJob = lostRun === null ? (currentJob ?? retainedTerminalJob) : null;
+  const ownsStart = ownsIngestionStartRequest(ownedStartRequestId, activeStartRequestId);
+  const starting = ownsStart && startResult.waiting;
+  const startError =
+    ownsStart && !startResult.waiting && AsyncResult.isFailure(startResult)
+      ? causeMessage(startResult.cause)
+      : null;
 
   const loseExpectedRun = useCallback(() => {
     const next = advanceIngestionRun(runTracking.current, { type: "server-replaced" });
@@ -124,6 +136,9 @@ function JourneyResolver({ pr }: { readonly pr: PrRef }) {
 
   const startRun = useCallback(
     (kind: IngestionRunKind) => {
+      if (startResult.waiting) return false;
+      const request = makeIngestionStartRequest({ type: "ref", ref: pr });
+      setOwnedStartRequestId(request.id);
       suppressedJobId.current = latestJob.current?.id ?? null;
       runTracking.current = advanceIngestionRun(runTracking.current, {
         type: "started",
@@ -131,9 +146,10 @@ function JourneyResolver({ pr }: { readonly pr: PrRef }) {
       });
       setLostRun(null);
       setRetainedTerminalJob(null);
-      startIngestion({ type: "ref", ref: pr });
+      startIngestion(request);
+      return true;
     },
-    [pr, startIngestion],
+    [pr, startIngestion, startResult.waiting],
   );
 
   useEffect(() => {
@@ -200,8 +216,9 @@ function JourneyResolver({ pr }: { readonly pr: PrRef }) {
     ) {
       return;
     }
-    automaticStartAttempted.current = true;
-    startRun("initial");
+    if (startRun("initial")) {
+      automaticStartAttempted.current = true;
+    }
   }, [document, documentResult, ingestionHydrated, job, journeyHydrated, serverEpoch, startRun]);
 
   const retry = useCallback(() => {
@@ -239,11 +256,8 @@ function JourneyResolver({ pr }: { readonly pr: PrRef }) {
       <IngestionTransition
         pr={pr}
         job={visibleJob}
-        starting={startResult.waiting}
-        error={
-          lostRunMessage ??
-          (AsyncResult.isFailure(startResult) ? causeMessage(startResult.cause) : null)
-        }
+        starting={starting}
+        error={lostRunMessage ?? startError}
         cancelError={AsyncResult.isFailure(cancelResult) ? causeMessage(cancelResult.cause) : null}
         onCancel={
           visibleJob === null || !activeIngestion(visibleJob)
@@ -260,12 +274,8 @@ function JourneyResolver({ pr }: { readonly pr: PrRef }) {
       <IngestionTransition
         pr={pr}
         job={visibleJob}
-        starting={startResult.waiting}
-        error={
-          visibleJob?.failure?.message ??
-          lostRunMessage ??
-          (AsyncResult.isFailure(startResult) ? causeMessage(startResult.cause) : null)
-        }
+        starting={starting}
+        error={visibleJob?.failure?.message ?? lostRunMessage ?? startError}
         cancelError={AsyncResult.isFailure(cancelResult) ? causeMessage(cancelResult.cause) : null}
         onCancel={null}
         onRetry={retry}
@@ -284,13 +294,15 @@ function JourneyResolver({ pr }: { readonly pr: PrRef }) {
           ? (visibleJob.failure?.message ?? "The latest reanalysis did not complete.")
           : visibleJob?.phase === "cancelled"
             ? "The latest reanalysis was cancelled. The pinned journey remains available."
-            : AsyncResult.isFailure(startResult)
-              ? causeMessage(startResult.cause)
+            : startError !== null
+              ? startError
               : AsyncResult.isFailure(cancelResult)
                 ? causeMessage(cancelResult.cause)
                 : null)
       }
       activeReanalysis={activeIngestion(visibleJob) ? visibleJob : null}
+      startingReanalysis={starting}
+      reanalysisDisabled={startResult.waiting}
       cancellingReanalysis={cancelResult.waiting}
       onCancelReanalysis={
         visibleJob === null || !activeIngestion(visibleJob)
@@ -307,6 +319,8 @@ function LoadedJourney({
   document,
   runIssue,
   activeReanalysis,
+  startingReanalysis,
+  reanalysisDisabled,
   cancellingReanalysis,
   onCancelReanalysis,
   onReanalyze,
@@ -315,6 +329,8 @@ function LoadedJourney({
   readonly document: JourneyDocument;
   readonly runIssue: string | null;
   readonly activeReanalysis: IngestionJob | null;
+  readonly startingReanalysis: boolean;
+  readonly reanalysisDisabled: boolean;
   readonly cancellingReanalysis: boolean;
   readonly onCancelReanalysis: (() => void) | null;
   readonly onReanalyze: () => void;
@@ -548,6 +564,7 @@ function LoadedJourney({
       toggleRead,
       setDisplayMode,
       reanalyze: onReanalyze,
+      reanalyzeDisabled: reanalysisDisabled,
     }),
     [
       actionError,
@@ -565,6 +582,7 @@ function LoadedJourney({
       openFiles,
       pr,
       readFiles,
+      reanalysisDisabled,
       serverMarks,
       requestScroll,
       scrollTarget,
@@ -591,9 +609,9 @@ function LoadedJourney({
             {stale ? (
               <span className="journey-stale-header">
                 Pinned to {journey.pinned.headSha.slice(0, 7)}
-                <button type="button" onClick={onReanalyze}>
+                <button type="button" disabled={reanalysisDisabled} onClick={onReanalyze}>
                   <RefreshIcon />
-                  Reanalyze
+                  {startingReanalysis ? "Opening…" : "Reanalyze"}
                 </button>
               </span>
             ) : null}
@@ -615,23 +633,25 @@ function LoadedJourney({
             </fieldset>
           </div>
         </header>
-        {runIssue === null && activeReanalysis === null ? null : (
+        {runIssue === null && activeReanalysis === null && !startingReanalysis ? null : (
           <output
             className="journey-run-issue"
-            data-running={activeReanalysis === null ? undefined : true}
+            data-running={activeReanalysis === null && !startingReanalysis ? undefined : true}
           >
             <span>
-              {activeReanalysis?.activity?.currentAction ??
-                (activeReanalysis === null
-                  ? runIssue
-                  : `Reanalyzing · ${phaseDescription(activeReanalysis.phase)}`)}
+              {startingReanalysis
+                ? "Opening the reanalysis run…"
+                : (activeReanalysis?.activity?.currentAction ??
+                  (activeReanalysis === null
+                    ? runIssue
+                    : `Reanalyzing · ${phaseDescription(activeReanalysis.phase)}`))}
             </span>
             {activeReanalysis !== null && onCancelReanalysis !== null ? (
               <button type="button" disabled={cancellingReanalysis} onClick={onCancelReanalysis}>
                 {cancellingReanalysis ? "Cancelling…" : "Cancel reanalysis"}
               </button>
-            ) : (
-              <button type="button" onClick={onReanalyze}>
+            ) : startingReanalysis ? null : (
+              <button type="button" disabled={reanalysisDisabled} onClick={onReanalyze}>
                 Retry reanalysis
               </button>
             )}

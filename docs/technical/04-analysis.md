@@ -95,6 +95,8 @@ The final rung is what makes "the agent always commits" an invariant of the _sys
 
 Phases are published through the shared snapshot-then-live push-bus contract and consumed directly by the transition UI — the narrated stages the product docs promise are these events, so the narration is honest by construction. `analyzing` events additionally carry a structured activity payload — the current action, a short trail of recent ones, and monotonic counters (files walked, symbols traced, call sites followed) — derived only from observed harness events, never invented; this is what the transition's live feed and counters render (design `02-ingestion`). Low-level harness commands are mapped to stable product narration, and repeated lifecycle observations do not duplicate the recent-action trail. The run transcript remains verbatim for diagnosis:
 
+Door acceptance is an uninterruptible RPC command. Once the reviewer starts a journey, the preflight either returns its typed rejection or installs the server-owned job even if the renderer navigates away or closes during that request. The welcome door waits for the accepted job before opening its transition route, uses the canonical PR identity returned by that job, and scopes pending/error state to its request id. This prevents duplicate starts from competing for the same cached GitHub read or leaking their state into another PR route.
+
 ```
 resolving → cloning → diffing → analyzing(stage, detail) → validating → saving → complete
                                                       ↘ (cancel) → cancelled

@@ -25,13 +25,19 @@ export const detectHarness = (
     });
   }
 
-  return Effect.all(
-    [
-      process.run(binary, ["--version"]).pipe(Effect.option),
-      process.run(binary, authArgs).pipe(Effect.option),
-    ],
-    { concurrency: 2 },
-  ).pipe(
+  const probe = (args: ReadonlyArray<string>) =>
+    process.run(binary, args).pipe(
+      Effect.catchDefect((cause) =>
+        Effect.logWarning("Harness detection probe failed unexpectedly.", {
+          harness: kind,
+          executable: binary,
+          cause,
+        }).pipe(Effect.andThen(Effect.fail(cause))),
+      ),
+      Effect.option,
+    );
+
+  return Effect.all([probe(["--version"]), probe(authArgs)], { concurrency: 2 }).pipe(
     Effect.map(
       ([versionResult, authResult]): HarnessStatus => ({
         kind,

@@ -41,6 +41,34 @@ export interface PullRequestListView {
   readonly refreshedAt: GitHubPrListStreamEvent["refreshedAt"] | null;
 }
 
+export interface IngestionStartRequest {
+  readonly id: number;
+  readonly source: IngestionSource;
+}
+
+export interface IngestionStartAcceptance {
+  readonly requestId: number;
+  readonly job: IngestionJob;
+}
+
+let nextIngestionStartRequestId = 0;
+
+export const makeIngestionStartRequest = (source: IngestionSource): IngestionStartRequest => ({
+  id: ++nextIngestionStartRequestId,
+  source,
+});
+
+export const ownsIngestionStartRequest = (
+  requestId: number | null,
+  activeRequestId: number | null,
+): boolean => requestId !== null && requestId === activeRequestId;
+
+export const acceptedIngestionJobForRequest = (
+  requestId: number | null,
+  acceptance: IngestionStartAcceptance | null,
+): IngestionJob | null =>
+  requestId !== null && acceptance?.requestId === requestId ? acceptance.job : null;
+
 export const INITIAL_PULL_REQUEST_LIST: PullRequestListView = {
   ready: false,
   sequence: 0,
@@ -128,8 +156,17 @@ const retryGitHubAtom = connectionRuntime.fn((_input: void, get) =>
     ),
   ),
 );
-const startIngestionAtom = connectionRuntime.fn((source: IngestionSource) =>
-  rpcRequest("ingestion.start", { source }),
+const activeIngestionStartRequestIdAtom = Atom.make<number | null>(null);
+const startIngestionAtom = connectionRuntime.fn((request: IngestionStartRequest, get) =>
+  Effect.sync(() => get.set(activeIngestionStartRequestIdAtom, request.id)).pipe(
+    Effect.andThen(rpcRequest("ingestion.start", { source: request.source })),
+    Effect.map(
+      (job): IngestionStartAcceptance => ({
+        requestId: request.id,
+        job,
+      }),
+    ),
+  ),
 );
 const cancelIngestionAtom = connectionRuntime.fn((jobId: IngestionJob["id"]) =>
   rpcRequest("ingestion.cancel", { jobId }),
@@ -377,6 +414,7 @@ export const productAtoms = {
   refreshPullRequests: refreshPullRequestsAtom,
   retryGitHub: retryGitHubAtom,
   startIngestion: startIngestionAtom,
+  activeIngestionStartRequestId: activeIngestionStartRequestIdAtom,
   cancelIngestion: cancelIngestionAtom,
   setReviewed: setReviewedAtom,
   setHidden: setHiddenAtom,

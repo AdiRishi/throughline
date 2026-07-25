@@ -76,8 +76,15 @@ export function JourneyNavigation() {
 }
 
 function JourneyRail({ currentClusterId }: { readonly currentClusterId: ClusterId | null }) {
-  const { document, stale, readView, navigateOverview, navigateCluster, reanalyze } =
-    useJourneyContext();
+  const {
+    document,
+    stale,
+    readView,
+    navigateOverview,
+    navigateCluster,
+    reanalyze,
+    reanalyzeDisabled,
+  } = useJourneyContext();
   const { journey } = document;
   const view = useMemo(
     () =>
@@ -104,7 +111,7 @@ function JourneyRail({ currentClusterId }: { readonly currentClusterId: ClusterI
         {stale ? (
           <div className="journey-stale-rail">
             <span>Stale snapshot</span>
-            <button type="button" onClick={reanalyze}>
+            <button type="button" disabled={reanalyzeDisabled} onClick={reanalyze}>
               Reanalyze
             </button>
           </div>

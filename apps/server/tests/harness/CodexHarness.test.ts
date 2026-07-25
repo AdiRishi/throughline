@@ -157,6 +157,19 @@ describe("CodexHarness", () => {
         resolveBinary: () => "/bin/codex",
       });
       assert.strictEqual((yield* unknown.detect).auth, "unknown");
+
+      const defective = makeCodexHarness({
+        process: HarnessProcess.of({
+          run: () => Effect.die(new Error("spawn ENOTDIR")),
+        }),
+        resolveBinary: () => "/Applications/Throughline.app/Contents/Resources/app.asar/codex",
+      });
+      assert.deepStrictEqual(yield* defective.detect, {
+        kind: "codex",
+        installed: true,
+        version: null,
+        auth: "unknown",
+      });
     }),
   );
 

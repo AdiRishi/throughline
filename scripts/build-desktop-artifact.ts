@@ -139,6 +139,7 @@ function main(): void {
     JSON.stringify(
       {
         name: "throughline",
+        productName: PRODUCT_NAME,
         version: "0.0.0",
         main: "apps/desktop/dist-electron/main.cjs",
         dependencies: stagedRuntimeDependencies,

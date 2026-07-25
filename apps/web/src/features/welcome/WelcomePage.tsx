@@ -4,7 +4,7 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { PrRef, PrSummary, Viewer } from "@app/contracts";
 
@@ -17,7 +17,12 @@ import {
   XIcon,
 } from "../../components/Icons.tsx";
 import { connectionAtoms } from "../../state/connection.ts";
-import { productAtoms } from "../../state/product.ts";
+import {
+  acceptedIngestionJobForRequest,
+  makeIngestionStartRequest,
+  ownsIngestionStartRequest,
+  productAtoms,
+} from "../../state/product.ts";
 import { effectiveHarnessKind } from "../settings/model.ts";
 import {
   buildWelcomeSections,
@@ -50,6 +55,7 @@ export function WelcomePage() {
   const refreshResult = useAtomValue(productAtoms.refreshPullRequests);
   const retryGitHubResult = useAtomValue(productAtoms.retryGitHub);
   const startResult = useAtomValue(productAtoms.startIngestion);
+  const activeStartRequestId = useAtomValue(productAtoms.activeIngestionStartRequestId);
 
   const refreshPullRequests = useAtomSet(productAtoms.refreshPullRequests);
   const refreshHarnesses = useAtomSet(productAtoms.refreshHarnesses);
@@ -59,7 +65,10 @@ export function WelcomePage() {
   const setHidden = useAtomSet(productAtoms.setHidden);
   const dismissMerged = useAtomSet(productAtoms.setDismissedMerged);
   const navigate = useNavigate();
-  const [pendingUrlPr, setPendingUrlPr] = useState<PrRef | null>(null);
+  const [pendingStart, setPendingStart] = useState<{
+    readonly requestId: number;
+    readonly pr: PrRef;
+  } | null>(null);
 
   const now = pullRequestList.refreshedAt ?? DateTime.nowUnsafe();
   const sections = useMemo(
@@ -70,6 +79,11 @@ export function WelcomePage() {
   const canReadGitHub = connection.phase === "connected" && viewer?.auth === "authenticated";
   const hasUsableHarness = effectiveHarnessKind(harnesses, settings.harness) !== null;
   const canAnalyze = canReadGitHub && hasUsableHarness;
+  const ownsStart = ownsIngestionStartRequest(
+    pendingStart?.requestId ?? null,
+    activeStartRequestId,
+  );
+  const starting = ownsStart && startResult.waiting;
 
   useEffect(() => {
     if (!canReadGitHub) {
@@ -99,44 +113,46 @@ export function WelcomePage() {
     return () => window.removeEventListener("focus", refreshOnFocus);
   }, [connection.phase, refreshHarnesses]);
 
+  const navigateToPullRequest = useCallback(
+    (pr: PrRef) => {
+      void navigate({
+        to: "/pr/$owner/$repo/$number",
+        params: {
+          owner: pr.owner,
+          repo: pr.repo,
+          number: String(pr.number),
+        },
+      });
+    },
+    [navigate],
+  );
+
   useEffect(() => {
-    if (pendingUrlPr === null) {
+    if (pendingStart === null || !ownsStart || startResult.waiting) {
       return;
     }
-    if (AsyncResult.isFailure(startResult)) {
-      setPendingUrlPr(null);
+    if (!AsyncResult.isSuccess(startResult)) {
       return;
     }
-    const started = Option.getOrNull(AsyncResult.value(startResult));
-    if (started === null || !samePullRequestIdentity(started.pr, pendingUrlPr)) {
+    const accepted = acceptedIngestionJobForRequest(pendingStart.requestId, startResult.value);
+    if (accepted === null) {
       return;
     }
-    setPendingUrlPr(null);
-    void navigate({
-      to: "/pr/$owner/$repo/$number",
-      params: {
-        owner: started.pr.owner,
-        repo: started.pr.repo,
-        number: String(started.pr.number),
-      },
-    });
-  }, [navigate, pendingUrlPr, startResult]);
+    setPendingStart(null);
+    navigateToPullRequest(accepted.pr);
+  }, [navigateToPullRequest, ownsStart, pendingStart, startResult]);
 
   const openPullRequest = (pullRequest: PrSummary, forceIngestion = false) => {
     if (forceIngestion || pullRequest.journey === null) {
-      if (!canAnalyze) {
+      if (!canAnalyze || startResult.waiting) {
         return;
       }
-      startIngestion({ type: "ref", ref: pullRequest.ref });
+      const request = makeIngestionStartRequest({ type: "ref", ref: pullRequest.ref });
+      setPendingStart({ requestId: request.id, pr: pullRequest.ref });
+      startIngestion(request);
+      return;
     }
-    void navigate({
-      to: "/pr/$owner/$repo/$number",
-      params: {
-        owner: pullRequest.ref.owner,
-        repo: pullRequest.ref.repo,
-        number: String(pullRequest.ref.number),
-      },
-    });
+    navigateToPullRequest(pullRequest.ref);
   };
 
   return (
@@ -184,7 +200,7 @@ export function WelcomePage() {
         onRetry={() => retryGitHub(undefined)}
       />
 
-      {AsyncResult.isFailure(startResult) ? (
+      {ownsStart && !startResult.waiting && AsyncResult.isFailure(startResult) ? (
         <p className="action-error" role="alert">
           {causeMessage(startResult.cause)}
         </p>
@@ -213,7 +229,12 @@ export function WelcomePage() {
                     <PullRequestRow
                       key={row.pullRequest.url}
                       row={row}
-                      canAnalyze={canAnalyze}
+                      canAnalyze={canAnalyze && !startResult.waiting}
+                      starting={
+                        starting &&
+                        pendingStart !== null &&
+                        samePullRequestIdentity(row.pullRequest.ref, pendingStart.pr)
+                      }
                       onOpen={() => openPullRequest(row.pullRequest)}
                       onReanalyze={() => openPullRequest(row.pullRequest, true)}
                       onReviewed={() =>
@@ -240,7 +261,7 @@ export function WelcomePage() {
                     row={row}
                     status={mergedRetentionLabel(row.pullRequest, now)}
                     onOpen={
-                      row.pullRequest.journey === null && !canAnalyze
+                      row.pullRequest.journey === null && (!canAnalyze || startResult.waiting)
                         ? null
                         : () => openPullRequest(row.pullRequest)
                     }
@@ -275,23 +296,18 @@ export function WelcomePage() {
       <PullRequestUrlDoor
         disabled={!canAnalyze || startResult.waiting}
         onOpen={(url, pr) => {
+          if (startResult.waiting) return;
           const existing = pullRequestList.pullRequests.find(
             (pullRequest) =>
               pullRequest.journey !== null && samePullRequestIdentity(pullRequest.ref, pr),
           );
           if (existing !== undefined) {
-            void navigate({
-              to: "/pr/$owner/$repo/$number",
-              params: {
-                owner: existing.ref.owner,
-                repo: existing.ref.repo,
-                number: String(existing.ref.number),
-              },
-            });
+            navigateToPullRequest(existing.ref);
             return;
           }
-          setPendingUrlPr(pr);
-          startIngestion({ type: "url", url });
+          const request = makeIngestionStartRequest({ type: "url", url });
+          setPendingStart({ requestId: request.id, pr });
+          startIngestion(request);
         }}
       />
     </main>
@@ -446,6 +462,7 @@ function LoadingReviews() {
 function PullRequestRow({
   row,
   canAnalyze,
+  starting,
   onOpen,
   onReanalyze,
   onReviewed,
@@ -453,6 +470,7 @@ function PullRequestRow({
 }: {
   readonly row: WelcomePullRequest;
   readonly canAnalyze: boolean;
+  readonly starting: boolean;
   readonly onOpen: () => void;
   readonly onReanalyze: () => void;
   readonly onReviewed: () => void;
@@ -486,6 +504,7 @@ function PullRequestRow({
           pullRequest={pullRequest}
           state={state}
           canAnalyze={canAnalyze}
+          starting={starting}
           onOpen={onOpen}
           onReanalyze={onReanalyze}
         />
@@ -509,12 +528,14 @@ function JourneyState({
   pullRequest,
   state,
   canAnalyze,
+  starting,
   onOpen,
   onReanalyze,
 }: {
   readonly pullRequest: PrSummary;
   readonly state: ReturnType<typeof journeyListState>;
   readonly canAnalyze: boolean;
+  readonly starting: boolean;
   readonly onOpen: () => void;
   readonly onReanalyze: () => void;
 }) {
@@ -523,7 +544,7 @@ function JourneyState({
   if (journey === null) {
     return (
       <button className="row-primary-action" type="button" disabled={!canAnalyze} onClick={onOpen}>
-        Start journey
+        {starting ? "Opening…" : "Start journey"}
         <ChevronRightIcon />
       </button>
     );
@@ -541,7 +562,7 @@ function JourneyState({
             disabled={!canAnalyze}
             onClick={onReanalyze}
           >
-            Reanalyze
+            {starting ? "Opening…" : "Reanalyze"}
           </button>
         </div>
         <ProgressThroughline progress={journey.progress} label="Previous journey progress" />

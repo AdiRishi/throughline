@@ -55,6 +55,7 @@ export interface JourneyContextValue {
   readonly toggleRead: (clusterId: ClusterId, path: RepositoryPath) => void;
   readonly setDisplayMode: (mode: DisplayMode) => void;
   readonly reanalyze: () => void;
+  readonly reanalyzeDisabled: boolean;
 }
 
 const JourneyContext = createContext<JourneyContextValue | null>(null);

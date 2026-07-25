@@ -33,6 +33,8 @@ describe("harness binary resolution", () => {
   it("translates packaged Electron paths to app.asar.unpacked", () => {
     const packageJson =
       "/Applications/Throughline.app/Contents/Resources/app.asar/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/package.json";
+    const virtualBinary =
+      "/Applications/Throughline.app/Contents/Resources/app.asar/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude";
     const unpackedBinary =
       "/Applications/Throughline.app/Contents/Resources/app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude";
 
@@ -41,7 +43,7 @@ describe("harness binary resolution", () => {
       { platform: "darwin", arch: "arm64" },
       {
         resolvePackageJson: () => packageJson,
-        isFile: (path) => path === unpackedBinary,
+        isFile: (path) => path === virtualBinary || path === unpackedBinary,
       },
     );
 

@@ -1,18 +1,29 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 
-import { ClusterId, GitHubPrListStreamEvent, ReadState, RepositoryPath } from "@app/contracts";
+import {
+  ClusterId,
+  GitHubPrListStreamEvent,
+  PrRef,
+  ReadState,
+  RepositoryPath,
+  type IngestionJob,
+} from "@app/contracts";
 
 import {
+  acceptedIngestionJobForRequest,
   applyOptimisticReadMark,
   applyPullRequestListEvent,
   INITIAL_PULL_REQUEST_LIST,
+  makeIngestionStartRequest,
+  ownsIngestionStartRequest,
 } from "../../src/state/product.ts";
 
 const decodeEvent = Schema.decodeUnknownSync(Schema.toCodecJson(GitHubPrListStreamEvent));
 const decodeReadState = Schema.decodeUnknownSync(Schema.toCodecJson(ReadState));
 const decodeClusterId = Schema.decodeUnknownSync(ClusterId);
 const decodePath = Schema.decodeUnknownSync(RepositoryPath);
+const decodePrRef = Schema.decodeUnknownSync(PrRef);
 
 const pullRequest = (number: number, title: string) => ({
   ref: { owner: "throughline", repo: "fixture", number },
@@ -83,5 +94,45 @@ describe("applyOptimisticReadMark", () => {
     expect(applyOptimisticReadMark(marked, input, false).readFiles).toEqual([
       { clusterId: "cluster-1", path: "src/existing.ts" },
     ]);
+  });
+});
+
+describe("ingestion start request ownership", () => {
+  const acceptedJob = {
+    id: "job-accepted",
+    pr: { owner: "canonical-owner", repo: "renamed-repository", number: 7 },
+  } as IngestionJob;
+
+  it("does not expose another pull request's in-flight result", () => {
+    const first = makeIngestionStartRequest({
+      type: "ref",
+      ref: decodePrRef({ owner: "throughline", repo: "first", number: 1 }),
+    });
+    const second = makeIngestionStartRequest({
+      type: "ref",
+      ref: decodePrRef({ owner: "throughline", repo: "second", number: 2 }),
+    });
+
+    expect(ownsIngestionStartRequest(second.id, first.id)).toBe(false);
+    expect(
+      acceptedIngestionJobForRequest(second.id, {
+        requestId: first.id,
+        job: acceptedJob,
+      }),
+    ).toBeNull();
+  });
+
+  it("uses the canonical pull request returned by the accepted request", () => {
+    const request = makeIngestionStartRequest({
+      type: "url",
+      url: "https://github.com/previous-owner/previous-name/pull/7",
+    });
+
+    expect(
+      acceptedIngestionJobForRequest(request.id, {
+        requestId: request.id,
+        job: acceptedJob,
+      })?.pr,
+    ).toEqual(acceptedJob.pr);
   });
 });

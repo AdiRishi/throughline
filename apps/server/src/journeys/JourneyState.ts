@@ -22,6 +22,7 @@ import {
   type ReadStateUpdatedEvent,
 } from "@app/contracts";
 
+import { fromLiveSubscription } from "../liveSubscription.ts";
 import * as JourneyStore from "./JourneyStore.ts";
 
 export class JourneyStateNotFoundError extends Schema.TaggedErrorClass<JourneyStateNotFoundError>()(
@@ -185,7 +186,7 @@ export const make = Effect.gen(function* () {
             type: "snapshot",
             state,
           };
-          const live = Stream.fromSubscription(subscription).pipe(
+          const live = fromLiveSubscription(subscription).pipe(
             Stream.filter(
               (event) => event.state.journeyId === journeyId && event.sequence > boundary,
             ),

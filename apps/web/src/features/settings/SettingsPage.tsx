@@ -138,7 +138,11 @@ export function SettingsPage() {
             </span>
           </label>
 
-          {!AsyncResult.isSuccess(harnessStatusResult) ? (
+          {AsyncResult.isFailure(harnessStatusResult) ? (
+            <div className="settings-empty" role="alert">
+              Harness detection stopped. Check again when the local server is ready.
+            </div>
+          ) : !AsyncResult.isSuccess(harnessStatusResult) ? (
             <div className="settings-loading" aria-busy="true">
               Detecting local harnesses…
             </div>

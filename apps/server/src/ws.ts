@@ -14,7 +14,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
+import { Rpc, RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import {
   CompleteWsRpcGroup,
@@ -258,7 +258,8 @@ export const makeProductWsRpcLayer = () =>
               Effect.mapError(indexOperationError(PRODUCT_WS_METHODS.githubRetry)),
               Effect.asVoid,
             ),
-        [PRODUCT_WS_METHODS.ingestionStart]: ({ source }) => ingestion.start(source),
+        [PRODUCT_WS_METHODS.ingestionStart]: ({ source }) =>
+          Rpc.uninterruptible(ingestion.start(source)),
         [PRODUCT_WS_METHODS.ingestionCancel]: ({ jobId }) => ingestion.cancel(jobId),
         [PRODUCT_WS_METHODS.ingestionSubscribe]: ({ pr }) => ingestion.subscribe(pr),
         [PRODUCT_WS_METHODS.journeyGet]: ({ pr }) =>

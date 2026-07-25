@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -139,6 +140,54 @@ describe("product WebSocket RPC handlers", () => {
       ),
     );
   });
+
+  it.effect("finishes accepting ingestion after the caller cancels its request", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const completed = yield* Deferred.make<void>();
+        const accepted = decodeIngestionJob({
+          id: "job-accepted",
+          pr: PR,
+          phase: "queued",
+          queuePosition: 1,
+          startedAt: null,
+          updatedAt: "2026-07-25T00:00:00.000Z",
+          activity: null,
+          journeyId: null,
+          failure: null,
+        });
+
+        yield* Effect.gen(function* () {
+          const client = yield* RpcTest.makeClient(ProductWsRpcGroup);
+          const request = yield* client[PRODUCT_WS_METHODS.ingestionStart]({
+            source: { type: "ref", ref: PR },
+          }).pipe(Effect.forkChild);
+
+          yield* Deferred.await(entered);
+          yield* Fiber.interrupt(request).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          yield* Deferred.succeed(release, undefined);
+          yield* Deferred.await(completed);
+        }).pipe(
+          Effect.provide(
+            productHandlerLayer({
+              ingestion: {
+                start: () =>
+                  Effect.gen(function* () {
+                    yield* Deferred.succeed(entered, undefined);
+                    yield* Deferred.await(release);
+                    yield* Deferred.succeed(completed, undefined);
+                    return accepted;
+                  }),
+              },
+            }),
+          ),
+        );
+      }),
+    ),
+  );
 
   it.effect("maps internal validation and operational failures to public wire errors", () =>
     Effect.scoped(

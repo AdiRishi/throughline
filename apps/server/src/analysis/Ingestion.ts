@@ -34,6 +34,7 @@ import {
 import * as GitHub from "../github/GitHub.ts";
 import * as Harness from "../harness/AnalysisHarness.ts";
 import * as JourneyStore from "../journeys/JourneyStore.ts";
+import { fromLivePubSub, fromLiveSubscription } from "../liveSubscription.ts";
 import * as AnalysisPipeline from "./AnalysisPipeline.ts";
 
 const decodeIngestionJobId = Schema.decodeUnknownEffect(IngestionJobId);
@@ -591,7 +592,7 @@ export const make = Effect.gen(function* () {
             type: "snapshot",
             job,
           };
-          const live = Stream.fromSubscription(subscription).pipe(
+          const live = fromLiveSubscription(subscription).pipe(
             Stream.filter((event) => event.prKey === key && event.sequence > sequence),
             Stream.map(
               (event): IngestionStreamEvent => ({
@@ -605,7 +606,7 @@ export const make = Effect.gen(function* () {
           return Stream.concat(Stream.make(snapshot), live);
         }),
       ),
-    changes: Stream.fromPubSub(updates).pipe(Stream.map((event) => event.job)),
+    changes: fromLivePubSub(updates).pipe(Stream.map((event) => event.job)),
   });
 });
 

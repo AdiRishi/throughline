@@ -132,11 +132,11 @@ const availablePath = (
   candidate: string,
   isFile: (path: string) => boolean,
 ): string | undefined => {
-  if (isFile(candidate)) {
-    return candidate;
-  }
   const unpacked = unpackAsarPath(candidate);
-  return unpacked !== candidate && isFile(unpacked) ? unpacked : undefined;
+  if (unpacked !== candidate && isFile(unpacked)) {
+    return unpacked;
+  }
+  return isFile(candidate) ? candidate : undefined;
 };
 
 export const resolveHarnessBinary = (
