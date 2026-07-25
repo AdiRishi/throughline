@@ -36,14 +36,14 @@ const PULL_REQUESTS_QUERY = `
 query ThroughlinePullRequests {
   viewer {
     repositories(
-      first: 100
+      first: 30
       affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]
       orderBy: { field: PUSHED_AT, direction: DESC }
     ) {
       nodes {
         name
         owner { login }
-        pullRequests(first: 50, states: [OPEN, MERGED], orderBy: { field: UPDATED_AT, direction: DESC }) {
+        pullRequests(first: 10, states: [OPEN, MERGED], orderBy: { field: UPDATED_AT, direction: DESC }) {
           nodes {
             number
             title

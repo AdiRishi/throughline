@@ -2,8 +2,11 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Result from "effect/Result";
 
 import type { HarnessKind, HarnessStatus, HarnessUsage } from "@app/contracts";
+
+import { ProcessRunner } from "../process/ProcessRunner.ts";
 
 export class HarnessError extends Data.TaggedError("HarnessError")<{
   readonly kind: HarnessKind;
@@ -127,26 +130,82 @@ function runClaude(request: HarnessRequest): Effect.Effect<HarnessResponse, Harn
   });
 }
 
-export const make = Effect.succeed(
-  AnalysisHarness.of({
-    statuses: Effect.succeed([
-      {
-        kind: "codex",
-        installed: true,
-        auth: "unknown",
-        setupInstructions:
-          "Codex uses your existing Codex authentication. Run codex login if analysis reports an authentication error.",
-      },
-      {
-        kind: "claude",
-        installed: true,
-        auth: "unknown",
-        setupInstructions:
-          "Claude uses your existing Claude Code authentication. Run claude auth login if analysis reports an authentication error.",
-      },
-    ]),
+interface HarnessProbe {
+  readonly kind: HarnessKind;
+  readonly command: string;
+  readonly versionArgs: ReadonlyArray<string>;
+  readonly authArgs: ReadonlyArray<string>;
+  readonly setupInstructions: string;
+}
+
+const probes: ReadonlyArray<HarnessProbe> = [
+  {
+    kind: "codex",
+    command: "codex",
+    versionArgs: ["--version"],
+    authArgs: ["login", "status"],
+    setupInstructions: "Install Codex and run codex login before building a journey.",
+  },
+  {
+    kind: "claude",
+    command: "claude",
+    versionArgs: ["--version"],
+    authArgs: ["auth", "status"],
+    setupInstructions: "Install Claude Code and run claude auth login before building a journey.",
+  },
+];
+
+const textDecoder = new TextDecoder();
+
+function detectHarness(
+  processRunner: ProcessRunner["Service"],
+  probe: HarnessProbe,
+): Effect.Effect<HarnessStatus> {
+  return Effect.gen(function* () {
+    const versionResult = yield* Effect.result(processRunner.run(probe.command, probe.versionArgs));
+    if (Result.isFailure(versionResult)) {
+      return {
+        kind: probe.kind,
+        installed: false,
+        auth: "unknown" as const,
+        setupInstructions: probe.setupInstructions,
+      };
+    }
+
+    const version = textDecoder.decode(versionResult.success.stdout).trim();
+    const authResult = yield* Effect.result(processRunner.run(probe.command, probe.authArgs));
+    const authenticated =
+      Result.isSuccess(authResult) &&
+      (probe.kind !== "claude" ||
+        (() => {
+          try {
+            const status = JSON.parse(textDecoder.decode(authResult.success.stdout)) as {
+              readonly loggedIn?: unknown;
+            };
+            return status.loggedIn === true;
+          } catch {
+            return false;
+          }
+        })());
+    return {
+      kind: probe.kind,
+      installed: true,
+      ...(version === "" ? {} : { version }),
+      auth: authenticated ? ("authenticated" as const) : ("unauthenticated" as const),
+      setupInstructions: probe.setupInstructions,
+    };
+  });
+}
+
+export const make = Effect.gen(function* () {
+  const processRunner = yield* ProcessRunner;
+  return AnalysisHarness.of({
+    statuses: Effect.all(
+      probes.map((probe) => detectHarness(processRunner, probe)),
+      { concurrency: "unbounded" },
+    ),
     run: (request) => (request.kind === "codex" ? runCodex(request) : runClaude(request)),
-  }),
-);
+  });
+});
 
 export const layer = Layer.effect(AnalysisHarness, make);

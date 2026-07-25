@@ -1,7 +1,11 @@
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
+import type { ConnectionSupervisor as ConnectionSupervisorService } from "@app/client-runtime/connection";
+import { ConnectionSupervisor } from "@app/client-runtime/connection";
 import { request as rpcRequest, subscribe as rpcSubscribe } from "@app/client-runtime/rpc";
 import type {
   GitHubPrsStreamEvent,
@@ -14,6 +18,25 @@ import type {
 } from "@app/contracts";
 
 import { connectionRuntime } from "./connection.ts";
+
+function requestForEachSession<A, E>(
+  request: Effect.Effect<A, E, ConnectionSupervisorService>,
+): Stream.Stream<A, E, ConnectionSupervisorService> {
+  return Stream.unwrap(
+    ConnectionSupervisor.pipe(
+      Effect.map((supervisor) =>
+        SubscriptionRef.changes(supervisor.session).pipe(
+          Stream.switchMap(
+            Option.match({
+              onNone: () => Stream.empty,
+              onSome: () => Stream.fromEffect(request),
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+}
 
 export interface PullRequestView {
   readonly ready: boolean;
@@ -79,10 +102,10 @@ const ingestion = Atom.make(
 export const productAtoms = {
   pullRequests,
   ingestion,
-  viewer: connectionRuntime.atom(rpcRequest("github.viewer", {})),
-  prState: connectionRuntime.atom(rpcRequest("prState.get", {})),
-  harnesses: connectionRuntime.atom(rpcRequest("harness.status", {})),
-  settings: connectionRuntime.atom(rpcRequest("settings.get", {})),
+  viewer: connectionRuntime.atom(requestForEachSession(rpcRequest("github.viewer", {}))),
+  prState: connectionRuntime.atom(requestForEachSession(rpcRequest("prState.get", {}))),
+  harnesses: connectionRuntime.atom(requestForEachSession(rpcRequest("harness.status", {}))),
+  settings: connectionRuntime.atom(requestForEachSession(rpcRequest("settings.get", {}))),
   refreshPullRequests: connectionRuntime.fn(() => rpcRequest("github.prs", { refresh: true })),
   startIngestion: connectionRuntime.fn((input: { readonly pr: PrRef } | { readonly url: string }) =>
     rpcRequest("ingestion.start", input),

@@ -208,9 +208,12 @@ export const make = Effect.gen(function* () {
         const settings = yield* journeys.getSettings;
         const statuses = yield* harness.statuses;
         const selectedHarness =
-          settings.harness ??
-          statuses.find((status) => status.kind === "codex" && status.installed)?.kind ??
-          statuses.find((status) => status.installed)?.kind;
+          settings.harness === undefined
+            ? (statuses.find((status) => status.kind === "codex" && status.auth === "authenticated")
+                ?.kind ?? statuses.find((status) => status.auth === "authenticated")?.kind)
+            : statuses.find(
+                (status) => status.kind === settings.harness && status.auth === "authenticated",
+              )?.kind;
         if (selectedHarness === undefined) {
           return yield* new IngestionDoorError({
             reason: "no-harness",

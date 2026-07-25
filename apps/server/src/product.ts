@@ -28,7 +28,7 @@ const DatabaseLive = Layer.unwrap(
 const ProcessRunnerLive = ProcessRunner.layer;
 const GitHubLive = GitHub.layer.pipe(Layer.provide(ProcessRunnerLive));
 const JourneyStoreLive = JourneyStore.layer.pipe(Layer.provide(DatabaseLive));
-const AnalysisHarnessLive = AnalysisHarness.layer;
+const AnalysisHarnessLive = AnalysisHarness.layer.pipe(Layer.provide(ProcessRunnerLive));
 const JourneyAnalysisLive = JourneyAnalysis.layer.pipe(Layer.provide(AnalysisHarnessLive));
 const WorkspacesLive = Workspaces.layer.pipe(
   Layer.provide(Layer.mergeAll(GitHubLive, ProcessRunnerLive)),

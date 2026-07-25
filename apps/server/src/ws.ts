@@ -194,8 +194,11 @@ export const websocketRpcRouteLayer = HttpRouter.add(
       return HttpServerResponse.text("Unauthorized", { status: 401 });
     }
 
-    const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
-      disableTracing: true,
+    return yield* Effect.gen(function* () {
+      const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
+        disableTracing: true,
+      });
+      return yield* rpcWebSocketHttpEffect;
     }).pipe(
       Effect.provide(
         makeWsRpcLayer().pipe(
@@ -204,7 +207,5 @@ export const websocketRpcRouteLayer = HttpRouter.add(
         ),
       ),
     );
-
-    return yield* rpcWebSocketHttpEffect;
   }),
 );
