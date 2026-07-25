@@ -20,13 +20,40 @@ export const DesktopUpdateStatus = Schema.Literals([
 ]);
 export type DesktopUpdateStatus = typeof DesktopUpdateStatus.Type;
 
+export const DesktopUpdateReleaseNote = Schema.Struct({
+  version: Schema.String,
+  items: Schema.Array(Schema.String),
+});
+export type DesktopUpdateReleaseNote = typeof DesktopUpdateReleaseNote.Type;
+
 export const DesktopUpdateState = Schema.Struct({
+  enabled: Schema.Boolean,
   status: DesktopUpdateStatus,
   channel: DesktopUpdateChannel,
-  version: Schema.NullOr(Schema.String),
+  currentVersion: Schema.String,
+  availableVersion: Schema.NullOr(Schema.String),
+  downloadedVersion: Schema.NullOr(Schema.String),
+  releaseNotes: Schema.Array(DesktopUpdateReleaseNote),
+  downloadPercent: Schema.NullOr(Schema.Number),
+  checkedAt: Schema.NullOr(Schema.String),
   message: Schema.NullOr(Schema.String),
+  errorContext: Schema.NullOr(Schema.Literals(["check", "download", "install"])),
+  canRetry: Schema.Boolean,
 });
 export type DesktopUpdateState = typeof DesktopUpdateState.Type;
+
+export const DesktopUpdateActionResult = Schema.Struct({
+  accepted: Schema.Boolean,
+  completed: Schema.Boolean,
+  state: DesktopUpdateState,
+});
+export type DesktopUpdateActionResult = typeof DesktopUpdateActionResult.Type;
+
+export const DesktopUpdateCheckResult = Schema.Struct({
+  checked: Schema.Boolean,
+  state: DesktopUpdateState,
+});
+export type DesktopUpdateCheckResult = typeof DesktopUpdateCheckResult.Type;
 
 /** Static app identity the renderer reads synchronously at boot (branding). */
 export const DesktopAppInfo = Schema.Struct({
@@ -57,6 +84,7 @@ export type PickFolderOptions = typeof PickFolderOptions.Type;
 export interface ContextMenuItem<T extends string = string> {
   readonly id: T;
   readonly label: string;
+  readonly header?: boolean;
   readonly destructive?: boolean;
   readonly disabled?: boolean;
   readonly children?: readonly ContextMenuItem<T>[];
@@ -68,6 +96,7 @@ export interface ContextMenuItem<T extends string = string> {
 export const ContextMenuItemSchema: Schema.Codec<ContextMenuItem> = Schema.Struct({
   id: Schema.String,
   label: Schema.String,
+  header: Schema.optionalKey(Schema.Boolean),
   destructive: Schema.optionalKey(Schema.Boolean),
   disabled: Schema.optionalKey(Schema.Boolean),
   children: Schema.optionalKey(

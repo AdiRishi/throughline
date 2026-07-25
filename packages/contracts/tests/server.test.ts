@@ -15,13 +15,19 @@ describe("ServerBootstrapEnvelope", () => {
   });
 
   it("accepts a valid forced port", () => {
-    const decoded = decodeEnvelope({ desktopBootstrapToken: "boot-token", port: 13773 });
+    const decoded = decodeEnvelope({
+      desktopBootstrapToken: "boot-token",
+      port: 13773,
+      appVersion: "1.2.3-nightly.20260725.2",
+    });
     assert.strictEqual(decoded.port, 13773);
+    assert.strictEqual(decoded.appVersion, "1.2.3-nightly.20260725.2");
   });
 
-  it("rejects out-of-range ports and blank tokens", () => {
+  it("rejects out-of-range ports and blank bootstrap identity", () => {
     assert.throws(() => decodeEnvelope({ desktopBootstrapToken: "boot-token", port: 0 }));
     assert.throws(() => decodeEnvelope({ desktopBootstrapToken: "  " }));
+    assert.throws(() => decodeEnvelope({ desktopBootstrapToken: "boot-token", appVersion: "  " }));
   });
 });
 

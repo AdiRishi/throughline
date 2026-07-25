@@ -8,15 +8,21 @@ import { vi } from "vitest";
 
 import { HostProcessPlatform } from "@app/shared/hostProcess";
 
-const { buildFromTemplateMock, setApplicationMenuMock } = vi.hoisted(() => ({
-  buildFromTemplateMock: vi.fn<(template: Electron.MenuItemConstructorOptions[]) => unknown>(),
-  setApplicationMenuMock: vi.fn<(menu: unknown) => void>(),
-}));
+const { buildFromTemplateMock, createFromNamedImageMock, setApplicationMenuMock } = vi.hoisted(
+  () => ({
+    buildFromTemplateMock: vi.fn<(template: Electron.MenuItemConstructorOptions[]) => unknown>(),
+    createFromNamedImageMock: vi.fn<(name: string) => Electron.NativeImage>(),
+    setApplicationMenuMock: vi.fn<(menu: unknown) => void>(),
+  }),
+);
 
 vi.mock("electron", () => ({
   Menu: {
     buildFromTemplate: buildFromTemplateMock,
     setApplicationMenu: setApplicationMenuMock,
+  },
+  nativeImage: {
+    createFromNamedImage: createFromNamedImageMock,
   },
 }));
 
@@ -35,6 +41,7 @@ const makeWindow = (zoomFactor = 1): Electron.BrowserWindow =>
 describe("ElectronMenu", () => {
   beforeEach(() => {
     buildFromTemplateMock.mockReset();
+    createFromNamedImageMock.mockReset();
     setApplicationMenuMock.mockReset();
   });
 
@@ -72,6 +79,45 @@ describe("ElectronMenu", () => {
       assert.isTrue(Option.isNone(selectedItemId));
       assert.equal(popupOptions?.x, 21);
       assert.equal(popupOptions?.y, 40);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("omits renderer headers and separates destructive native actions", () =>
+    Effect.gen(function* () {
+      let template: Electron.MenuItemConstructorOptions[] | undefined;
+      buildFromTemplateMock.mockImplementation((builtTemplate) => {
+        template = builtTemplate;
+        return {
+          popup: (options: Electron.PopupOptions) => {
+            options.callback?.();
+          },
+        };
+      });
+
+      const electronMenu = yield* ElectronMenu.ElectronMenu;
+      yield* electronMenu.showContextMenu({
+        window: makeWindow(),
+        items: [
+          { id: "heading", label: "Review", header: true },
+          { id: "open", label: "Open" },
+          { id: "delete", label: "Delete", destructive: true },
+        ],
+        position: Option.none(),
+      });
+
+      assert.deepEqual(
+        template?.map((item) => ({
+          label: item.label,
+          type: item.type,
+          enabled: item.enabled,
+        })),
+        [
+          { label: "Open", type: undefined, enabled: true },
+          { label: undefined, type: "separator", enabled: undefined },
+          { label: "Delete", type: undefined, enabled: true },
+        ],
+      );
+      assert.equal(createFromNamedImageMock.mock.calls.length, 0);
     }).pipe(Effect.provide(testLayer)),
   );
 

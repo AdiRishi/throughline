@@ -49,17 +49,24 @@ function withBootstrapFd<A, E, R>(
 
 describe("resolveServerConfig", () => {
   it.effect("prefers the bootstrap fd envelope over inherited environment values", () =>
-    withBootstrapFd({ desktopBootstrapToken: "fd-token", port: 19731 }, (fd) =>
-      Effect.gen(function* () {
-        const config = yield* resolveServerConfig({
-          ...baseFlags,
-          bootstrapFd: Option.some(fd),
-        });
+    withBootstrapFd(
+      {
+        desktopBootstrapToken: "fd-token",
+        port: 19731,
+        appVersion: "1.2.3-nightly.20260725.2",
+      },
+      (fd) =>
+        Effect.gen(function* () {
+          const config = yield* resolveServerConfig({
+            ...baseFlags,
+            bootstrapFd: Option.some(fd),
+          });
 
-        assert.equal(config.bootstrapToken, "fd-token");
-        assert.equal(config.port, 19731);
-        assert.equal(config.devWebUrl?.href, "http://127.0.0.1:5173/");
-      }),
+          assert.equal(config.bootstrapToken, "fd-token");
+          assert.equal(config.port, 19731);
+          assert.equal(config.version, "1.2.3-nightly.20260725.2");
+          assert.equal(config.devWebUrl?.href, "http://127.0.0.1:5173/");
+        }),
     ).pipe(
       Effect.provideService(HostProcessEnvironment, {
         APP_BOOTSTRAP_TOKEN: "env-token",

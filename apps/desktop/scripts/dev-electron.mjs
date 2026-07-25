@@ -2,13 +2,20 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import * as NodeURL from "node:url";
 
-import { ensureElectronRuntime } from "./ensure-electron-runtime.mjs";
+import {
+  discoverMarkedProcessTree,
+  signalProcessTree,
+  taskkillProcessTree,
+  waitForProcessTreeExit,
+} from "./dev-processes.mjs";
+import {
+  desktopDir,
+  resolveDevelopmentLauncher,
+  resolveElectronLaunchCommand,
+} from "./electron-launcher.mjs";
 import { waitForResources } from "./wait-for-resources.mjs";
 
-const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
-const desktopDir = NodePath.resolve(__dirname, "..");
 const devServerUrl = process.env.APP_DEV_WEB_URL?.trim();
 if (!devServerUrl) {
   throw new Error("APP_DEV_WEB_URL is required for desktop development.");
@@ -35,7 +42,6 @@ const childTreeGracePeriodMs = 1_200;
 const remoteDebuggingPort = process.env.APP_DESKTOP_REMOTE_DEBUGGING_PORT?.trim();
 // oxlint-disable-next-line app/no-global-process-runtime -- Standalone dev script has no Effect runtime.
 const hostPlatform = NodeOS.platform();
-const electronPath = ensureElectronRuntime();
 const processMarker = `--throughline-dev-root=${desktopDir}`;
 
 await waitForResources({
@@ -44,6 +50,7 @@ await waitForResources({
   tcpHost: devServer.hostname,
   tcpPort: port,
 });
+const developmentLauncher = resolveDevelopmentLauncher();
 
 const childEnv = { ...process.env };
 delete childEnv.ELECTRON_RUN_AS_NODE;
@@ -56,21 +63,70 @@ const expectedExits = new WeakSet();
 const watchers = [];
 
 function killChildTreeByPid(pid, signal) {
-  if (hostPlatform === "win32" || typeof pid !== "number") {
+  if (typeof pid !== "number") {
+    return;
+  }
+
+  if (hostPlatform === "win32") {
+    taskkillProcessTree(pid, { force: signal === "KILL" });
     return;
   }
 
   NodeChildProcess.spawnSync("pkill", [`-${signal}`, "-P", String(pid)], { stdio: "ignore" });
 }
 
-function cleanupStaleDevApps() {
-  if (hostPlatform === "win32") {
+function discoverStaleDevApps() {
+  try {
+    return discoverMarkedProcessTree(processMarker);
+  } catch (cause) {
+    process.stderr.write(
+      `[desktop-dev] unable to inspect stale processes: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }\n`,
+    );
+    return [];
+  }
+}
+
+function signalDevApps(processes, signal) {
+  try {
+    return signalProcessTree(processes, signal);
+  } catch (cause) {
+    process.stderr.write(
+      `[desktop-dev] unable to clean stale processes: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }\n`,
+    );
+    return [];
+  }
+}
+
+function signalStaleDevApps(signal) {
+  return signalDevApps(discoverStaleDevApps(), signal);
+}
+
+async function cleanupStaleDevApps() {
+  const processes = signalStaleDevApps("SIGTERM");
+  if (processes.length === 0) {
     return;
   }
 
-  NodeChildProcess.spawnSync("pkill", ["-f", "--", processMarker], {
-    stdio: "ignore",
+  const remaining = await waitForProcessTreeExit(processes, {
+    timeoutMs: forcedShutdownTimeoutMs,
   });
+  if (remaining.length === 0) {
+    return;
+  }
+
+  signalProcessTree(remaining, "SIGKILL");
+  const survivors = await waitForProcessTreeExit(remaining, {
+    timeoutMs: childTreeGracePeriodMs,
+  });
+  if (survivors.length > 0) {
+    process.stderr.write(
+      `[desktop-dev] ${survivors.length} stale process${survivors.length === 1 ? "" : "es"} did not exit.\n`,
+    );
+  }
 }
 
 function startApp() {
@@ -81,15 +137,16 @@ function startApp() {
   const electronArgs = remoteDebuggingPort
     ? [`--remote-debugging-port=${remoteDebuggingPort}`]
     : [];
-  const app = NodeChildProcess.spawn(
-    electronPath,
-    [...electronArgs, processMarker, "dist-electron/main.cjs"],
-    {
-      cwd: desktopDir,
-      env: childEnv,
-      stdio: "inherit",
-    },
-  );
+  const launchArgs =
+    developmentLauncher === null
+      ? [...electronArgs, processMarker, "dist-electron/main.cjs"]
+      : electronArgs;
+  const electronCommand = resolveElectronLaunchCommand(launchArgs);
+  const app = NodeChildProcess.spawn(electronCommand.electronPath, electronCommand.args, {
+    cwd: desktopDir,
+    env: childEnv,
+    stdio: "inherit",
+  });
 
   currentApp = app;
 
@@ -123,6 +180,8 @@ async function stopApp() {
 
   currentApp = null;
   expectedExits.add(app);
+  const knownProcesses = discoverStaleDevApps();
+  signalDevApps(knownProcesses, "SIGTERM");
 
   await new Promise((resolve) => {
     let settled = false;
@@ -137,21 +196,35 @@ async function stopApp() {
     };
 
     app.once("exit", finish);
-    app.kill("SIGTERM");
     killChildTreeByPid(app.pid, "TERM");
-    cleanupStaleDevApps();
+    app.kill("SIGTERM");
 
     setTimeout(() => {
       if (settled) {
         return;
       }
 
-      app.kill("SIGKILL");
+      signalDevApps(knownProcesses, "SIGKILL");
       killChildTreeByPid(app.pid, "KILL");
-      cleanupStaleDevApps();
+      app.kill("SIGKILL");
       finish();
     }, forcedShutdownTimeoutMs).unref();
   });
+
+  const remaining = await waitForProcessTreeExit(knownProcesses, {
+    timeoutMs: childTreeGracePeriodMs,
+  });
+  if (remaining.length > 0) {
+    signalDevApps(remaining, "SIGKILL");
+    const survivors = await waitForProcessTreeExit(remaining, {
+      timeoutMs: childTreeGracePeriodMs,
+    });
+    if (survivors.length > 0) {
+      process.stderr.write(
+        `[desktop-dev] ${survivors.length} process${survivors.length === 1 ? "" : "es"} survived desktop shutdown.\n`,
+      );
+    }
+  }
 }
 
 function scheduleRestart() {
@@ -229,7 +302,7 @@ async function shutdown(exitCode) {
 }
 
 startWatchers();
-cleanupStaleDevApps();
+await cleanupStaleDevApps();
 startApp();
 
 process.once("SIGINT", () => {

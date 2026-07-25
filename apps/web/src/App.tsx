@@ -23,19 +23,28 @@ export function App() {
   const viewer = useAtomValue(productAtoms.viewer);
   const navigate = useNavigate();
   const [aboutOpen, setAboutOpen] = useState(false);
-  const desktopPlatform = localApi().getAppInfo()?.platform;
+  const host = localApi();
+  const desktopPlatform = host.getAppInfo()?.platform;
+  const [isWindowFullscreen, setIsWindowFullscreen] = useState(() =>
+    host.getWindowFullscreenState(),
+  );
 
   useEffect(
     () =>
-      localApi().onMenuAction((action) => {
+      host.onMenuAction((action) => {
         if (action === "preferences") {
           void navigate({ to: "/settings" });
         } else if (action === "about") {
           setAboutOpen(true);
         }
       }),
-    [navigate],
+    [host, navigate],
   );
+  useEffect(() => {
+    const unsubscribe = host.onWindowFullscreenStateChange(setIsWindowFullscreen);
+    setIsWindowFullscreen(host.getWindowFullscreenState());
+    return unsubscribe;
+  }, [host]);
   useEffect(() => {
     if (!aboutOpen) {
       return;
@@ -50,7 +59,11 @@ export function App() {
   }, [aboutOpen]);
 
   return (
-    <div className="app-frame" data-desktop-platform={desktopPlatform}>
+    <div
+      className="app-frame"
+      data-desktop-platform={desktopPlatform}
+      data-window-fullscreen={isWindowFullscreen ? "true" : undefined}
+    >
       <header className="titlebar">
         <Link className="brand" to="/" aria-label="Throughline home">
           <span className="brand-mark" aria-hidden>

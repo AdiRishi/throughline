@@ -13,7 +13,7 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { NetService, type NetServiceShape } from "@app/shared/Net";
@@ -22,9 +22,13 @@ import * as DesktopEnvironment from "../../src/app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../../src/app/DesktopObservability.ts";
 import * as DesktopBackendConfiguration from "../../src/backend/DesktopBackendConfiguration.ts";
 import {
+  DesktopBackendManager,
+  layer as desktopBackendManagerLayer,
   makeManager,
   type DesktopBackendManagerShape,
 } from "../../src/backend/DesktopBackendManager.ts";
+import * as ElectronWindow from "../../src/electron/ElectronWindow.ts";
+import * as DesktopWindow from "../../src/window/DesktopWindow.ts";
 
 const PORT = 34_567;
 
@@ -145,6 +149,8 @@ interface HarnessInput {
   readonly killStderr?: string;
   readonly killFailsAfterExit?: boolean;
   readonly killFailsWhileRunning?: boolean;
+  readonly onNotReady?: Effect.Effect<void>;
+  readonly httpClient?: HttpClient.HttpClient;
 }
 
 const environmentLayer = (input?: HarnessInput) =>
@@ -162,6 +168,7 @@ const environmentLayer = (input?: HarnessInput) =>
           resourcesPath: NodePath.join(SCRATCH, "resources"),
           appDataDirectory: Option.none(),
           xdgConfigHome: Option.none(),
+          appImagePath: Option.none(),
           serverEntryOverride: Option.some(input?.entry ?? ENTRY_PATH),
           configuredBackendPort: Option.some(PORT),
           devServerUrl: Option.none(),
@@ -189,10 +196,16 @@ const makeHarness = (input?: HarnessInput) =>
     });
     const readyLatch = yield* Deferred.make<void>();
     const notReadyHits = yield* Ref.make(0);
+    const httpClientLayer =
+      input?.httpClient === undefined
+        ? FetchHttpClient.layer
+        : Layer.succeed(HttpClient.HttpClient, input.httpClient);
 
     const manager = yield* makeManager({
       onReady: () => Deferred.succeed(readyLatch, undefined).pipe(Effect.asVoid),
-      onNotReady: Ref.update(notReadyHits, (n) => n + 1),
+      onNotReady: Ref.update(notReadyHits, (n) => n + 1).pipe(
+        Effect.andThen(input?.onNotReady ?? Effect.void),
+      ),
     }).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, scripted.spawner),
       Effect.provideService(NetService, fakeNet),
@@ -201,12 +214,12 @@ const makeHarness = (input?: HarnessInput) =>
           DesktopBackendConfiguration.layer.pipe(
             Layer.provideMerge(environmentLayer(input)),
             Layer.provideMerge(NodeServices.layer),
-            Layer.provideMerge(FetchHttpClient.layer),
           ),
           DesktopObservability.layer.pipe(
             Layer.provideMerge(environmentLayer(input)),
             Layer.provideMerge(NodeServices.layer),
           ),
+          httpClientLayer,
         ),
       ),
     );
@@ -238,6 +251,89 @@ describe("DesktopBackendManager", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("keeps window activation recoverable after the initial ready callback fails", () =>
+    Effect.gen(function* () {
+      const scripted = yield* makeScriptedSpawner();
+      const openAttempts = yield* Ref.make(0);
+      const createError = new ElectronWindow.ElectronWindowCreateError({
+        options: {
+          title: "Throughline",
+          width: 1440,
+          height: 900,
+          show: false,
+          backgroundColor: "#f7f8fa",
+          webPreferences: {
+            preload: "/app/preload.cjs",
+            sandbox: true,
+            contextIsolation: true,
+            nodeIntegration: false,
+          },
+        },
+        cause: new Error("simulated BrowserWindow failure"),
+      });
+      const openMain = Ref.updateAndGet(openAttempts, (attempt) => attempt + 1).pipe(
+        Effect.flatMap((attempt) => (attempt === 1 ? Effect.fail(createError) : Effect.void)),
+      );
+      const window = DesktopWindow.DesktopWindow.of({
+        activate: openMain,
+        handleBackendReady: () => openMain,
+        handleBackendNotReady: Effect.void,
+        flushMainWindowBounds: Effect.void,
+        dispatchMenuAction: () => Effect.void,
+        syncAppearance: Effect.void,
+      });
+      const records: Array<ReturnType<typeof Logger.formatStructured.log>> = [];
+      const recordingLogger = Logger.make((options) => {
+        records.push(Logger.formatStructured.log(options));
+      });
+
+      yield* Effect.gen(function* () {
+        const manager = yield* DesktopBackendManager;
+        yield* manager.start;
+        yield* Effect.gen(function* () {
+          while (
+            !records.some(
+              (record) => record.message === "failed to open main window after backend readiness",
+            )
+          ) {
+            yield* Effect.yieldNow;
+          }
+        });
+
+        yield* window.activate;
+
+        assert.equal(yield* Ref.get(openAttempts), 2);
+        assert.equal(yield* scripted.spawnCount, 1);
+        const warning = records.find(
+          (record) => record.message === "failed to open main window after backend readiness",
+        );
+        assert.equal(warning?.annotations.component, "desktop-backend");
+        assert.equal(warning?.annotations.error, createError.message);
+        yield* manager.stop;
+      }).pipe(
+        Effect.provide(desktopBackendManagerLayer),
+        Effect.provideService(DesktopWindow.DesktopWindow, window),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, scripted.spawner),
+        Effect.provideService(NetService, fakeNet),
+        Effect.provide(
+          Layer.mergeAll(
+            DesktopBackendConfiguration.layer.pipe(
+              Layer.provideMerge(environmentLayer()),
+              Layer.provideMerge(NodeServices.layer),
+              Layer.provideMerge(FetchHttpClient.layer),
+            ),
+            Layer.succeed(DesktopObservability.DesktopBackendOutputLog, {
+              writeSessionBoundary: () => Effect.void,
+              writeOutputChunk: () => Effect.void,
+              flushOutput: () => Effect.void,
+            } satisfies DesktopObservability.DesktopBackendOutputLog["Service"]),
+          ),
+        ),
+        Effect.provide(Logger.layer([recordingLogger])),
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("restarts with backoff after an unexpected exit", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
@@ -251,6 +347,45 @@ describe("DesktopBackendManager", () => {
           yield* Effect.yieldNow;
         }
       });
+
+      yield* TestClock.adjust("500 millis");
+      yield* Effect.gen(function* () {
+        while ((yield* harness.spawnCount) < 2) {
+          yield* Effect.yieldNow;
+        }
+      });
+      assert.equal(yield* harness.spawnCount, 2);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("terminates and restarts a backend that never becomes ready", () =>
+    Effect.gen(function* () {
+      const attempts = yield* Ref.make(0);
+      const httpClient = HttpClient.make((request) =>
+        Ref.updateAndGet(attempts, (count) => count + 1).pipe(
+          Effect.map(() =>
+            HttpClientResponse.fromWeb(request, new Response("not ready", { status: 503 })),
+          ),
+        ),
+      );
+      const harness = yield* makeHarness({ httpClient });
+
+      yield* harness.manager.start;
+      while ((yield* Ref.get(attempts)) === 0) {
+        yield* Effect.yieldNow;
+      }
+      yield* TestClock.adjust("1 minute");
+      yield* Effect.gen(function* () {
+        while (!(yield* harness.currentKilled)) {
+          yield* Effect.yieldNow;
+        }
+      });
+      yield* Effect.gen(function* () {
+        while ((yield* harness.notReadyCount) < 1) {
+          yield* Effect.yieldNow;
+        }
+      });
+      assert.equal(yield* harness.notReadyCount, 1);
 
       yield* TestClock.adjust("500 millis");
       yield* Effect.gen(function* () {
@@ -276,6 +411,7 @@ describe("DesktopBackendManager", () => {
 
       yield* harness.manager.stop;
       assert.isTrue(yield* harness.currentKilled);
+      assert.equal(yield* harness.notReadyCount, 1);
 
       const logPath = NodePath.join(
         homeDirectory,
@@ -297,6 +433,43 @@ describe("DesktopBackendManager", () => {
       assert.equal(endRecords[0]?.annotations?.reason, "desktop shutdown");
       assert.isBelow(contents.indexOf(shutdownTail), contents.indexOf('"phase":"END"'));
 
+      yield* TestClock.adjust("5 seconds");
+      assert.equal(yield* harness.spawnCount, 1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("terminates the backend when the not-ready callback defects during stop", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        onNotReady: Effect.die("not-ready callback defect"),
+      });
+      yield* harness.manager.start;
+      yield* harness.awaitReady;
+
+      yield* harness.manager.stop;
+
+      assert.isTrue(yield* harness.currentKilled);
+      assert.equal(yield* harness.notReadyCount, 1);
+      yield* TestClock.adjust("5 seconds");
+      assert.equal(yield* harness.spawnCount, 1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("notifies the window once when natural exit races with stop", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.manager.start;
+      yield* harness.awaitReady;
+
+      yield* harness.exitCurrent(0);
+      yield* Effect.gen(function* () {
+        while ((yield* harness.notReadyCount) < 1) {
+          yield* Effect.yieldNow;
+        }
+      });
+      yield* harness.manager.stop;
+
+      assert.equal(yield* harness.notReadyCount, 1);
       yield* TestClock.adjust("5 seconds");
       assert.equal(yield* harness.spawnCount, 1);
     }).pipe(Effect.scoped),

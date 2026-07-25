@@ -5,11 +5,18 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import type * as Electron from "electron";
 
 import * as DesktopEnvironment from "../../../src/app/DesktopEnvironment.ts";
 import * as ElectronShell from "../../../src/electron/ElectronShell.ts";
 import * as ElectronTheme from "../../../src/electron/ElectronTheme.ts";
-import { getTheme, openLogsFolder, setTheme } from "../../../src/ipc/methods/window.ts";
+import * as ElectronWindow from "../../../src/electron/ElectronWindow.ts";
+import {
+  getTheme,
+  getWindowFullscreenState,
+  openLogsFolder,
+  setTheme,
+} from "../../../src/ipc/methods/window.ts";
 import * as DesktopAppSettings from "../../../src/settings/DesktopAppSettings.ts";
 
 describe("window IPC theme methods", () => {
@@ -25,6 +32,7 @@ describe("window IPC theme methods", () => {
             Effect.sync(() => {
               sources.push(source);
             }),
+          onUpdated: () => Effect.void,
         }),
       ),
     );
@@ -35,6 +43,21 @@ describe("window IPC theme methods", () => {
       assert.strictEqual(yield* getTheme.handler(), "dark");
       assert.deepStrictEqual(sources, ["dark"]);
     }).pipe(Effect.provide(layer));
+  });
+});
+
+describe("window IPC fullscreen methods", () => {
+  it.effect("reports the native fullscreen state of the current main window", () => {
+    const window = { isFullScreen: () => true } as Electron.BrowserWindow;
+    return Effect.gen(function* () {
+      assert.isTrue(yield* getWindowFullscreenState.handler());
+    }).pipe(
+      Effect.provide(
+        Layer.mock(ElectronWindow.ElectronWindow)({
+          currentMainOrFirst: Effect.succeed(Option.some(window)),
+        }),
+      ),
+    );
   });
 });
 
@@ -58,6 +81,7 @@ describe("window IPC diagnostics methods", () => {
             resourcesPath: homeDirectory,
             appDataDirectory: Option.none(),
             xdgConfigHome: Option.none(),
+            appImagePath: Option.none(),
             serverEntryOverride: Option.none(),
             configuredBackendPort: Option.none(),
             devServerUrl: Option.none(),

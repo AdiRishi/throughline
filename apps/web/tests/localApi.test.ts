@@ -26,9 +26,24 @@ function makeStorage(overrides?: Partial<Storage>): Storage {
 }
 
 function makeBridge(overrides?: Partial<DesktopBridge>): DesktopBridge {
+  const updateState = {
+    enabled: true,
+    status: "idle",
+    channel: "latest",
+    currentVersion: "1.2.3",
+    availableVersion: null,
+    downloadedVersion: null,
+    releaseNotes: [],
+    downloadPercent: null,
+    checkedAt: null,
+    message: null,
+    errorContext: null,
+    canRetry: false,
+  } as const;
   return {
     getAppInfo: () => null,
     getTheme: () => "system",
+    getWindowFullscreenState: () => false,
     getServerBootstrap: () => null,
     getBearerToken: vi.fn<DesktopBridge["getBearerToken"]>(async () => "bearer"),
     setTheme: vi.fn<DesktopBridge["setTheme"]>(async () => undefined),
@@ -37,13 +52,30 @@ function makeBridge(overrides?: Partial<DesktopBridge>): DesktopBridge {
     confirm: vi.fn<DesktopBridge["confirm"]>(async () => true),
     pickFolder: vi.fn<DesktopBridge["pickFolder"]>(async () => "/picked"),
     showContextMenu: vi.fn<DesktopBridge["showContextMenu"]>(async () => null),
-    getUpdateState: vi.fn<DesktopBridge["getUpdateState"]>(),
-    setUpdateChannel: vi.fn<DesktopBridge["setUpdateChannel"]>(),
-    checkForUpdate: vi.fn<DesktopBridge["checkForUpdate"]>(),
-    downloadUpdate: vi.fn<DesktopBridge["downloadUpdate"]>(),
-    installUpdate: vi.fn<DesktopBridge["installUpdate"]>(),
+    getUpdateState: vi.fn<DesktopBridge["getUpdateState"]>(async () => updateState),
+    setUpdateChannel: vi.fn<DesktopBridge["setUpdateChannel"]>(async (channel) => ({
+      ...updateState,
+      channel,
+    })),
+    checkForUpdate: vi.fn<DesktopBridge["checkForUpdate"]>(async () => ({
+      checked: true,
+      state: updateState,
+    })),
+    downloadUpdate: vi.fn<DesktopBridge["downloadUpdate"]>(async () => ({
+      accepted: false,
+      completed: false,
+      state: updateState,
+    })),
+    installUpdate: vi.fn<DesktopBridge["installUpdate"]>(async () => ({
+      accepted: false,
+      completed: false,
+      state: updateState,
+    })),
     onUpdateState: vi.fn<DesktopBridge["onUpdateState"]>(() => () => {}),
     onMenuAction: vi.fn<DesktopBridge["onMenuAction"]>(() => () => {}),
+    onWindowFullscreenStateChange: vi.fn<DesktopBridge["onWindowFullscreenStateChange"]>(
+      () => () => {},
+    ),
     ...overrides,
   } as DesktopBridge;
 }
@@ -97,6 +129,14 @@ describe("localApi in the shell (bridge present)", () => {
     expect(await api.confirm("sure?")).toBe(true);
     expect(await api.pickFolder({ title: "Pick" })).toBe("/picked");
     expect(bridge.pickFolder).toHaveBeenCalledWith({ title: "Pick" });
+
+    expect((await api.getUpdateState()).currentVersion).toBe("1.2.3");
+    expect((await api.setUpdateChannel("nightly")).channel).toBe("nightly");
+    expect((await api.checkForUpdate()).checked).toBe(true);
+    await api.downloadUpdate();
+    await api.installUpdate();
+    expect(bridge.downloadUpdate).toHaveBeenCalledOnce();
+    expect(bridge.installUpdate).toHaveBeenCalledOnce();
   });
 
   it("surfaces a failed openExternal as an error", async () => {
@@ -122,6 +162,47 @@ describe("localApi in the shell (bridge present)", () => {
     await localApi().setTheme("light");
     expect(bridge.setTheme).toHaveBeenCalledWith("light");
   });
+
+  it("delegates native fullscreen state and subscriptions to the shell", async () => {
+    const unsubscribe = vi.fn<() => void>();
+    const listener = vi.fn<(fullscreen: boolean) => void>();
+    const onWindowFullscreenStateChange = vi.fn<DesktopBridge["onWindowFullscreenStateChange"]>(
+      () => unsubscribe,
+    );
+    const bridge = makeBridge({
+      getWindowFullscreenState: () => true,
+      onWindowFullscreenStateChange,
+    });
+    const { localApi } = await loadLocalApi({
+      desktopBridge: bridge,
+      localStorage: makeStorage(),
+    });
+
+    expect(localApi().getWindowFullscreenState()).toBe(true);
+    const stop = localApi().onWindowFullscreenStateChange(listener);
+    expect(onWindowFullscreenStateChange).toHaveBeenCalledWith(listener);
+    stop();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("degrades fullscreen capabilities while an older preload is still active", async () => {
+    const bridge = {
+      ...makeBridge(),
+      getWindowFullscreenState: undefined,
+      onWindowFullscreenStateChange: undefined,
+    } as unknown as DesktopBridge;
+    const { localApi } = await loadLocalApi({
+      desktopBridge: bridge,
+      localStorage: makeStorage(),
+    });
+
+    const api = localApi();
+    expect(api.isDesktop).toBe(true);
+    expect(api.getWindowFullscreenState()).toBe(false);
+    const unsubscribe = api.onWindowFullscreenStateChange(() => {});
+    expect(unsubscribe).toBeTypeOf("function");
+    unsubscribe();
+  });
 });
 
 describe("localApi in a plain browser (no bridge)", () => {
@@ -136,6 +217,7 @@ describe("localApi in a plain browser (no bridge)", () => {
     expect(api.isDesktop).toBe(false);
     expect(api.getAppInfo()).toBeNull();
     expect(api.getTheme()).toBe("dark");
+    expect(api.getWindowFullscreenState()).toBe(false);
 
     await api.setTheme("system");
     expect(storage.getItem("app:theme")).toBe("system");
@@ -150,8 +232,31 @@ describe("localApi in a plain browser (no bridge)", () => {
     // diagnostics discovery returns false, while menu subscriptions are inert.
     expect(await api.openLogsFolder()).toBe(false);
     expect(await api.pickFolder()).toBeNull();
+    expect(await api.getUpdateState()).toMatchObject({
+      enabled: false,
+      status: "disabled",
+      currentVersion: "Browser",
+    });
+    expect(await api.checkForUpdate()).toMatchObject({
+      checked: false,
+      state: { enabled: false },
+    });
+    expect(await api.downloadUpdate()).toMatchObject({
+      accepted: false,
+      completed: false,
+    });
+    expect(await api.installUpdate()).toMatchObject({
+      accepted: false,
+      completed: false,
+    });
+    const unsubscribeUpdates = api.onUpdateState(() => {});
+    expect(unsubscribeUpdates).toBeTypeOf("function");
+    unsubscribeUpdates();
     const unsubscribe = api.onMenuAction(() => {});
     expect(unsubscribe).toBeTypeOf("function");
     unsubscribe();
+    const unsubscribeFullscreen = api.onWindowFullscreenStateChange(() => {});
+    expect(unsubscribeFullscreen).toBeTypeOf("function");
+    unsubscribeFullscreen();
   });
 });

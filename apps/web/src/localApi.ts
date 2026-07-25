@@ -1,8 +1,37 @@
-import type { DesktopTheme, LocalApi, PickFolderOptions } from "@app/contracts";
+import type {
+  DesktopTheme,
+  DesktopUpdateActionResult,
+  DesktopUpdateState,
+  LocalApi,
+  PickFolderOptions,
+} from "@app/contracts";
 
 import { isElectron } from "./env.ts";
 
 export const THEME_STORAGE_KEY = "app:theme";
+
+const BROWSER_UPDATE_STATE: DesktopUpdateState = {
+  enabled: false,
+  status: "disabled",
+  channel: "latest",
+  currentVersion: "Browser",
+  availableVersion: null,
+  downloadedVersion: null,
+  releaseNotes: [],
+  downloadPercent: null,
+  checkedAt: null,
+  message: "Application updates are managed by the installed Throughline desktop app.",
+  errorContext: null,
+  canRetry: false,
+};
+
+function unavailableBrowserUpdateAction(): DesktopUpdateActionResult {
+  return {
+    accepted: false,
+    completed: false,
+    state: BROWSER_UPDATE_STATE,
+  };
+}
 
 function readStoredTheme(): DesktopTheme {
   if (typeof window === "undefined") return "system";
@@ -37,6 +66,10 @@ function createLocalApi(): LocalApi {
     isDesktop: isElectron,
     getAppInfo: () => bridge?.getAppInfo() ?? null,
     getTheme: () => (bridge ? theme : readStoredTheme()),
+    getWindowFullscreenState: () => {
+      const getWindowFullscreenState = bridge?.getWindowFullscreenState;
+      return typeof getWindowFullscreenState === "function" ? getWindowFullscreenState() : false;
+    },
 
     setTheme: async (nextTheme: DesktopTheme) => {
       storeTheme(nextTheme);
@@ -73,9 +106,33 @@ function createLocalApi(): LocalApi {
       return null;
     },
 
+    getUpdateState: async () => bridge?.getUpdateState() ?? BROWSER_UPDATE_STATE,
+    setUpdateChannel: async (channel) => {
+      if (bridge) return bridge.setUpdateChannel(channel);
+      return { ...BROWSER_UPDATE_STATE, channel };
+    },
+    checkForUpdate: async () =>
+      bridge?.checkForUpdate() ?? {
+        checked: false,
+        state: BROWSER_UPDATE_STATE,
+      },
+    downloadUpdate: async () => bridge?.downloadUpdate() ?? unavailableBrowserUpdateAction(),
+    installUpdate: async () => bridge?.installUpdate() ?? unavailableBrowserUpdateAction(),
+    onUpdateState: (listener) => {
+      if (bridge) return bridge.onUpdateState(listener);
+      return () => {};
+    },
+
     onMenuAction: (listener) => {
       // Only the shell has a native menu; in a browser this is inert.
       if (bridge) return bridge.onMenuAction(listener);
+      return () => {};
+    },
+    onWindowFullscreenStateChange: (listener) => {
+      const onWindowFullscreenStateChange = bridge?.onWindowFullscreenStateChange;
+      if (typeof onWindowFullscreenStateChange === "function") {
+        return onWindowFullscreenStateChange(listener);
+      }
       return () => {};
     },
   };

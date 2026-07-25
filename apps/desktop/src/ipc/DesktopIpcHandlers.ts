@@ -14,6 +14,7 @@ import {
   getBearerToken,
   getServerBootstrap,
   getTheme,
+  getWindowFullscreenState,
   openExternal,
   openLogsFolder,
   pickFolder,
@@ -29,6 +30,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
 
   yield* ipc.handleSync(getAppInfo);
   yield* ipc.handleSync(getTheme);
+  yield* ipc.handleSync(getWindowFullscreenState);
   yield* ipc.handleSync(getServerBootstrap);
   yield* ipc.handle(getBearerToken);
 

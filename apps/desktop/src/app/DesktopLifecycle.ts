@@ -7,6 +7,8 @@ import * as Scope from "effect/Scope";
 import type * as Electron from "electron";
 
 import * as ElectronApp from "../electron/ElectronApp.ts";
+import * as ElectronTheme from "../electron/ElectronTheme.ts";
+import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
@@ -18,7 +20,9 @@ export type DesktopLifecycleRuntimeServices =
   | DesktopShutdown.DesktopShutdown
   | DesktopState.DesktopState
   | DesktopWindow.DesktopWindow
-  | ElectronApp.ElectronApp;
+  | ElectronApp.ElectronApp
+  | ElectronTheme.ElectronTheme
+  | ElectronWindow.ElectronWindow;
 
 export class DesktopLifecycle extends Context.Service<
   DesktopLifecycle,
@@ -51,8 +55,16 @@ function addScopedListener<Args extends ReadonlyArray<unknown>>(
 }
 
 const requestDesktopShutdownAndWait = Effect.fn("desktop.lifecycle.requestShutdownAndWait")(
-  function* (): Effect.fn.Return<void, never, DesktopShutdown.DesktopShutdown> {
+  function* (): Effect.fn.Return<
+    void,
+    never,
+    DesktopShutdown.DesktopShutdown | DesktopWindow.DesktopWindow | ElectronWindow.ElectronWindow
+  > {
     const shutdown = yield* DesktopShutdown.DesktopShutdown;
+    const electronWindow = yield* ElectronWindow.ElectronWindow;
+    const window = yield* DesktopWindow.DesktopWindow;
+    yield* window.flushMainWindowBounds;
+    yield* electronWindow.destroyAll.pipe(Effect.ignore({ log: true }));
     yield* shutdown.request;
     yield* shutdown.awaitComplete;
   },
@@ -114,6 +126,7 @@ function quitFromSignal(
 export const make = DesktopLifecycle.of({
   register: Effect.gen(function* () {
     const electronApp = yield* ElectronApp.ElectronApp;
+    const electronTheme = yield* ElectronTheme.ElectronTheme;
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     const window = yield* DesktopWindow.DesktopWindow;
     const context = yield* Effect.context<DesktopLifecycleRuntimeServices>();
@@ -121,6 +134,12 @@ export const make = DesktopLifecycle.of({
     const callbackAnnotations = yield* References.CurrentLogAnnotations;
     const runCallback = <A, E>(effect: Effect.Effect<A, E, DesktopLifecycleRuntimeServices>) =>
       runEffect(effect.pipe(Effect.annotateLogs(callbackAnnotations)));
+
+    yield* electronTheme.onUpdated(() => {
+      void runCallback(
+        window.syncAppearance.pipe(Effect.withSpan("desktop.lifecycle.themeUpdated")),
+      );
+    });
 
     if (!(yield* electronApp.requestSingleInstanceLock)) {
       yield* logLifecycleInfo("another instance holds the lock; quitting");

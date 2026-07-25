@@ -31,6 +31,7 @@ function makeTestEnvironment(
       resourcesPath: path.join(homeDirectory, "app", "resources"),
       appDataDirectory: Option.none(),
       xdgConfigHome: Option.none(),
+      appImagePath: Option.none(),
       serverEntryOverride: Option.none(),
       configuredBackendPort: Option.none(),
       devServerUrl,

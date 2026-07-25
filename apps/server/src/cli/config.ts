@@ -120,7 +120,7 @@ export const resolveServerConfig = Effect.fn("cli.resolveServerConfig")(function
 
   return ServerConfig.make({
     appName: ServerConfig.APP_NAME,
-    version: ServerConfig.APP_VERSION,
+    version: bootstrap?.appVersion ?? ServerConfig.APP_VERSION,
     startedAt,
     host,
     port,

@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -340,6 +341,13 @@ export const makeManager = (
     const mutex = yield* Semaphore.make(1);
 
     const currentConfig = Ref.get(state).pipe(Effect.map((current) => current.config));
+    const notifyNotReady = callbacks.onNotReady.pipe(
+      Effect.catchCause((cause) =>
+        logWarning("backend not-ready callback failed", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
 
     const cancelRestart = Effect.gen(function* () {
       const restartFiber = yield* Ref.modify(state, (current) => [
@@ -470,7 +478,7 @@ export const makeManager = (
                   ] as const;
                 });
                 if (isCurrentRun) {
-                  yield* callbacks.onNotReady;
+                  yield* notifyNotReady;
                   const latest = yield* Ref.get(state);
                   if (latest.desiredRunning) {
                     yield* scheduleRestart(reason);
@@ -507,7 +515,7 @@ export const makeManager = (
             onReadinessFailure: (error) =>
               logWarning("backend readiness check failed", {
                 error: error.message,
-              }),
+              }).pipe(Effect.andThen(Deferred.succeed(shutdown, undefined)), Effect.asVoid),
             awaitShutdown: Deferred.await(shutdown),
           }).pipe(
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -544,19 +552,25 @@ export const makeManager = (
 
     const stop = Effect.gen(function* () {
       const { active, restartFiber } = yield* mutex.withPermits(1)(
-        Ref.modify(state, (latest) => [
-          {
-            active: latest.active,
-            restartFiber: latest.restartFiber,
-          },
-          {
-            ...latest,
-            desiredRunning: false,
-            ready: false,
-            active: Option.none<ActiveRun>(),
-            restartFiber: Option.none<Fiber.Fiber<void, never>>(),
-          },
-        ]),
+        Effect.gen(function* () {
+          const result = yield* Ref.modify(state, (latest) => [
+            {
+              active: latest.active,
+              restartFiber: latest.restartFiber,
+            },
+            {
+              ...latest,
+              desiredRunning: false,
+              ready: false,
+              active: Option.none<ActiveRun>(),
+              restartFiber: Option.none<Fiber.Fiber<void, never>>(),
+            },
+          ]);
+          if (Option.isSome(result.active)) {
+            yield* notifyNotReady;
+          }
+          return result;
+        }),
       );
 
       yield* Option.match(restartFiber, {
@@ -604,10 +618,14 @@ export const layer: Layer.Layer<
   Effect.gen(function* () {
     const window = yield* DesktopWindow.DesktopWindow;
     const manager = yield* makeManager({
-      // A window-create failure while revealing on backend-ready is unexpected
-      // and fatal; surface it as a defect rather than widening the callback's
-      // error channel.
-      onReady: (config) => window.handleBackendReady(config).pipe(Effect.orDie),
+      onReady: (config) =>
+        window.handleBackendReady(config).pipe(
+          Effect.catch((error) =>
+            logWarning("failed to open main window after backend readiness", {
+              error: error.message,
+            }),
+          ),
+        ),
       onNotReady: window.handleBackendNotReady,
     });
     return manager;

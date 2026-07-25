@@ -4,7 +4,9 @@ import type {
   DesktopAppInfo,
   DesktopServerBootstrap,
   DesktopTheme,
+  DesktopUpdateActionResult,
   DesktopUpdateChannel,
+  DesktopUpdateCheckResult,
   DesktopUpdateState,
   PickFolderOptions,
 } from "./desktop.ts";
@@ -25,6 +27,7 @@ export interface DesktopBridge {
   readonly getAppInfo: () => DesktopAppInfo | null;
   /** Synchronous: persisted shell theme, available before the first paint. */
   readonly getTheme: () => DesktopTheme;
+  readonly getWindowFullscreenState: () => boolean;
   /** Synchronous: where the local server lives (null before it's ready). */
   readonly getServerBootstrap: () => DesktopServerBootstrap | null;
 
@@ -44,13 +47,14 @@ export interface DesktopBridge {
   ) => Promise<T | null>;
 
   readonly getUpdateState: () => Promise<DesktopUpdateState>;
-  readonly setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<void>;
-  readonly checkForUpdate: () => Promise<void>;
-  readonly downloadUpdate: () => Promise<void>;
-  readonly installUpdate: () => Promise<void>;
+  readonly setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;
+  readonly checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
+  readonly downloadUpdate: () => Promise<DesktopUpdateActionResult>;
+  readonly installUpdate: () => Promise<DesktopUpdateActionResult>;
   readonly onUpdateState: (listener: (state: DesktopUpdateState) => void) => Unsubscribe;
 
   readonly onMenuAction: (listener: (action: string) => void) => Unsubscribe;
+  readonly onWindowFullscreenStateChange: (listener: (fullscreen: boolean) => void) => Unsubscribe;
 }
 
 /**
@@ -63,6 +67,7 @@ export interface LocalApi {
   readonly isDesktop: boolean;
   readonly getAppInfo: () => DesktopAppInfo | null;
   readonly getTheme: () => DesktopTheme;
+  readonly getWindowFullscreenState: () => boolean;
   readonly setTheme: (theme: DesktopTheme) => Promise<void>;
   readonly openExternal: (url: string) => Promise<void>;
   /** Returns false in a plain browser, which has no native file manager. */
@@ -70,6 +75,13 @@ export interface LocalApi {
   readonly confirm: (message: string) => Promise<boolean>;
   /** Returns null in the browser (no native folder picker). */
   readonly pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
+  readonly getUpdateState: () => Promise<DesktopUpdateState>;
+  readonly setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;
+  readonly checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
+  readonly downloadUpdate: () => Promise<DesktopUpdateActionResult>;
+  readonly installUpdate: () => Promise<DesktopUpdateActionResult>;
+  readonly onUpdateState: (listener: (state: DesktopUpdateState) => void) => Unsubscribe;
   /** Native menu actions. In a plain browser this never fires (no menu). */
   readonly onMenuAction: (listener: (action: string) => void) => Unsubscribe;
+  readonly onWindowFullscreenStateChange: (listener: (fullscreen: boolean) => void) => Unsubscribe;
 }

@@ -27,13 +27,24 @@ The division of labor is the important commitment:
 
 Everything is local-first: there is no Throughline cloud, no telemetry, no server other than the one the shell spawns. The reviewer's own `gh` login and their own agent-harness logins are the only credentials in the system.
 
+Before its first backend spawn, the desktop shell recovers the user's command
+environment from their login shell. This is necessary for Finder, Dock, and
+desktop-menu launches, which do not inherit the terminal's `PATH` or SSH agent
+socket. Login-shell paths are merged with the launch environment without
+duplicates; an explicitly inherited `SSH_AUTH_SOCK` and other scalar values are
+never overwritten. The backend's explicit spawn patch remains authoritative
+over the recovered parent environment. Probe failures are non-fatal and log
+only their probe type, argument count, and timeout—not commands, environment
+values, or captured output.
+
 ## Local diagnostics
 
 The desktop shell and local server each install an Effect logger set with a
 human-readable terminal logger and a batched structured file logger.
 Development therefore keeps `pnpm dev:desktop` as the live, searchable view of
-desktop and server behavior; the same metadata-only events also survive in the
-platform application-data directory:
+desktop and server behavior: the supervised Electron process and its server
+child both inherit the launching terminal. The same metadata-only events also
+survive in the platform application-data directory:
 
 | File                    | Contents                                                                                                                            |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -46,8 +57,18 @@ page reveals this directory directly in the desktop app. On macOS it is
 `~/Library/Application Support/throughline/logs`; on Windows it is
 `%APPDATA%/throughline/logs`; on Linux it is
 `${XDG_CONFIG_HOME:-~/.config}/throughline/logs`.
-If a platform log path is unavailable, observability degrades to the launching
-terminal instead of preventing the desktop or server from starting.
+Desktop development uses the sibling `throughline-dev/logs` directory so a dev
+shell never contends with the installed app's Chromium profile, settings,
+server data, logs, or single-instance identity. If a file sink cannot be opened
+or later fails to write, it reports that failure once to the launching terminal
+and disables only that sink instead of preventing the desktop or server from
+running.
+
+The desktop development launcher follows the shell binaries rather than racing
+them: it waits for the Vite listener and the built main, preload, and server
+entries; removes the exact marked Electron process tree from the same checkout
+with a bounded graceful-then-forced shutdown; inherits their output; and
+restarts the shell when one of those built entries changes.
 
 These logs are local diagnostics, not telemetry. They record stable structural
 context such as component, run, job, pull request, stage, outcome, and typed
@@ -92,7 +113,7 @@ Five seams carry the whole design. Each is deliberately small; the depth lives b
 2. **`GitHub`** — one module, one choke point. Every byte to or from the GitHub API flows through it, including the cached detail reads that let `PullRequestIndex` refresh saved journeys outside the viewer-affiliation list. The index falls back to the immutable PR detail in the finalized `Workspaces` run when GitHub cannot supply one. This is what makes both the rate-limit discipline and saved-journey availability ([03](./03-github.md)) structural instead of aspirational.
 3. **`AnalysisHarness`** — the seam the user's agent harnesses plug into. Codex and Claude are the two v1 adapters; ACP is a planned third. The interface is small enough (detect, run-with-schema, cancel-via-scope) that adding a harness never touches the pipeline. T3 Code (`~/forks/t3code`) proves this shape at much larger scale — five harnesses behind one provider interface — and is our reference for the subprocess-supervision details.
 4. **`Ingestion`** — the pipeline as a module. Callers see "start job, watch events, get journey"; clone orchestration, prompt assembly, validation, and repair are implementation.
-5. **`LocalApi`** (ADR-0004) — the renderer↔host seam. Browser degradation is part of every bridge capability's interface.
+5. **`LocalApi`** (ADR-0004) — the renderer↔host seam. Browser degradation is part of every bridge capability's interface. Native updater operations expose the same validated state-and-action interface here; the browser adapter reports updates disabled instead of making components branch around a missing bridge.
 
 ## The ingestion data flow
 

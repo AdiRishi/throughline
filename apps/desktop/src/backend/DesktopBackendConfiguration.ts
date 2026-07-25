@@ -106,6 +106,7 @@ export const make = Effect.gen(function* () {
           bootstrapEnvelope: {
             desktopBootstrapToken: bootstrapToken,
             port: input.port,
+            appVersion: environment.appVersion,
           },
           port: input.port,
           bootstrapToken,

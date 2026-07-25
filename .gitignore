@@ -10,3 +10,4 @@ release/
 .playwright-mcp/
 .throughline-data/
 .pnpm-store/
+.electron-runtime/

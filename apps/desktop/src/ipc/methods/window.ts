@@ -53,6 +53,16 @@ export const getTheme = DesktopIpc.makeSyncIpcMethod({
   }),
 });
 
+export const getWindowFullscreenState = DesktopIpc.makeSyncIpcMethod({
+  channel: IpcChannels.GET_WINDOW_FULLSCREEN_STATE_CHANNEL,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.window.getWindowFullscreenState")(function* () {
+    const electronWindow = yield* ElectronWindow.ElectronWindow;
+    const window = yield* electronWindow.currentMainOrFirst;
+    return Option.isSome(window) && window.value.isFullScreen();
+  }),
+});
+
 export const getServerBootstrap = DesktopIpc.makeSyncIpcMethod({
   channel: IpcChannels.GET_SERVER_BOOTSTRAP_CHANNEL,
   result: Schema.NullOr(DesktopServerBootstrap),

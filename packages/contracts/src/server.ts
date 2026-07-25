@@ -18,11 +18,13 @@ export type ServerConfig = typeof ServerConfig.Type;
 /**
  * One-line JSON envelope handed from the desktop shell to the spawned local
  * server over an inherited fd. Keeping this in contracts means both processes
- * agree on the secret/port bootstrap shape without sharing runtime logic.
+ * agree on the secret/port/version bootstrap shape without sharing runtime
+ * logic.
  */
 export const ServerBootstrapEnvelope = Schema.Struct({
   desktopBootstrapToken: TrimmedNonEmptyString,
   port: Schema.optionalKey(Port),
+  appVersion: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type ServerBootstrapEnvelope = typeof ServerBootstrapEnvelope.Type;
 

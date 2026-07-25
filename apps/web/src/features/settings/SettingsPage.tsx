@@ -5,7 +5,12 @@ import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useEffect, useState } from "react";
 
-import type { DesktopTheme, HarnessStatus } from "@app/contracts";
+import type {
+  DesktopTheme,
+  DesktopUpdateChannel,
+  DesktopUpdateState,
+  HarnessStatus,
+} from "@app/contracts";
 
 import {
   ArrowLeftIcon,
@@ -23,6 +28,13 @@ import {
   isHarnessSelection,
   type HarnessReadiness,
 } from "./model.ts";
+import {
+  canChangeUpdateChannel,
+  updateAction as resolveUpdateAction,
+  updateActionLabel,
+  updateInstallConfirmation,
+  updateStatusDescription,
+} from "./updateModel.ts";
 
 const THEMES: ReadonlyArray<{
   readonly value: DesktopTheme;
@@ -63,6 +75,9 @@ export function SettingsPage() {
   const host = localApi();
   const [openingLogsFolder, setOpeningLogsFolder] = useState(false);
   const [logsFolderError, setLogsFolderError] = useState<string | null>(null);
+  const [updateState, setUpdateState] = useState<DesktopUpdateState | null>(null);
+  const [updateActionPending, setUpdateActionPending] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
   const automatic = automaticHarnessKind(harnesses);
   const orderedHarnesses = harnesses.toSorted((left, right) => {
@@ -80,6 +95,32 @@ export function SettingsPage() {
     return () => window.removeEventListener("focus", refreshOnFocus);
   }, [refreshHarnesses]);
 
+  useEffect(() => {
+    let active = true;
+    let receivedPush = false;
+    const unsubscribe = host.onUpdateState((state) => {
+      receivedPush = true;
+      if (active) {
+        setUpdateState(state);
+        setUpdateError(null);
+      }
+    });
+    void host
+      .getUpdateState()
+      .then((state) => {
+        if (active && !receivedPush) setUpdateState(state);
+      })
+      .catch(() => {
+        if (active && !receivedPush) {
+          setUpdateError("Throughline couldn’t read the updater state.");
+        }
+      });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [host]);
+
   const openLogsFolder = async () => {
     setOpeningLogsFolder(true);
     setLogsFolderError(null);
@@ -91,6 +132,53 @@ export function SettingsPage() {
       setLogsFolderError("Throughline couldn’t open the logs folder.");
     } finally {
       setOpeningLogsFolder(false);
+    }
+  };
+
+  const setUpdateChannel = async (channel: DesktopUpdateChannel) => {
+    if (
+      updateState === null ||
+      channel === updateState.channel ||
+      !canChangeUpdateChannel(updateState)
+    ) {
+      return;
+    }
+    setUpdateActionPending(true);
+    setUpdateError(null);
+    try {
+      setUpdateState(await host.setUpdateChannel(channel));
+    } catch {
+      setUpdateError("Throughline couldn’t change the update channel.");
+    } finally {
+      setUpdateActionPending(false);
+    }
+  };
+
+  const runUpdateAction = async () => {
+    if (updateState === null || updateActionPending) return;
+    const action = resolveUpdateAction(updateState);
+    if (action === "none") return;
+    if (action === "install" && !(await host.confirm(updateInstallConfirmation(updateState)))) {
+      return;
+    }
+
+    setUpdateActionPending(true);
+    setUpdateError(null);
+    try {
+      if (action === "check") {
+        const result = await host.checkForUpdate();
+        setUpdateState(result.state);
+      } else if (action === "download") {
+        const result = await host.downloadUpdate();
+        setUpdateState(result.state);
+      } else {
+        const result = await host.installUpdate();
+        setUpdateState(result.state);
+      }
+    } catch {
+      setUpdateError(`Throughline couldn’t ${action} the update.`);
+    } finally {
+      setUpdateActionPending(false);
     }
   };
 
@@ -235,6 +323,117 @@ export function SettingsPage() {
           })}
         </div>
       </section>
+
+      {host.isDesktop ? (
+        <section className="settings-section" aria-labelledby="updates-heading">
+          <div className="settings-section-heading">
+            <div>
+              <h2 id="updates-heading">Updates</h2>
+              <p>Keep the desktop host current without interrupting a review.</p>
+            </div>
+          </div>
+
+          {updateState === null ? (
+            <div className="settings-loading" aria-busy="true">
+              Reading updater state…
+            </div>
+          ) : (
+            <>
+              <div className="update-status-row">
+                <span className="diagnostics-copy">
+                  <strong>
+                    Version {updateState.currentVersion}
+                    {updateState.channel === "nightly" ? " · Nightly" : ""}
+                  </strong>
+                  <span role={updateState.message === null ? undefined : "alert"}>
+                    {updateStatusDescription(updateState)}
+                  </span>
+                </span>
+                <button
+                  className="button button-secondary"
+                  type="button"
+                  disabled={
+                    updateActionPending ||
+                    resolveUpdateAction(updateState) === "none" ||
+                    updateState.status === "checking" ||
+                    updateState.status === "downloading"
+                  }
+                  onClick={() => void runUpdateAction()}
+                >
+                  {updateActionPending ? "Working…" : updateActionLabel(updateState)}
+                </button>
+              </div>
+
+              {updateState.status === "downloading" ? (
+                <progress
+                  className="update-progress"
+                  aria-label="Update download progress"
+                  max={100}
+                  value={updateState.downloadPercent ?? undefined}
+                />
+              ) : null}
+
+              <fieldset className="update-channel-fieldset">
+                <legend>Update channel</legend>
+                <p>Stable follows full releases. Nightly follows preview desktop releases.</p>
+                <div className="update-channel-options">
+                  {(
+                    [
+                      ["latest", "Stable", "Finished releases for day-to-day use."],
+                      ["nightly", "Nightly", "The newest desktop build, updated frequently."],
+                    ] as const
+                  ).map(([channel, label, description]) => (
+                    <label
+                      key={channel}
+                      className="selection-row"
+                      data-selected={updateState.channel === channel || undefined}
+                      data-disabled={
+                        !canChangeUpdateChannel(updateState) || updateActionPending || undefined
+                      }
+                    >
+                      <input
+                        className="sr-only"
+                        type="radio"
+                        name="update-channel"
+                        checked={updateState.channel === channel}
+                        disabled={!canChangeUpdateChannel(updateState) || updateActionPending}
+                        onChange={() => void setUpdateChannel(channel)}
+                      />
+                      <SelectionMark selected={updateState.channel === channel} />
+                      <span className="selection-copy">
+                        <strong>{label}</strong>
+                        <span>{description}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
+              {updateState.releaseNotes.length === 0 ? null : (
+                <div className="update-release-notes">
+                  <strong>What’s changed</strong>
+                  {updateState.releaseNotes.map((releaseNote) => (
+                    <section key={releaseNote.version}>
+                      <small>{releaseNote.version}</small>
+                      <ul>
+                        {releaseNote.items.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </section>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {updateError === null ? null : (
+            <p className="diagnostics-error" role="alert">
+              {updateError}
+            </p>
+          )}
+        </section>
+      ) : null}
 
       {host.isDesktop ? (
         <section className="settings-section" aria-labelledby="diagnostics-heading">

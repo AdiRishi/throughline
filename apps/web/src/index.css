@@ -151,8 +151,13 @@ code {
   user-select: none;
 }
 
-.app-frame[data-desktop-platform="darwin"] .titlebar {
+.app-frame[data-desktop-platform="darwin"]:not([data-window-fullscreen="true"]) .titlebar {
   padding-left: 84px;
+}
+
+.window-controls-overlay .titlebar {
+  padding-left: calc(env(titlebar-area-x, 0px) + 14px);
+  padding-right: calc(100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px) + 14px);
 }
 
 .brand,
@@ -1003,6 +1008,88 @@ p.merged-title {
   font-size: 11px;
 }
 
+.update-status-row {
+  display: flex;
+  min-height: 84px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  border-bottom: 1px solid var(--border);
+  padding: 16px 4px;
+}
+
+.update-progress {
+  display: block;
+  width: 100%;
+  height: 3px;
+  border: 0;
+  background: var(--border);
+  color: var(--accent);
+}
+
+.update-progress::-webkit-progress-bar {
+  background: var(--border);
+}
+
+.update-progress::-webkit-progress-value {
+  background: var(--accent);
+}
+
+.update-channel-fieldset {
+  margin: 28px 0 0;
+  border: 0;
+  padding: 0;
+}
+
+.update-channel-fieldset legend {
+  color: var(--reading);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.update-channel-fieldset > p {
+  margin: 3px 0 8px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.update-channel-options {
+  display: grid;
+}
+
+.update-release-notes {
+  display: grid;
+  gap: 12px;
+  margin-top: 24px;
+  border-top: 1px solid var(--border);
+  padding: 18px 4px 0;
+}
+
+.update-release-notes > strong {
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.update-release-notes section {
+  display: grid;
+  gap: 4px;
+}
+
+.update-release-notes small {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.update-release-notes ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--secondary);
+  font-size: 10.5px;
+}
+
 .about-backdrop {
   position: fixed;
   z-index: 100;
@@ -1147,6 +1234,12 @@ p.merged-title {
   }
 
   .diagnostics-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .update-status-row {
     align-items: flex-start;
     flex-direction: column;
     gap: 14px;

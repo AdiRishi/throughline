@@ -28,7 +28,9 @@ import * as ElectronUpdater from "./electron/ElectronUpdater.ts";
 import * as ElectronWindow from "./electron/ElectronWindow.ts";
 import * as DesktopIpc from "./ipc/DesktopIpc.ts";
 import * as DesktopAppSettings from "./settings/DesktopAppSettings.ts";
+import * as DesktopShellEnvironment from "./shell/DesktopShellEnvironment.ts";
 import * as DesktopUpdater from "./updates/DesktopUpdater.ts";
+import * as DesktopApplicationMenu from "./window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 
 // ── Composition root ──
@@ -92,14 +94,19 @@ const desktopApplicationLayer = Layer.mergeAll(
   DesktopLifecycle.layer,
   DesktopUpdater.layer,
   DesktopLocalEnvironmentAuth.layer,
+  DesktopShellEnvironment.layer,
 ).pipe(Layer.provideMerge(desktopBackendLayer));
+
+const desktopMenuLayer = DesktopApplicationMenu.layer.pipe(
+  Layer.provideMerge(desktopApplicationLayer),
+);
 
 // Provide the platform services (FileSystem, Path, ChildProcessSpawner, Crypto,
 // NetService) and the electron wrappers under the whole graph. The HttpClient
 // uses Electron's global `fetch` (FetchHttpClient) rather than the undici-based
 // Node client: bundling undici into the CJS main crashes Electron at load
 // (`webidl.util.markAsUncloneable is not a function` from undici's CacheStorage).
-const desktopRuntimeLayer = desktopApplicationLayer.pipe(
+const desktopRuntimeLayer = desktopMenuLayer.pipe(
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(FetchHttpClient.layer),
   Layer.provideMerge(NetService.layer),

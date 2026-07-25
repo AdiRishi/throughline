@@ -137,7 +137,14 @@ Settings {
 
 ## Persistence
 
-One SQLite database, owned by `JourneyStore`, under a server-owned data root (passed by the shell from Electron's `userData`; a per-checkout default in dev). The driver is **`@effect/sql-sqlite-node`** — it ships at the same pinned Effect version and sits on Node's built-in `node:sqlite`, so there is no native module to rebuild and it is verified working under Electron's bundled Node.
+One SQLite database, owned by `JourneyStore`, under a server-owned data root.
+The desktop shell passes its Electron application-data root: `throughline` for
+an installed app and the isolated sibling `throughline-dev` for a development
+shell. The plain-browser development runner uses the per-checkout
+`.throughline-data` root. The driver is **`@effect/sql-sqlite-node`** — it ships
+at the same pinned Effect version and sits on Node's built-in `node:sqlite`, so
+there is no native module to rebuild and it is verified working under
+Electron's bundled Node.
 
 ```
 <dataRoot>/

@@ -11,6 +11,7 @@ import { DesktopTheme, DesktopUpdateChannel } from "@app/contracts";
 import { writeFileStringAtomically } from "@app/shared/atomicWrite";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import { resolveDefaultDesktopUpdateChannel } from "../updates/updateChannels.ts";
 
 // Schema-validated, atomically-persisted settings store. Every field is
 // optional on disk (so an old settings file with missing keys still decodes)
@@ -18,18 +19,52 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 // rename so a crash mid-write can't corrupt the file.
 
 export interface DesktopSettings {
+  readonly mainWindowBounds: DesktopWindowBounds | null;
+  readonly mainWindowMaximized: boolean;
   readonly theme: DesktopTheme;
   readonly updateChannel: DesktopUpdateChannel;
+  readonly updateChannelConfiguredByUser: boolean;
 }
 
+const MIN_MAIN_WINDOW_SIZE = {
+  width: 900,
+  height: 640,
+} as const;
+
+export const DesktopWindowBoundsSchema = Schema.Struct({
+  x: Schema.Int,
+  y: Schema.Int,
+  width: Schema.Int.check(Schema.isGreaterThanOrEqualTo(MIN_MAIN_WINDOW_SIZE.width)),
+  height: Schema.Int.check(Schema.isGreaterThanOrEqualTo(MIN_MAIN_WINDOW_SIZE.height)),
+});
+export type DesktopWindowBounds = typeof DesktopWindowBoundsSchema.Type;
+
+export const DEFAULT_MAIN_WINDOW_SIZE = {
+  width: 1440,
+  height: 900,
+} as const;
+
 export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
+  mainWindowBounds: null,
+  mainWindowMaximized: false,
   theme: "system",
   updateChannel: "latest",
+  updateChannelConfiguredByUser: false,
 };
 
+const DesktopWindowBoundsDocument = Schema.Struct({
+  x: Schema.Number,
+  y: Schema.Number,
+  width: Schema.Number,
+  height: Schema.Number,
+});
+
 const DesktopSettingsDocument = Schema.Struct({
+  mainWindowBounds: Schema.optionalKey(Schema.NullOr(DesktopWindowBoundsDocument)),
+  mainWindowMaximized: Schema.optionalKey(Schema.Boolean),
   theme: Schema.optionalKey(DesktopTheme),
   updateChannel: Schema.optionalKey(DesktopUpdateChannel),
+  updateChannelConfiguredByUser: Schema.optionalKey(Schema.Boolean),
 });
 type DesktopSettingsDocument = typeof DesktopSettingsDocument.Type;
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
@@ -37,6 +72,8 @@ type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 const DesktopSettingsJson = Schema.fromJsonString(DesktopSettingsDocument);
 const decodeDesktopSettingsJson = Schema.decodeUnknownEffect(DesktopSettingsJson);
 const encodeDesktopSettingsJson = Schema.encodeUnknownEffect(DesktopSettingsJson);
+const decodeDesktopWindowBounds = Schema.decodeUnknownOption(DesktopWindowBoundsSchema);
+const desktopWindowBoundsEquivalence = Schema.toEquivalence(DesktopWindowBoundsSchema);
 
 export interface DesktopSettingsChange {
   readonly settings: DesktopSettings;
@@ -65,6 +102,10 @@ export class DesktopAppSettings extends Context.Service<
   {
     readonly load: Effect.Effect<DesktopSettings>;
     readonly get: Effect.Effect<DesktopSettings>;
+    readonly setMainWindowBounds: (
+      bounds: DesktopWindowBounds,
+      isMaximized: boolean,
+    ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
     readonly setTheme: (
       theme: DesktopTheme,
     ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
@@ -74,10 +115,34 @@ export class DesktopAppSettings extends Context.Service<
   }
 >()("@app/desktop/settings/DesktopAppSettings") {}
 
-function normalizeDocument(parsed: DesktopSettingsDocument): DesktopSettings {
+export function resolveDefaultDesktopSettings(appVersion: string): DesktopSettings {
   return {
-    theme: parsed.theme ?? DEFAULT_DESKTOP_SETTINGS.theme,
-    updateChannel: parsed.updateChannel ?? DEFAULT_DESKTOP_SETTINGS.updateChannel,
+    ...DEFAULT_DESKTOP_SETTINGS,
+    updateChannel: resolveDefaultDesktopUpdateChannel(appVersion),
+  };
+}
+
+export function normalizeMainWindowBounds(value: unknown): DesktopWindowBounds | null {
+  return Option.getOrNull(decodeDesktopWindowBounds(value));
+}
+
+function normalizeDocument(parsed: DesktopSettingsDocument, appVersion: string): DesktopSettings {
+  const defaultSettings = resolveDefaultDesktopSettings(appVersion);
+  const mainWindowBounds = normalizeMainWindowBounds(parsed.mainWindowBounds);
+  const parsedUpdateChannel = Option.fromNullishOr(parsed.updateChannel);
+  const isLegacySettings = parsed.updateChannelConfiguredByUser === undefined;
+  const updateChannelConfiguredByUser =
+    parsed.updateChannelConfiguredByUser === true ||
+    (isLegacySettings && Option.contains(parsedUpdateChannel, "nightly"));
+
+  return {
+    mainWindowBounds,
+    mainWindowMaximized: mainWindowBounds !== null && parsed.mainWindowMaximized === true,
+    theme: parsed.theme ?? defaultSettings.theme,
+    updateChannel: updateChannelConfiguredByUser
+      ? Option.getOrElse(parsedUpdateChannel, () => defaultSettings.updateChannel)
+      : defaultSettings.updateChannel,
+    updateChannelConfiguredByUser,
   };
 }
 
@@ -85,11 +150,36 @@ function normalizeDocument(parsed: DesktopSettingsDocument): DesktopSettings {
 // minimal and forward-compatible with new default values.
 function toDocument(settings: DesktopSettings, defaults: DesktopSettings): DesktopSettingsDocument {
   const document: Mutable<DesktopSettingsDocument> = {};
+  if (settings.mainWindowBounds !== null) {
+    document.mainWindowBounds = settings.mainWindowBounds;
+  }
+  if (settings.mainWindowMaximized) {
+    document.mainWindowMaximized = true;
+  }
   if (settings.theme !== defaults.theme) document.theme = settings.theme;
   if (settings.updateChannel !== defaults.updateChannel) {
     document.updateChannel = settings.updateChannel;
   }
+  if (settings.updateChannelConfiguredByUser !== defaults.updateChannelConfiguredByUser) {
+    document.updateChannelConfiguredByUser = settings.updateChannelConfiguredByUser;
+  }
   return document;
+}
+
+function setMainWindowBounds(
+  settings: DesktopSettings,
+  bounds: DesktopWindowBounds,
+  isMaximized: boolean,
+): DesktopSettings {
+  return settings.mainWindowBounds !== null &&
+    desktopWindowBoundsEquivalence(settings.mainWindowBounds, bounds) &&
+    settings.mainWindowMaximized === isMaximized
+    ? settings
+    : {
+        ...settings,
+        mainWindowBounds: bounds,
+        mainWindowMaximized: isMaximized,
+      };
 }
 
 function setTheme(settings: DesktopSettings, theme: DesktopTheme): DesktopSettings {
@@ -98,24 +188,32 @@ function setTheme(settings: DesktopSettings, theme: DesktopTheme): DesktopSettin
 
 function setUpdateChannel(
   settings: DesktopSettings,
-  updateChannel: DesktopUpdateChannel,
+  requestedChannel: DesktopUpdateChannel,
 ): DesktopSettings {
-  return settings.updateChannel === updateChannel ? settings : { ...settings, updateChannel };
+  return settings.updateChannel === requestedChannel
+    ? settings
+    : {
+        ...settings,
+        updateChannel: requestedChannel,
+        updateChannelConfiguredByUser: true,
+      };
 }
 
 function readSettings(
   fileSystem: FileSystem.FileSystem,
   settingsPath: string,
+  appVersion: string,
 ): Effect.Effect<DesktopSettings> {
+  const defaultSettings = resolveDefaultDesktopSettings(appVersion);
   return fileSystem.readFileString(settingsPath).pipe(
     Effect.option,
     Effect.flatMap(
       Option.match({
-        onNone: () => Effect.succeed(DEFAULT_DESKTOP_SETTINGS),
+        onNone: () => Effect.succeed(defaultSettings),
         onSome: (raw) =>
           decodeDesktopSettingsJson(raw).pipe(
-            Effect.map(normalizeDocument),
-            Effect.orElseSucceed(() => DEFAULT_DESKTOP_SETTINGS),
+            Effect.map((document) => normalizeDocument(document, appVersion)),
+            Effect.orElseSucceed(() => defaultSettings),
           ),
       }),
     ),
@@ -164,9 +262,25 @@ export const make = Effect.gen(function* () {
   return DesktopAppSettings.of({
     get: SynchronizedRef.get(settingsRef),
     load: Effect.gen(function* () {
-      const settings = yield* readSettings(fileSystem, environment.desktopSettingsPath);
+      const settings = yield* readSettings(
+        fileSystem,
+        environment.desktopSettingsPath,
+        environment.appVersion,
+      );
       return yield* SynchronizedRef.setAndGet(settingsRef, settings);
     }).pipe(Effect.withSpan("desktop.settings.load")),
+    setMainWindowBounds: (bounds, isMaximized) =>
+      persist((settings) => setMainWindowBounds(settings, bounds, isMaximized)).pipe(
+        Effect.withSpan("desktop.settings.setMainWindowBounds", {
+          attributes: {
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+            isMaximized,
+          },
+        }),
+      ),
     setTheme: (theme) =>
       persist((settings) => setTheme(settings, theme)).pipe(
         Effect.withSpan("desktop.settings.setTheme", { attributes: { theme } }),
@@ -198,6 +312,8 @@ export const layerTest = (initialSettings: DesktopSettings = DEFAULT_DESKTOP_SET
       return DesktopAppSettings.of({
         get: SynchronizedRef.get(settingsRef),
         load: SynchronizedRef.get(settingsRef),
+        setMainWindowBounds: (bounds, isMaximized) =>
+          update((settings) => setMainWindowBounds(settings, bounds, isMaximized)),
         setTheme: (theme) => update((settings) => setTheme(settings, theme)),
         setUpdateChannel: (channel) => update((settings) => setUpdateChannel(settings, channel)),
       });
