@@ -1,3 +1,4 @@
+import { CaretDown, CheckCircle, Circle } from "@phosphor-icons/react";
 import { parseDiffFromFile, type CodeViewItem, type DiffLineAnnotation } from "@pierre/diffs";
 import { CodeView, type CodeViewHandle } from "@pierre/diffs/react";
 import { useEffect, useMemo, useRef } from "react";
@@ -355,18 +356,50 @@ export function CodeSurface({
             const read = readState.readFiles.some(
               (entry) => entry.clusterId === cluster.id && entry.path === item.id,
             );
+            const file = journey.files.find((candidate) => candidate.path === item.id);
+            const itemPosition = items.findIndex((candidate) => candidate.id === item.id) + 1;
             return (
               <div className="code-view-header">
-                <code>{item.id}</code>
+                <div className="code-view-file">
+                  <CaretDown size={10} weight="bold" />
+                  <code>{item.id}</code>
+                  {file?.kind === "added" && <span>new file</span>}
+                  {file !== undefined && (
+                    <small>
+                      <i>+{file.additions}</i>
+                      {file.deletions > 0 && <b>−{file.deletions}</b>}
+                    </small>
+                  )}
+                </div>
                 <div>
+                  <span>
+                    {itemPosition} of {items.length} in view
+                  </span>
                   {mode !== "just-the-code" && (
-                    <button onClick={() => onModeChange(mode === "split" ? "inline" : "split")}>
-                      {mode === "split" ? "Inline" : "Split"}
-                    </button>
+                    <div className="diff-layout-toggle">
+                      <button
+                        className={mode !== "split" ? "active" : ""}
+                        onClick={() => onModeChange("inline")}
+                      >
+                        Inline
+                      </button>
+                      <button
+                        className={mode === "split" ? "active" : ""}
+                        onClick={() => onModeChange("split")}
+                      >
+                        Split
+                      </button>
+                    </div>
                   )}
                   {onMarkFile !== undefined && (
-                    <button onClick={() => onMarkFile(item.id)}>
-                      {read ? "Mark unread" : "Mark read"}
+                    <button className="mark-read" onClick={() => onMarkFile(item.id)}>
+                      {read ? (
+                        <CheckCircle size={15} weight="fill" />
+                      ) : (
+                        <Circle size={15} weight="regular" />
+                      )}
+                      {read ? "Read" : "Mark read"}
+                      <kbd>R</kbd>
                     </button>
                   )}
                 </div>

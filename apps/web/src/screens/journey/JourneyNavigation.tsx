@@ -1,3 +1,4 @@
+import { ArrowLeft, ArrowRight, FileText } from "@phosphor-icons/react";
 import { FileTree, useFileTree } from "@pierre/trees/react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -55,8 +56,8 @@ export function JourneyNavigation({
   }, [journey.hunks]);
   const { model: fileTree } = useFileTree({
     paths: treePaths,
-    initialExpansion: 2,
-    search: true,
+    initialExpansion: "open",
+    search: false,
     gitStatus: journey.files.map((file) => ({ path: file.path, status: gitStatus(file.kind) })),
     initialSelectedPaths: view.type === "file" ? [view.path] : [],
     onSelectionChange: (paths) => {
@@ -84,12 +85,22 @@ export function JourneyNavigation({
   }, [changedOnly, changedPaths, fileTree, journey.files, treePaths, view]);
 
   const overall = journeyProgress(journey.hunks, readState);
+  const selectedCluster =
+    view.type === "cluster"
+      ? journey.clusters.find((cluster) => cluster.id === view.clusterId)
+      : view.type === "file"
+        ? journey.clusters.find((cluster) => cluster.fileOrder.includes(view.path))
+        : undefined;
+  const previousCluster =
+    selectedCluster === undefined ? undefined : journey.clusters[selectedCluster.position - 2];
+  const nextCluster =
+    selectedCluster === undefined ? undefined : journey.clusters[selectedCluster.position];
+  const overviewLabel =
+    selectedCluster === undefined
+      ? "Overview"
+      : `Overview — ${selectedCluster.position} · ${selectedCluster.title}`;
   return (
     <aside className="cluster-rail">
-      <div className="rail-progress">
-        <span>{Math.round(overall.ratio * 100)}% read</span>
-        {stale && <strong>Snapshot is stale</strong>}
-      </div>
       <div className="rail-modes" aria-label="Navigation mode">
         <button className={mode === "journey" ? "active" : ""} onClick={() => setMode("journey")}>
           Journey
@@ -101,10 +112,21 @@ export function JourneyNavigation({
 
       {mode === "journey" ? (
         <>
+          <div className="rail-progress">
+            <span>Journey</span>
+            <span>
+              {Math.round(overall.ratio * 100)}% · {overall.read} of {overall.total} hunks
+            </span>
+            <i>
+              <span style={{ width: `${overall.ratio * 100}%` }} />
+            </i>
+            {stale && <strong>Snapshot is stale</strong>}
+          </div>
           <button
             className={view.type === "overview" ? "rail-overview active" : "rail-overview"}
             onClick={onOverview}
           >
+            <FileText size={13} weight="bold" />
             Overview
           </button>
           <ol>
@@ -129,22 +151,46 @@ export function JourneyNavigation({
               );
             })}
           </ol>
+          {selectedCluster !== undefined && (
+            <footer className="rail-neighbors">
+              <button
+                disabled={previousCluster === undefined}
+                onClick={() => {
+                  if (previousCluster !== undefined) onCluster(previousCluster.id);
+                }}
+              >
+                <ArrowLeft size={11} weight="bold" />
+                <span>{previousCluster?.position ?? ""}</span>
+                <span>{previousCluster?.title ?? "Start"}</span>
+              </button>
+              <button
+                disabled={nextCluster === undefined}
+                onClick={() => {
+                  if (nextCluster !== undefined) onCluster(nextCluster.id);
+                }}
+              >
+                <span>{nextCluster?.position ?? ""}</span>
+                <ArrowRight size={11} weight="bold" />
+              </button>
+            </footer>
+          )}
         </>
       ) : (
         <div className="tree-panel rail-tree">
           <div className="tree-document">
             <button onClick={onOverview}>
-              <span>§</span>
-              Journey overview
-            </button>
-            <button
-              className={changedOnly ? "active" : ""}
-              onClick={() => setChangedOnly((value) => !value)}
-            >
-              {changedOnly ? "All files" : "Changed only"}
+              <FileText size={13} weight="bold" />
+              <span>{overviewLabel}</span>
             </button>
           </div>
-          <FileTree model={fileTree} header={<strong>Repository</strong>} />
+          <FileTree model={fileTree} style={{ height: "100%", minHeight: 0 }} />
+          <button
+            className={changedOnly ? "tree-filter active" : "tree-filter"}
+            onClick={() => setChangedOnly((value) => !value)}
+          >
+            <span aria-hidden />
+            Changed files only
+          </button>
         </div>
       )}
     </aside>

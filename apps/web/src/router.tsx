@@ -1,11 +1,14 @@
 import { useAtomValue } from "@effect/atom-react";
 import { Link, Outlet, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { lazy, Suspense } from "react";
 
+import { SettingsGlyph, WindowControls } from "./components/AppChrome.tsx";
 import type { JourneyScreenLocation } from "./screens/JourneyScreen.tsx";
 import { SettingsScreen } from "./screens/SettingsScreen.tsx";
 import { WelcomeScreen } from "./screens/WelcomeScreen.tsx";
 import { connectionAtoms } from "./state/connection.ts";
+import { productAtoms } from "./state/product.ts";
 
 const LazyJourneyScreen = lazy(() =>
   import("./screens/JourneyScreen.tsx").then((module) => ({
@@ -23,26 +26,27 @@ function JourneyRouteScreen({ location }: { readonly location: JourneyScreenLoca
 
 function Shell() {
   const connection = useAtomValue(connectionAtoms.state);
-  const connected = connection.phase === "connected";
+  const viewerResult = useAtomValue(productAtoms.viewer);
+  const viewer = AsyncResult.isSuccess(viewerResult) ? viewerResult.value : null;
   return (
     <div className="app-shell">
       <header className="topbar">
-        <Link to="/" className="wordmark" aria-label="Throughline home">
-          <span className="wordmark-mark">T</span>
-          <span>Throughline</span>
-        </Link>
-        <nav className="topbar-nav" aria-label="Application">
-          <Link to="/" activeProps={{ className: "active" }}>
-            Pull requests
+        <div className="topbar-leading">
+          <WindowControls />
+          <Link to="/" className="wordmark" aria-label="Throughline home">
+            Throughline
           </Link>
-          <Link to="/settings" activeProps={{ className: "active" }}>
-            Settings
-          </Link>
-          <span className={`connection-pill ${connected ? "connected" : ""}`}>
-            <span aria-hidden />
-            {connection.phase}
+        </div>
+        <div className="topbar-trailing">
+          <span className="auth-status">
+            {viewer?.state === "authenticated" && viewer.login
+              ? `@${viewer.login} · authenticated via gh`
+              : connection.phase}
           </span>
-        </nav>
+          <Link to="/settings" className="settings-link" aria-label="Settings">
+            <SettingsGlyph />
+          </Link>
+        </div>
       </header>
       <Outlet />
     </div>

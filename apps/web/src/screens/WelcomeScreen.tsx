@@ -1,10 +1,13 @@
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { Check, MagnifyingGlass, X } from "@phosphor-icons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
+import * as DateTime from "effect/DateTime";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { useEffect, useMemo, useState } from "react";
 
 import type { IngestionJob, LocalPrState, PrRef, PullRequestSummary } from "@app/contracts";
 
+import { BackButton, WindowControls } from "../components/AppChrome.tsx";
 import { productAtoms } from "../state/product.ts";
 
 function samePr(left: PrRef, right: PrRef): boolean {
@@ -18,9 +21,9 @@ function isIn(refs: ReadonlyArray<PrRef>, ref: PrRef): boolean {
 function phaseLabel(job: IngestionJob): string {
   switch (job.phase.type) {
     case "queued":
-      return `Queued · ${job.phase.position}`;
+      return `Queued · ${job.phase.position} ahead`;
     case "analyzing":
-      return `${job.phase.stage === "planning" ? "Mapping" : "Writing"} · ${job.phase.detail.action}`;
+      return job.phase.detail.action;
     case "complete":
       return "Journey ready";
     case "failed":
@@ -30,32 +33,20 @@ function phaseLabel(job: IngestionJob): string {
   }
 }
 
-const INGESTION_STAGES = [
-  "Resolve pull request",
-  "Clone pinned head",
-  "Read changed code",
-  "Map the journey",
-  "Write the narrative",
-  "Validate coverage",
-  "Save locally",
-] as const;
-
 function phaseIndex(job: IngestionJob): number {
   switch (job.phase.type) {
     case "queued":
     case "resolving":
-      return 0;
     case "cloning":
-      return 1;
+      return 0;
     case "diffing":
-      return 2;
+      return 1;
     case "analyzing":
-      return job.phase.stage === "planning" ? 3 : 4;
+      return job.phase.stage === "planning" ? 1 : 2;
     case "validating":
-      return 5;
     case "saving":
     case "complete":
-      return 6;
+      return 2;
     default:
       return -1;
   }
@@ -63,78 +54,138 @@ function phaseIndex(job: IngestionJob): number {
 
 function IngestionTransition({
   job,
-  title,
-  onCancel,
+  pullRequest,
+  onLeave,
   onRetry,
 }: {
   readonly job: IngestionJob;
-  readonly title: string;
-  readonly onCancel: () => void;
+  readonly pullRequest: PullRequestSummary | undefined;
+  readonly onLeave: () => void;
   readonly onRetry: () => void;
 }) {
   const current = phaseIndex(job);
+  const title = pullRequest?.title ?? `Pull request #${job.pr.number}`;
+  const head = pullRequest?.headSha.slice(0, 7);
+  const repository = `${job.pr.owner}/${job.pr.repo}`;
+  const stages = [
+    {
+      title: "Cloning the repository",
+      detail: `${repository}${head ? ` at ${head}` : ""} and its base — pinned locally`,
+    },
+    {
+      title: "Reading the change",
+      detail: pullRequest
+        ? `Walking the diff and the code around it — ${pullRequest.changedFiles} changed files, +${pullRequest.additions.toLocaleString()} −${pullRequest.deletions.toLocaleString()}`
+        : "Walking the diff and the code around it",
+    },
+    {
+      title: "Constructing the journey",
+      detail: "Ordering the clusters; writing each one’s narrative",
+    },
+  ];
   return (
-    <section className={`ingestion-transition ${job.phase.type}`} aria-live="polite">
-      <header>
+    <main className={`ingestion-page ${job.phase.type}`} aria-live="polite">
+      <header className="ingestion-chrome">
         <div>
-          <p className="eyebrow">Building a journey</p>
-          <h2>{title}</h2>
-          <p>
-            {job.pr.owner}/{job.pr.repo} · #{job.pr.number}
-          </p>
+          <WindowControls />
+          <BackButton onClick={onLeave} />
         </div>
-        {job.phase.type === "failed" ? (
-          <button className="secondary-button" onClick={onRetry}>
-            Try again
-          </button>
-        ) : (
-          <button className="secondary-button" onClick={onCancel}>
-            Cancel
-          </button>
-        )}
+        <span>
+          {repository} #{job.pr.number}
+        </span>
       </header>
-      {job.phase.type === "failed" ? (
-        <div className="ingestion-failure">
-          <strong>The run stopped.</strong>
-          <p>{job.phase.detail}</p>
-        </div>
-      ) : (
-        <>
-          <ol>
-            {INGESTION_STAGES.map((stage, index) => (
-              <li
-                key={stage}
-                className={index < current ? "complete" : index === current ? "active" : ""}
-              >
-                <span>{index < current ? "✓" : String(index + 1).padStart(2, "0")}</span>
-                {stage}
-              </li>
-            ))}
-          </ol>
-          {job.phase.type === "analyzing" && (
-            <div className="ingestion-activity">
-              <strong>{job.phase.detail.action}</strong>
-              <div>
-                <span>{job.phase.detail.filesWalked} files walked</span>
-                <span>{job.phase.detail.symbolsTraced} symbols traced</span>
-                <span>{job.phase.detail.callSitesFollowed} call sites followed</span>
-              </div>
-              {job.phase.detail.recent.length > 0 && (
-                <ul>
-                  {job.phase.detail.recent.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
-          <p className="ingestion-leave-note">
-            You can leave this screen. Throughline will keep the run safe and resumable here.
+      <section className="ingestion-transition">
+        <header>
+          <p>
+            {repository} · #{job.pr.number}
+            {head ? ` · head ${head}` : ""}
           </p>
-        </>
-      )}
-    </section>
+          <h1>{title}</h1>
+        </header>
+        {job.phase.type === "failed" ? (
+          <div className="ingestion-failure">
+            <strong>The run stopped.</strong>
+            <p>{job.phase.detail}</p>
+            <button className="secondary-button" onClick={onRetry}>
+              Try again
+            </button>
+          </div>
+        ) : (
+          <>
+            <ol>
+              {stages.map((stage, index) => (
+                <li
+                  key={stage.title}
+                  className={index < current ? "complete" : index === current ? "active" : ""}
+                >
+                  <span className="ingestion-marker">
+                    {index < current && <Check size={12} weight="bold" />}
+                  </span>
+                  <div>
+                    <strong>{stage.title}</strong>
+                    <p>{stage.detail}</p>
+                    {index === current && job.phase.type === "analyzing" && (
+                      <div className="ingestion-activity">
+                        <strong>{job.phase.detail.action}</strong>
+                        {job.phase.detail.recent.length > 0 && (
+                          <ul>
+                            {job.phase.detail.recent.slice(0, 3).map((item) => (
+                              <li key={item}>{item}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ol>
+            {job.phase.type === "analyzing" && (
+              <div className="ingestion-counts">
+                <div>
+                  <strong>{job.phase.detail.filesWalked}</strong>
+                  <span>files walked</span>
+                </div>
+                <div>
+                  <strong>{job.phase.detail.symbolsTraced}</strong>
+                  <span>symbols traced</span>
+                </div>
+                <div>
+                  <strong>{job.phase.detail.callSitesFollowed}</strong>
+                  <span>call sites followed</span>
+                </div>
+              </div>
+            )}
+            <p className="ingestion-leave-note">
+              A change this size takes a few minutes to read properly. You can leave — the journey
+              opens when you come back. These stages are the real ones; there is no percentage
+              because none exists.
+            </p>
+          </>
+        )}
+      </section>
+    </main>
   );
+}
+
+function relativeTime(value: DateTime.Utc): string {
+  const elapsed = Math.max(0, Date.now() - DateTime.toEpochMillis(value));
+  const hours = Math.floor(elapsed / 3_600_000);
+  if (hours < 1) return "just now";
+  if (hours < 24) return `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "yesterday" : `${days} days ago`;
+}
+
+function mergedExpiry(value: DateTime.Utc | null): string {
+  if (value === null) return "leaves within a week";
+  const remaining = Math.max(
+    0,
+    Math.ceil((DateTime.toEpochMillis(value) + 7 * 86_400_000 - Date.now()) / 86_400_000),
+  );
+  if (remaining === 0) return "leaves today";
+  if (remaining === 1) return "leaves tomorrow";
+  return `leaves in ${remaining} days`;
 }
 
 function ProgressBar({ pr }: { readonly pr: PullRequestSummary }) {
@@ -144,7 +195,9 @@ function ProgressBar({ pr }: { readonly pr: PullRequestSummary }) {
       : Math.round((pr.journey.readHunks / pr.journey.totalHunks) * 100);
   return (
     <span className="progress-inline" aria-label={`${percentage}% read`}>
-      <span style={{ width: `${percentage}%` }} />
+      {Array.from({ length: 5 }, (_, index) => (
+        <span key={index} className={percentage >= (index + 1) * 20 ? "complete" : ""} />
+      ))}
     </span>
   );
 }
@@ -165,26 +218,41 @@ function PrRow({
   readonly onUpdateState: (kind: "reviewed" | "hidden", pr: PrRef, value: boolean) => void;
 }) {
   const reviewed = isIn(localState.reviewed, pr.ref);
+  if (pr.state === "merged") {
+    return (
+      <article className="pr-row merged">
+        <div>
+          <span className="merged-dot" aria-hidden />
+          <h3>{pr.title}</h3>
+          <span className="pr-number">#{pr.ref.number}</span>
+        </div>
+        <div className="merged-state">
+          {pr.journey.exists && <span>Journey finished — every line seen</span>}
+          <span>
+            merged {pr.mergedAt === null ? "recently" : relativeTime(pr.mergedAt)} ·{" "}
+            {mergedExpiry(pr.mergedAt)}
+          </span>
+          {onDismiss !== undefined && (
+            <button aria-label={`Dismiss ${pr.title}`} onClick={() => onDismiss(pr.ref)}>
+              <X size={12} weight="bold" />
+            </button>
+          )}
+        </div>
+      </article>
+    );
+  }
   return (
-    <article className={`pr-row ${reviewed ? "reviewed" : ""}`}>
-      <div className="pr-author" aria-hidden>
-        {pr.author.avatarUrl ? (
-          <img src={pr.author.avatarUrl} alt="" />
-        ) : (
-          pr.author.login.slice(0, 1).toUpperCase()
-        )}
-      </div>
+    <article className={`pr-row ${reviewed ? "reviewed" : ""} ${pr.journey.stale ? "stale" : ""}`}>
       <div className="pr-main">
         <div className="pr-title-line">
-          <span className="pr-number">#{pr.ref.number}</span>
           <h3>{pr.title}</h3>
+          <span className="pr-number">#{pr.ref.number}</span>
           {pr.isDraft && <span className="quiet-tag">Draft</span>}
-          {pr.journey.stale && <span className="stale-tag">Update available</span>}
         </div>
         <p className="pr-meta">
-          {pr.author.login} · {pr.changedFiles} files ·{" "}
-          <span className="added">+{pr.additions}</span>{" "}
-          <span className="deleted">−{pr.deletions}</span>
+          {pr.author.login} · opened {relativeTime(pr.updatedAt)} · {pr.changedFiles} files ·{" "}
+          <span className="added">+{pr.additions.toLocaleString()}</span>{" "}
+          <span className="deleted">−{pr.deletions.toLocaleString()}</span>
         </p>
         {job && job.phase.type !== "complete" && (
           <div className={`ingestion-strip ${job.phase.type}`}>
@@ -194,14 +262,9 @@ function PrRow({
         )}
       </div>
       <div className="pr-action">
-        <div className="pr-local-actions">
-          <button onClick={() => onUpdateState("reviewed", pr.ref, !reviewed)}>
-            {reviewed ? "Undo reviewed" : "Mark reviewed"}
-          </button>
-          <button onClick={() => onUpdateState("hidden", pr.ref, true)}>Hide</button>
-        </div>
         {pr.journey.exists || job?.phase.type === "complete" ? (
           <div className="journey-actions">
+            {pr.journey.stale && <span className="stale-tag">Stale</span>}
             <Link
               to="/pr/$owner/$repo/$number"
               params={{
@@ -209,34 +272,44 @@ function PrRow({
                 repo: pr.ref.repo,
                 number: String(pr.ref.number),
               }}
-              className="text-action"
+              className="journey-progress-action"
             >
-              {pr.journey.readHunks > 0 ? "Continue" : "Begin"}
+              <span>
+                {pr.journey.stale
+                  ? "Journey pinned to an older head"
+                  : pr.journey.readHunks > 0
+                    ? `${Math.min(pr.journey.readHunks, pr.journey.totalHunks)} of ${pr.journey.totalHunks} hunks read`
+                    : "Open journey"}
+              </span>
               <ProgressBar pr={pr} />
             </Link>
             {pr.journey.stale && (
               <button
-                className="text-action rebuild-action"
+                className="secondary-button rebuild-action"
                 onClick={() => onAnalyze(pr.ref)}
                 disabled={job !== undefined && job.phase.type !== "failed"}
               >
-                Rebuild →
+                Reanalyze
               </button>
             )}
           </div>
         ) : (
-          <button
-            className="text-action"
-            onClick={() => onAnalyze(pr.ref)}
-            disabled={job !== undefined && job.phase.type !== "failed"}
-          >
-            Build journey →
-          </button>
-        )}
-        {onDismiss !== undefined && (
-          <button className="text-action dismiss-action" onClick={() => onDismiss(pr.ref)}>
-            Dismiss
-          </button>
+          <>
+            <span className="not-analyzed">Not analyzed</span>
+            <div className="pr-local-actions">
+              <button onClick={() => onUpdateState("reviewed", pr.ref, !reviewed)}>
+                {reviewed ? "Undo reviewed" : "Mark reviewed"}
+              </button>
+              <button onClick={() => onUpdateState("hidden", pr.ref, true)}>Hide</button>
+              <button
+                className="open-journey"
+                onClick={() => onAnalyze(pr.ref)}
+                disabled={job !== undefined && job.phase.type !== "failed"}
+              >
+                Open journey
+              </button>
+            </div>
+          </>
         )}
       </div>
     </article>
@@ -253,11 +326,10 @@ export function WelcomeScreen() {
   const prStateResult = useAtomValue(productAtoms.prState);
   const [prStateUpdateResult, updatePrState] = useAtom(productAtoms.updatePrState);
   const [startResult, startIngestion] = useAtom(productAtoms.startIngestion);
-  const cancelIngestion = useAtomSet(productAtoms.cancelIngestion);
   const refresh = useAtomSet(productAtoms.refreshPullRequests);
   const [url, setUrl] = useState("");
-  const [addOpen, setAddOpen] = useState(false);
   const [pendingPr, setPendingPr] = useState<PrRef | null>(null);
+  const [hiddenTransitionId, setHiddenTransitionId] = useState<string | null>(null);
   const localState = AsyncResult.isSuccess(prStateUpdateResult)
     ? prStateUpdateResult.value
     : AsyncResult.isSuccess(prStateResult)
@@ -304,6 +376,7 @@ export function WelcomeScreen() {
   }, [open]);
 
   const analyze = (pr: PrRef) => {
+    setHiddenTransitionId(null);
     setPendingPr(pr);
     startIngestion({ pr });
   };
@@ -312,10 +385,11 @@ export function WelcomeScreen() {
   const transitionJob =
     ingestion.jobs.find(
       (job) =>
+        job.id !== hiddenTransitionId &&
         job.phase.type !== "complete" &&
         job.phase.type !== "cancelled" &&
         job.phase.type !== "failed",
-    ) ?? ingestion.jobs.find((job) => job.phase.type === "failed");
+    ) ?? ingestion.jobs.find((job) => job.id !== hiddenTransitionId && job.phase.type === "failed");
   const transitionPr = transitionJob
     ? pullRequestView.pullRequests.find((pr) => samePr(pr.ref, transitionJob.pr))
     : undefined;
@@ -345,26 +419,36 @@ export function WelcomeScreen() {
   const analysisReady = AsyncResult.isSuccess(harnessesResult)
     ? harnesses.some((harness) => harness.auth === "authenticated")
     : null;
+  if (transitionJob) {
+    return (
+      <IngestionTransition
+        job={transitionJob}
+        pullRequest={transitionPr}
+        onLeave={() => {
+          setPendingPr(null);
+          setHiddenTransitionId(transitionJob.id);
+        }}
+        onRetry={() => analyze(transitionJob.pr)}
+      />
+    );
+  }
+  const date = new Intl.DateTimeFormat(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  }).format(new Date());
 
   return (
     <main className="welcome-page">
       <section className="welcome-heading">
-        <div>
-          <p className="eyebrow">Review desk</p>
-          <h1>Pull requests, made readable.</h1>
-          <p>
-            Welcome back{viewer.name ? `, ${viewer.name.split(" ")[0]}` : ""}. Pick up a journey or
-            map a new change.
-          </p>
-        </div>
-        <div className="welcome-actions">
-          <button className="secondary-button" onClick={() => refresh()}>
-            Refresh
-          </button>
-          <button className="primary-button" onClick={() => setAddOpen((value) => !value)}>
-            Add pull request
-          </button>
-        </div>
+        <p>{date}</p>
+        <h1>
+          {open.length} {open.length === 1 ? "review" : "reviews"} waiting
+        </h1>
+        <p>
+          Pick up a journey or open a new one. Everything here is local — GitHub is never written
+          to.
+        </p>
       </section>
 
       {AsyncResult.isFailure(pullRequestsResult) && (
@@ -382,51 +466,8 @@ export function WelcomeScreen() {
         </section>
       )}
 
-      {addOpen && (
-        <form
-          className="add-pr"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const trimmed = url.trim();
-            if (!trimmed) return;
-            const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/.exec(trimmed);
-            if (match?.[1] !== undefined && match[2] !== undefined && match[3] !== undefined) {
-              setPendingPr({
-                owner: match[1],
-                repo: match[2],
-                number: Number(match[3]),
-              });
-            }
-            startIngestion({ url: trimmed });
-          }}
-        >
-          <label htmlFor="pr-url">GitHub pull request URL</label>
-          <div>
-            <input
-              id="pr-url"
-              value={url}
-              onChange={(event) => setUrl(event.target.value)}
-              placeholder="https://github.com/owner/repository/pull/42"
-            />
-            <button className="primary-button">Build journey</button>
-          </div>
-        </form>
-      )}
-
       {AsyncResult.isFailure(startResult) && (
         <div className="state-error">{String(startResult.cause)}</div>
-      )}
-
-      {transitionJob && (
-        <IngestionTransition
-          job={transitionJob}
-          title={transitionPr?.title ?? `Pull request #${transitionJob.pr.number}`}
-          onCancel={() => {
-            setPendingPr(null);
-            cancelIngestion(transitionJob.id);
-          }}
-          onRetry={() => analyze(transitionJob.pr)}
-        />
       )}
 
       {!pullRequestView.ready ? (
@@ -461,7 +502,7 @@ export function WelcomeScreen() {
 
       {merged.length > 0 && (
         <section className="recently-merged">
-          <h2>Recently merged</h2>
+          <h2>Merged</h2>
           {merged.map((pr) => (
             <PrRow
               key={pr.url}
@@ -475,6 +516,37 @@ export function WelcomeScreen() {
           ))}
         </section>
       )}
+
+      <form
+        className="add-pr"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const trimmed = url.trim();
+          if (!trimmed) return;
+          const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/.exec(trimmed);
+          if (match?.[1] !== undefined && match[2] !== undefined && match[3] !== undefined) {
+            setPendingPr({
+              owner: match[1],
+              repo: match[2],
+              number: Number(match[3]),
+            });
+          }
+          setHiddenTransitionId(null);
+          startIngestion({ url: trimmed });
+        }}
+      >
+        <MagnifyingGlass size={13} aria-hidden />
+        <label htmlFor="pr-url" className="sr-only">
+          GitHub pull request URL
+        </label>
+        <input
+          id="pr-url"
+          value={url}
+          onChange={(event) => setUrl(event.target.value)}
+          placeholder="Review a PR that isn’t in your list — paste its URL"
+        />
+        <button className="secondary-button">Open</button>
+      </form>
     </main>
   );
 }

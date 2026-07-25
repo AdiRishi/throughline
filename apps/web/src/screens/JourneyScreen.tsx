@@ -1,4 +1,5 @@
-import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomValue } from "@effect/atom-react";
+import { CaretDown, CaretRight, X } from "@phosphor-icons/react";
 import { useNavigate } from "@tanstack/react-router";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -13,8 +14,9 @@ import type {
   PrRef,
   ReadState,
 } from "@app/contracts";
-import { clusterProgress, journeyProgress } from "@app/journey/progress";
+import { clusterProgress } from "@app/journey/progress";
 
+import { WindowControls } from "../components/AppChrome.tsx";
 import { productAtoms } from "../state/product.ts";
 import { CodeSurface, type CodeFocus } from "./journey/CodeSurface.tsx";
 import { JourneyNavigation, type JourneyView } from "./journey/JourneyNavigation.tsx";
@@ -95,22 +97,18 @@ function Narrative({
 function JourneyOverview({
   journey,
   readState,
-  onBegin,
   onCluster,
   onEvidence,
 }: {
   readonly journey: Journey;
   readonly readState: ReadState;
-  readonly onBegin: () => void;
   readonly onCluster: (clusterId: ClusterId) => void;
   readonly onEvidence: (focus: CodeFocus, clusterId?: ClusterId) => void;
 }) {
-  const progress = journeyProgress(journey.hunks, readState);
   return (
     <section className="journey-overview">
-      <div className="overview-hero">
-        <p className="eyebrow">Journey overview</p>
-        <h1>{journey.prMetadata.title}</h1>
+      <section className="overview-section overview-brief">
+        <p className="eyebrow">The change, in brief</p>
         <div className="overview-copy">
           <Narrative
             markdown={journey.overview.brief.markdown}
@@ -118,62 +116,83 @@ function JourneyOverview({
             onEvidence={onEvidence}
           />
         </div>
-        <div className="where-to-begin">
-          <span>Where to begin</span>
-          <Narrative
-            markdown={journey.overview.whereToBegin.markdown}
-            journey={journey}
-            onEvidence={onEvidence}
-          />
-        </div>
-        <button className="primary-button" onClick={onBegin}>
-          {progress.read > 0 ? "Continue the journey" : "Begin the journey"} →
-        </button>
-      </div>
-      <ol className="journey-map">
-        {journey.clusters.map((cluster) => {
-          const item = clusterProgress(cluster.id, journey.hunks, readState.readFiles);
-          const owned = journey.hunks.filter((hunk) => hunk.home === cluster.id);
-          return (
-            <li key={cluster.id}>
+      </section>
+
+      <section className="overview-section">
+        <p className="eyebrow">The map of the journey</p>
+        <ol className="journey-map">
+          {journey.clusters.map((cluster) => {
+            const item = clusterProgress(cluster.id, journey.hunks, readState.readFiles);
+            const owned = journey.hunks.filter((hunk) => hunk.home === cluster.id);
+            return (
+              <li key={cluster.id}>
+                <button onClick={() => onCluster(cluster.id)}>
+                  <span>{cluster.position}</span>
+                  <div>
+                    <header>
+                      <h2>{cluster.title}</h2>
+                      <small>{cluster.weight}</small>
+                      <span>
+                        {cluster.fileOrder.length}{" "}
+                        {cluster.fileOrder.length === 1 ? "file" : "files"} · {owned.length}{" "}
+                        {owned.length === 1 ? "hunk" : "hunks"}
+                        <i>
+                          <span style={{ width: `${item.ratio * 100}%` }} />
+                        </i>
+                      </span>
+                    </header>
+                    <Narrative
+                      markdown={cluster.mapEntry.markdown}
+                      journey={journey}
+                      onEvidence={onEvidence}
+                    />
+                  </div>
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      </section>
+
+      <section className="overview-section where-to-begin">
+        <p className="eyebrow">Where to begin</p>
+        <Narrative
+          markdown={journey.overview.whereToBegin.markdown}
+          journey={journey}
+          onEvidence={onEvidence}
+        />
+        <div className="overview-route">
+          {journey.clusters.map((cluster, index) => (
+            <div key={cluster.id}>
               <button onClick={() => onCluster(cluster.id)}>
-                <span>{String(cluster.position).padStart(2, "0")}</span>
-                <div>
-                  <h2>{cluster.title}</h2>
-                  <Narrative
-                    markdown={cluster.mapEntry.markdown}
-                    journey={journey}
-                    onEvidence={onEvidence}
-                  />
-                  <small>
-                    {cluster.fileOrder.length} {cluster.fileOrder.length === 1 ? "file" : "files"} ·{" "}
-                    {owned.length} {owned.length === 1 ? "hunk" : "hunks"} · {item.read}/
-                    {item.total} read
-                  </small>
-                </div>
-                <strong>{cluster.weight}</strong>
+                <span>{cluster.position}</span>
+                {cluster.weight === "core"
+                  ? "read closely"
+                  : cluster.weight === "mechanical"
+                    ? "walk quickly"
+                    : "read deliberately"}
               </button>
-            </li>
-          );
-        })}
-      </ol>
+              {index < journey.clusters.length - 1 && <CaretRight size={11} aria-hidden />}
+            </div>
+          ))}
+        </div>
+      </section>
+
       <details className="pr-words">
-        <summary>The pull request’s own words</summary>
-        <h2>{journey.prMetadata.title}</h2>
-        <p>
-          {journey.prMetadata.author} · {journey.prMetadata.headBranch} into{" "}
-          {journey.prMetadata.baseBranch}
-        </p>
-        <ReactMarkdown>{journey.prMetadata.body || "_No description provided._"}</ReactMarkdown>
+        <summary>
+          <CaretRight size={11} weight="bold" aria-hidden />
+          The PR’s own words — title, description, author, link
+          <span>collapsed</span>
+        </summary>
+        <div>
+          <h2>{journey.prMetadata.title}</h2>
+          <p>
+            {journey.prMetadata.author} · {journey.prMetadata.headBranch} into{" "}
+            {journey.prMetadata.baseBranch}
+          </p>
+          <ReactMarkdown>{journey.prMetadata.body || "_No description provided._"}</ReactMarkdown>
+        </div>
       </details>
-      <footer className="overview-stats">
-        <span>{journey.clusters.length} clusters</span>
-        <span>{journey.files.length} files</span>
-        <span>
-          {journey.pinned.headSha.slice(0, 8)} against {journey.pinned.baseSha.slice(0, 8)}
-        </span>
-        <span>{Math.round(progress.ratio * 100)}% read</span>
-      </footer>
     </section>
   );
 }
@@ -349,6 +368,23 @@ function ReadingControls({
   );
 }
 
+function hintLabel(kind: Journey["hints"][number]["kind"]): string {
+  switch (kind) {
+    case "ripple":
+      return "Ripple context";
+    case "pattern-echo":
+      return "Pattern echo";
+    case "behavior":
+      return "Behavioral before / after";
+    case "resurfacing":
+      return "Resurfacing note";
+    case "complexity":
+      return "Complexity companion";
+    default:
+      return "Connection";
+  }
+}
+
 function LoadedJourney({
   journey,
   location,
@@ -363,13 +399,11 @@ function LoadedJourney({
   const [filesResult, loadFiles] = useAtom(productAtoms.loadFiles);
   const [markResult, markFile] = useAtom(productAtoms.markFile);
   const [displayResult, setDisplayMode] = useAtom(productAtoms.setDisplayMode);
-  const updatePrState = useAtomSet(productAtoms.updatePrState);
-  const startIngestion = useAtomSet(productAtoms.startIngestion);
   const [optimisticReadState, setOptimisticReadState] = useState<ReadState | null>(null);
   const [focus, setFocus] = useState<CodeFocus | null>(null);
   const [visiblePath, setVisiblePath] = useState<string | null>(null);
   const [openFiles, setOpenFiles] = useState<ReadonlyArray<string>>([]);
-  const [narrativeOpen, setNarrativeOpen] = useState(true);
+  const [narrativeOpen, setNarrativeOpen] = useState(false);
   const [guidanceOpen, setGuidanceOpen] = useState(true);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -470,7 +504,6 @@ function LoadedJourney({
     return <main className="journey-loading">Restoring your reading position…</main>;
   }
 
-  const progress = journeyProgress(journey.hunks, readState);
   const mark = (cluster: Cluster, path: string) => {
     const read = readState.readFiles.some(
       (entry) => entry.clusterId === cluster.id && entry.path === path,
@@ -502,59 +535,51 @@ function LoadedJourney({
     setFocus(nextFocus);
     onCluster(targetCluster.id);
   };
-  const firstUnread =
-    journey.clusters.find((cluster) => {
-      const item = clusterProgress(cluster.id, journey.hunks, readState.readFiles);
-      return item.read < item.total;
-    }) ?? journey.clusters[0];
-
+  const visibleHints =
+    selectedCluster === null
+      ? []
+      : journey.hints.filter(
+          (hint) =>
+            hint.clusterId === selectedCluster.id &&
+            (filePath === null || hint.anchor.path === filePath) &&
+            (filePath !== null || visiblePath === null || hint.anchor.path === visiblePath) &&
+            !(readState.displayMode === "just-the-code" && hint.anchor.side === "old"),
+        );
   return (
     <main className="journey-page">
       <header className="journey-header">
-        <div>
+        <div className="journey-header-leading">
+          <WindowControls />
           <span className="journey-repo">
             {journey.pr.owner}/{journey.pr.repo} · #{journey.pr.number}
           </span>
           <h1>{journey.prMetadata.title}</h1>
         </div>
-        <div className="journey-header-actions">
-          {stale && (
-            <button className="stale-action" onClick={() => startIngestion({ pr: journey.pr })}>
-              Rebuild for latest head
-            </button>
-          )}
-          <button onClick={() => updatePrState({ kind: "reviewed", pr: journey.pr, value: true })}>
-            Mark reviewed
-          </button>
-          <button
-            onClick={() => {
-              updatePrState({ kind: "hidden", pr: journey.pr, value: true });
-              navigate({ to: "/" });
-            }}
-          >
-            Hide
-          </button>
-          <a href={journey.prMetadata.url} target="_blank" rel="noreferrer">
-            Open on GitHub ↗
-          </a>
-          <span className="journey-total-progress">
-            <span style={{ width: `${progress.ratio * 100}%` }} />
-          </span>
-          <strong>{Math.round(progress.ratio * 100)}%</strong>
-        </div>
+        {location.view.type !== "overview" && (
+          <DisplayControls mode={readState.displayMode} onChange={changeMode} />
+        )}
       </header>
 
       {actionError && <div className="state-error">{actionError}</div>}
       {location.view.type === "overview" ? (
-        <JourneyOverview
-          journey={journey}
-          readState={readState}
-          onCluster={onCluster}
-          onEvidence={openEvidence}
-          onBegin={() => {
-            if (firstUnread) onCluster(firstUnread.id);
-          }}
-        />
+        <div className="overview-workspace">
+          <JourneyNavigation
+            journey={journey}
+            readState={readState}
+            view={location.view}
+            treePaths={treePaths}
+            stale={stale}
+            onOverview={onOverview}
+            onCluster={onCluster}
+            onFile={onFile}
+          />
+          <JourneyOverview
+            journey={journey}
+            readState={readState}
+            onCluster={onCluster}
+            onEvidence={openEvidence}
+          />
+        </div>
       ) : (
         <div className={guidanceOpen ? "reading-workspace" : "reading-workspace guidance-closed"}>
           <JourneyNavigation
@@ -578,30 +603,42 @@ function LoadedJourney({
               <>
                 {view.type === "cluster" ? (
                   <header className="cluster-story">
-                    <div>
-                      <p className="eyebrow">
-                        Cluster {selectedCluster.position} · {selectedCluster.weight}
-                      </p>
+                    <div className="cluster-title-row">
+                      <span>{selectedCluster.position}</span>
                       <h2>{selectedCluster.title}</h2>
+                      <small>{selectedCluster.weight}</small>
+                      <span className="cluster-scale">
+                        {selectedCluster.fileOrder.length}{" "}
+                        {selectedCluster.fileOrder.length === 1 ? "file" : "files"} ·{" "}
+                        {journey.hunks.filter((hunk) => hunk.home === selectedCluster.id).length}{" "}
+                        hunks
+                      </span>
                     </div>
-                    <div>
-                      <DisplayControls mode={readState.displayMode} onChange={changeMode} />
-                      <button
-                        className="narrative-toggle"
-                        onClick={() => setNarrativeOpen((value) => !value)}
-                      >
-                        {narrativeOpen ? "Collapse narrative" : "Open narrative"}
-                      </button>
-                    </div>
-                    {narrativeOpen && (
-                      <div className="cluster-narrative">
+                    <div
+                      className={
+                        narrativeOpen ? "cluster-narrative open" : "cluster-narrative collapsed"
+                      }
+                    >
+                      <div className="cluster-narrative-heading">
+                        <span>
+                          Narrative <small>· read ✓</small>
+                        </span>
+                        <button
+                          className="narrative-toggle"
+                          onClick={() => setNarrativeOpen((value) => !value)}
+                        >
+                          {narrativeOpen ? "collapse" : "expand"}
+                          <CaretDown size={10} weight="bold" />
+                        </button>
+                      </div>
+                      <div className="cluster-narrative-body">
                         <Narrative
                           markdown={selectedCluster.narrative.markdown}
                           journey={journey}
                           onEvidence={openEvidence}
                         />
                       </div>
-                    )}
+                    </div>
                   </header>
                 ) : (
                   <>
@@ -609,7 +646,7 @@ function LoadedJourney({
                       {openFiles.map((path) => (
                         <div key={path} className={path === filePath ? "active" : ""}>
                           <button className="file-tab-open" onClick={() => onFile(path)}>
-                            {path}
+                            {path.split("/").at(-1)}
                           </button>
                           <button
                             className="file-tab-close"
@@ -625,39 +662,19 @@ function LoadedJourney({
                               }
                             }}
                           >
-                            ×
+                            <X size={10} weight="bold" />
                           </button>
                         </div>
                       ))}
                     </nav>
-                    <header className="free-file-header">
-                      <div>
-                        <p className="eyebrow">Free reading</p>
-                        <h2>{filePath}</h2>
-                      </div>
-                      <DisplayControls mode={readState.displayMode} onChange={changeMode} />
-                      <div className="file-home-actions">
-                        {journey.clusters
-                          .filter(
-                            (cluster) => filePath !== null && cluster.fileOrder.includes(filePath),
-                          )
-                          .map((cluster) => {
-                            const read = readState.readFiles.some(
-                              (entry) => entry.clusterId === cluster.id && entry.path === filePath,
-                            );
-                            return (
-                              <button
-                                key={cluster.id}
-                                onClick={() => {
-                                  if (filePath !== null) mark(cluster, filePath);
-                                }}
-                              >
-                                {read ? "Read" : "Mark read"} · {cluster.title}
-                              </button>
-                            );
-                          })}
-                      </div>
-                    </header>
+                    <div className="file-breadcrumb">
+                      {filePath?.split("/").map((part, index, parts) => (
+                        <span key={`${part}-${index}`}>
+                          {part}
+                          {index < parts.length - 1 && <CaretRight size={9} aria-hidden />}
+                        </span>
+                      ))}
+                    </div>
                   </>
                 )}
                 {files === null ? (
@@ -679,6 +696,23 @@ function LoadedJourney({
                       onOpenCluster={onCluster}
                       onVisiblePath={setVisiblePath}
                     />
+                    {view.type === "file" && filePath !== null && (
+                      <div className="file-home-actions">
+                        <span>{filePath}</span>
+                        {journey.clusters
+                          .filter((cluster) => cluster.fileOrder.includes(filePath))
+                          .map((cluster) => {
+                            const read = readState.readFiles.some(
+                              (entry) => entry.clusterId === cluster.id && entry.path === filePath,
+                            );
+                            return (
+                              <button key={cluster.id} onClick={() => mark(cluster, filePath)}>
+                                {read ? "read" : "mark read"} · {cluster.position} {cluster.title}
+                              </button>
+                            );
+                          })}
+                      </div>
+                    )}
                     <ReadingControls
                       journey={journey}
                       cluster={selectedCluster}
@@ -692,75 +726,44 @@ function LoadedJourney({
                     />
                   </>
                 )}
-                {view.type === "cluster" && (
-                  <footer className="reading-navigation">
-                    <button
-                      disabled={selectedCluster.position <= 1}
-                      onClick={() => {
-                        const previous = journey.clusters[selectedCluster.position - 2];
-                        if (previous) onCluster(previous.id);
-                      }}
-                    >
-                      ← Previous cluster
-                    </button>
-                    <button
-                      disabled={selectedCluster.position >= journey.clusters.length}
-                      onClick={() => {
-                        const next = journey.clusters[selectedCluster.position];
-                        if (next) onCluster(next.id);
-                      }}
-                    >
-                      Next cluster →
-                    </button>
-                  </footer>
-                )}
               </>
             )}
           </section>
 
           {guidanceOpen ? (
             <aside className="guidance-rail">
-              <div>
-                <p className="eyebrow">Guidance</p>
+              <div className="guidance-heading">
+                <p>
+                  Guidance <span>· following your position</span>
+                </p>
                 <button aria-label="Collapse guidance" onClick={() => setGuidanceOpen(false)}>
-                  ×
+                  <CaretRight size={11} weight="bold" />
                 </button>
               </div>
-              {selectedCluster === null ||
-              journey.hints.filter((hint) => hint.clusterId === selectedCluster.id).length === 0 ? (
+              {visibleHints.length === 0 ? (
                 <p className="guidance-empty">
                   No extra guidance here. The cluster narrative and code are complete on their own.
                 </p>
               ) : (
-                journey.hints
-                  .filter(
-                    (hint) =>
-                      hint.clusterId === selectedCluster.id &&
-                      (filePath === null || hint.anchor.path === filePath) &&
-                      (filePath !== null ||
-                        visiblePath === null ||
-                        hint.anchor.path === visiblePath) &&
-                      !(readState.displayMode === "just-the-code" && hint.anchor.side === "old"),
-                  )
-                  .map((hint) => (
-                    <button
-                      key={hint.id}
-                      className="guidance-hint"
-                      onClick={() =>
-                        setFocus({
-                          path: hint.anchor.path,
-                          lineNumber: hint.anchor.startLine,
-                          side: hint.anchor.side === "old" ? "deletions" : "additions",
-                        })
-                      }
-                    >
-                      <span>{hint.kind.replace("-", " ")}</span>
-                      <ReactMarkdown>{hint.body.markdown}</ReactMarkdown>
-                      <code>
-                        {hint.anchor.path}:{hint.anchor.startLine}
-                      </code>
-                    </button>
-                  ))
+                visibleHints.map((hint, index) => (
+                  <button
+                    key={hint.id}
+                    className={index === 0 ? "guidance-hint active" : "guidance-hint"}
+                    onClick={() =>
+                      setFocus({
+                        path: hint.anchor.path,
+                        lineNumber: hint.anchor.startLine,
+                        side: hint.anchor.side === "old" ? "deletions" : "additions",
+                      })
+                    }
+                  >
+                    <span>{hintLabel(hint.kind)}</span>
+                    <ReactMarkdown>{hint.body.markdown}</ReactMarkdown>
+                    <code>
+                      {hint.anchor.path} · L{hint.anchor.startLine}
+                    </code>
+                  </button>
+                ))
               )}
             </aside>
           ) : (
