@@ -14,11 +14,15 @@ This project is documentation-first; the docs are authoritative over any assumpt
 
 1. [`docs/VISION.md`](./docs/VISION.md) — why Throughline exists and the principles that bind it. Where documents conflict, the vision wins.
 2. [`docs/PRODUCT.md`](./docs/PRODUCT.md) → [`docs/product/`](./docs/product/) — what the product does, surface by surface.
-3. [`docs/TECHNICAL.md`](./docs/TECHNICAL.md) → [`docs/technical/`](./docs/technical/) — how it's built: architecture, domain model, GitHub access, the analysis pipeline, the frontend.
+3. [`docs/TECHNICAL.md`](./docs/TECHNICAL.md) → [`docs/technical/`](./docs/technical/) — how it's built: architecture, domain model, GitHub access, the analysis pipeline, the frontend, observability.
 4. [`CONTEXT.md`](./CONTEXT.md) — the domain glossary (journey, cluster, hunk, home, coverage…). Use these terms exactly, including their listed _avoid_ words.
 5. [`docs/adr/`](./docs/adr/AGENTS.md) — why the hard-to-reverse decisions were made.
 
 Any change that contradicts these documents is wrong until the documents are changed first.
+
+## Debugging a running app
+
+Logs and traces from all three processes land in one directory — `<repo>/.logs` in dev (the dev runner prints it at startup), `<app-data>/throughline/logs` when packaged. Read [`docs/technical/06-observability.md`](./docs/technical/06-observability.md) before adding logging or hunting a runtime failure; it covers where renderer logs go (forwarded to the server as OTLP spans), where the server child's crash output goes (`server-child.log`), and the `jq` recipes for reading the trace files.
 
 ## Core Priorities
 

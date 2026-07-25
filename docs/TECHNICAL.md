@@ -9,6 +9,7 @@ This file is the map. Each area has its own document in [`docs/technical/`](./te
 3. [**GitHub access & workspaces**](./technical/03-github.md) — everything rides `gh`, through one module whose rate discipline is structural.
 4. [**The analysis pipeline**](./technical/04-analysis.md) — the harness seam (Codex + Claude now, ACP later), the staged runs, and repair-then-commit.
 5. [**The frontend**](./technical/05-frontend.md) — state architecture and how the product surfaces map onto `@pierre/diffs` and `@pierre/trees`.
+6. [**Observability**](./technical/06-observability.md) — where logs and traces go in every run mode, and how to read them.
 
 ## Commitments that bind every document
 

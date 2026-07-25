@@ -24,12 +24,14 @@ import {
   WsRpcGroup,
   type ServerLifecycleStreamEvent,
 } from "@app/contracts";
+import type { TraceRecord } from "@app/shared/observability";
 
 import * as Auth from "../src/auth.ts";
 import * as ServerConfig from "../src/config.ts";
-import { AUTH_BOOTSTRAP_PATH, HEALTH_PATH } from "../src/http.ts";
+import { AUTH_BOOTSTRAP_PATH, HEALTH_PATH, OTLP_TRACES_PROXY_PATH } from "../src/http.ts";
 import * as LifecycleEvents from "../src/lifecycleEvents.ts";
 import * as NotesStore from "../src/notes/NotesStore.ts";
+import * as BrowserTraceCollector from "../src/observability/BrowserTraceCollector.ts";
 import * as Readiness from "../src/readiness.ts";
 import { routesLayer } from "../src/server.ts";
 
@@ -49,6 +51,8 @@ interface HarnessOptions {
   readonly staticDir?: string;
   readonly devWebUrl?: URL;
   readonly lifecycleEvents?: Partial<LifecycleEvents.ServerLifecycleEvents["Service"]>;
+  /** Collects records the OTLP route pushed, so tests can assert on them. */
+  readonly traceRecords?: Array<TraceRecord>;
 }
 
 /** The real route stack + services over the platform test server. */
@@ -56,6 +60,14 @@ const appLayer = (options: HarnessOptions = {}) =>
   HttpRouter.serve(routesLayer).pipe(
     Layer.provideMerge(
       Layer.mergeAll(
+        // Stands in for ObservabilityLive's collector, which the production
+        // graph wires to the same sink the local file tracer writes to.
+        Layer.succeed(BrowserTraceCollector.BrowserTraceCollector, {
+          record: (records) =>
+            Effect.sync(() => {
+              options.traceRecords?.push(...records);
+            }),
+        }),
         Auth.layer,
         options.lifecycleEvents === undefined
           ? LifecycleEvents.layer
@@ -79,6 +91,18 @@ const appLayer = (options: HarnessOptions = {}) =>
               devWebUrl: options.devWebUrl,
               bootstrapToken: BOOTSTRAP_TOKEN,
               dataDir: NodePath.join(SCRATCH, "data"),
+              logDir: NodePath.join(SCRATCH, "data", "logs"),
+              serverTracePath: NodePath.join(SCRATCH, "data", "logs", "server.trace.ndjson"),
+              logLevel: "Info",
+              traceMinLevel: "Info",
+              traceTimingEnabled: true,
+              traceBatchWindowMs: 200,
+              traceMaxBytes: 10 * 1024 * 1024,
+              traceMaxFiles: 10,
+              otlpTracesUrl: undefined,
+              otlpMetricsUrl: undefined,
+              otlpExportIntervalMs: 10_000,
+              otlpServiceName: "throughline-test",
             }),
           );
         }),
@@ -326,5 +350,93 @@ describe("dev redirect", () => {
       const response = yield* rawGet(HEALTH_PATH);
       assert.equal(response.status, 503);
     }).pipe(Effect.provide(appLayer({ devWebUrl: new URL("http://127.0.0.1:5173") }))),
+  );
+});
+
+// One resource span carrying one client span, in the wire shape the renderer's
+// `OtlpTracer` produces. Hand-authored rather than captured from a live
+// exporter so the test asserts the decode contract, not the exporter's timing.
+const BROWSER_OTLP_PAYLOAD = {
+  resourceSpans: [
+    {
+      resource: {
+        attributes: [{ key: "service.name", value: { stringValue: "throughline-web" } }],
+      },
+      scopeSpans: [
+        {
+          scope: { name: "@effect/opentelemetry", version: "0.0.0" },
+          spans: [
+            {
+              name: "clientRuntime.rpc.request",
+              traceId: "11111111111111111111111111111111",
+              spanId: "2222222222222222",
+              parentSpanId: "3333333333333333",
+              kind: 3,
+              startTimeUnixNano: "1000000",
+              endTimeUnixNano: "2000000",
+              attributes: [{ key: "rpc.method", value: { stringValue: "server.getConfig" } }],
+              events: [],
+              links: [],
+              status: { code: 0 },
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+describe("browser OTLP trace ingest", () => {
+  it.effect("decodes renderer spans into the shared trace sink", () =>
+    Effect.gen(function* () {
+      const traceRecords: Array<TraceRecord> = [];
+
+      const response = yield* postJson(
+        OTLP_TRACES_PROXY_PATH,
+        JSON.stringify(BROWSER_OTLP_PAYLOAD),
+      ).pipe(Effect.provide(appLayer({ traceRecords })));
+
+      assert.equal(response.status, 204);
+      assert.equal(traceRecords.length, 1);
+
+      const record = traceRecords[0];
+      assert.equal(record?.type, "otlp-span");
+      assert.equal(record?.name, "clientRuntime.rpc.request");
+      // The traceId is what joins this renderer span to the server span it
+      // triggered, once both are in the same file.
+      assert.equal(record?.traceId, "11111111111111111111111111111111");
+      assert.equal(record?.parentSpanId, "3333333333333333");
+      assert.equal(record?.kind, "client");
+      assert.equal(record?.durationMs, 1);
+      assert.deepEqual(record?.attributes, { "rpc.method": "server.getConfig" });
+    }),
+  );
+
+  it.effect("answers 400 on a malformed body instead of failing the request", () =>
+    Effect.gen(function* () {
+      const traceRecords: Array<TraceRecord> = [];
+
+      const response = yield* postJson(OTLP_TRACES_PROXY_PATH, "not json at all").pipe(
+        Effect.provide(appLayer({ traceRecords })),
+      );
+
+      assert.equal(response.status, 400);
+      assert.deepEqual(traceRecords, []);
+    }),
+  );
+
+  it.effect("swallows an undecodable OTLP payload rather than rejecting it", () =>
+    Effect.gen(function* () {
+      // Telemetry must never be the thing that breaks the app reporting it.
+      const traceRecords: Array<TraceRecord> = [];
+
+      const response = yield* postJson(
+        OTLP_TRACES_PROXY_PATH,
+        JSON.stringify({ resourceSpans: "not-an-array" }),
+      ).pipe(Effect.provide(appLayer({ traceRecords })));
+
+      assert.equal(response.status, 204);
+      assert.deepEqual(traceRecords, []);
+    }),
   );
 });

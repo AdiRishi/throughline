@@ -120,10 +120,18 @@ async function main(): Promise<void> {
   const wsUrl = `ws://127.0.0.1:${serverPort}`;
   const devWebUrl = `http://localhost:${webPort}`;
 
+  // Dev artifacts land in the checkout, not the platform app-data directory:
+  // it keeps a dev run from polluting the installed app's history, and it means
+  // "where are the logs" is answerable without knowing a per-OS path.
+  const logDir = process.env["APP_LOG_DIR"] ?? NodePath.join(REPO_ROOT, ".logs");
+  const logLevel = process.env["APP_LOG_LEVEL"] ?? "Info";
+
   const serverEnv: NodeJS.ProcessEnv = {
     APP_SERVER_PORT: String(serverPort),
     APP_BOOTSTRAP_TOKEN: bootstrapToken,
     APP_DEV_WEB_URL: devWebUrl,
+    APP_LOG_DIR: logDir,
+    APP_LOG_LEVEL: logLevel,
   };
   const webEnv: NodeJS.ProcessEnv = {
     PORT: String(webPort),
@@ -134,6 +142,10 @@ async function main(): Promise<void> {
   const desktopEnv: NodeJS.ProcessEnv = {
     APP_SERVER_PORT: String(serverPort),
     APP_DEV_WEB_URL: devWebUrl,
+    // The shell forwards these to the server child it spawns, so every process
+    // in a `dev:desktop` run writes to the same directory.
+    APP_LOG_DIR: logDir,
+    APP_LOG_LEVEL: logLevel,
     // The shell spawns the server via Electron-as-node, which can't run `.ts`,
     // so point it at the built bundle (dev:desktop builds it first, below).
     APP_SERVER_ENTRY: NodePath.join(REPO_ROOT, "apps/server/dist/bin.mjs"),
@@ -145,7 +157,11 @@ async function main(): Promise<void> {
       : `[dev-runner] open ${devWebUrl} in a browser, or run \`pnpm dev:desktop\` for the shell.\n`;
 
   process.stdout.write(
-    `[dev-runner] mode=${mode} server=${serverPort} web=${webPort}\n` + targetMessage,
+    `[dev-runner] mode=${mode} server=${serverPort} web=${webPort}\n` +
+      `[dev-runner] logs: ${logDir} (server.trace.ndjson` +
+      (mode === "dev:desktop" ? ", desktop.trace.ndjson, server-child.log" : "") +
+      `)\n` +
+      targetMessage,
   );
 
   const children: NodeChildProcess.ChildProcess[] = [];

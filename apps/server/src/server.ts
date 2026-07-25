@@ -26,10 +26,12 @@ import {
   authBootstrapRouteLayer,
   corsLayer,
   healthRouteLayer,
+  otlpTracesRouteLayer,
   staticAndDevRouteLayer,
 } from "./http.ts";
 import * as LifecycleEvents from "./lifecycleEvents.ts";
 import * as NotesStore from "./notes/NotesStore.ts";
+import { ObservabilityLive } from "./observability/Layers/Observability.ts";
 import * as Readiness from "./readiness.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 
@@ -46,6 +48,7 @@ const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 export const routesLayer = Layer.mergeAll(
   healthRouteLayer,
   authBootstrapRouteLayer,
+  otlpTracesRouteLayer,
   websocketRpcRouteLayer,
   staticAndDevRouteLayer,
 ).pipe(Layer.provide(corsLayer));
@@ -119,6 +122,10 @@ export const makeServerLayer = Layer.unwrap(
     return applicationLayer.pipe(
       Layer.provideMerge(RuntimeServicesLive),
       Layer.provideMerge(httpServerLayer),
+      // Under everything: the logger, the trace-level references, the local
+      // file tracer, and the browser trace collector. Installed here (rather
+      // than around the CLI) because it is built from `ServerConfig`.
+      Layer.provideMerge(ObservabilityLive),
       // The stack's only HttpClient (NodeServices does not bundle one).
       // Nothing consumes it yet; it is pre-wired for handlers that make
       // outbound requests. Global fetch, not the undici-based Node client:

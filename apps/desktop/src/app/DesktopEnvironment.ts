@@ -2,6 +2,7 @@ import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as LogLevel from "effect/LogLevel";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
@@ -18,6 +19,17 @@ import { DEFAULT_DESKTOP_SETTINGS } from "../settings/DesktopAppSettings.ts";
 
 const APP_BASE_NAME = "Throughline";
 const DEFAULT_BACKEND_PORT = 13773;
+const DEFAULT_OTLP_EXPORT_INTERVAL_MS = 10_000;
+
+/**
+ * Case-insensitive `LogLevel` parse. An unrecognized value falls back rather
+ * than failing: a typo in an env var must not stop the shell from booting.
+ */
+function parseLogLevel(value: string | undefined, fallback: LogLevel.LogLevel): LogLevel.LogLevel {
+  if (value === undefined) return fallback;
+  const normalized = value.trim().toLowerCase();
+  return LogLevel.values.find((level) => level.toLowerCase() === normalized) ?? fallback;
+}
 
 export interface MakeDesktopEnvironmentInput {
   /** `__dirname` of the built main.cjs (dist-electron). */
@@ -34,6 +46,14 @@ export interface MakeDesktopEnvironmentInput {
   readonly xdgConfigHome: Option.Option<string>;
   /** `APP_SERVER_ENTRY` override, if set. */
   readonly serverEntryOverride: Option.Option<string>;
+  /** `APP_LOG_DIR` override, if set. Shared with the spawned server child. */
+  readonly logDirOverride: Option.Option<string>;
+  /** `APP_LOG_LEVEL`, if set. */
+  readonly logLevel: Option.Option<string>;
+  /** `APP_OTLP_TRACES_URL`, if set. Local tracing works regardless. */
+  readonly otlpTracesUrl: Option.Option<string>;
+  /** `APP_OTLP_EXPORT_INTERVAL_MS`, if set. */
+  readonly otlpExportIntervalMs: Option.Option<number>;
   /** `APP_SERVER_PORT`, if set. */
   readonly configuredBackendPort: Option.Option<number>;
   /** `APP_DEV_WEB_URL` dev-server URL, if set (renderer served here in dev). */
@@ -58,7 +78,11 @@ export class DesktopEnvironment extends Context.Service<
      */
     readonly baseDir: string;
     readonly desktopSettingsPath: string;
+    /** Holds `desktop.trace.ndjson`, `server-child.log`, and the server's own artifacts. */
     readonly logDir: string;
+    readonly logLevel: LogLevel.LogLevel;
+    readonly otlpTracesUrl: Option.Option<string>;
+    readonly otlpExportIntervalMs: number;
     readonly preloadPath: string;
     /** Absolute path to the server entry to spawn. */
     readonly backendEntryPath: string;
@@ -99,7 +123,9 @@ export function makeWith(
         ? path.join(input.homeDirectory, "Library", "Application Support")
         : Option.getOrElse(input.xdgConfigHome, () => path.join(input.homeDirectory, ".config"));
   const baseDir = path.join(appDataDirectory, "throughline");
-  const logDir = path.join(baseDir, "logs");
+  // `APP_LOG_DIR` wins so a dev checkout can keep its artifacts in one known
+  // place; the shell hands the same resolved value to the server child.
+  const logDir = Option.getOrElse(input.logDirOverride, () => path.join(baseDir, "logs"));
   const desktopSettingsPath = path.join(baseDir, "desktop-settings.json");
   const preloadPath = path.join(input.dirname, "preload.cjs");
 
@@ -137,6 +163,12 @@ export function makeWith(
     baseDir,
     desktopSettingsPath,
     logDir,
+    logLevel: parseLogLevel(Option.getOrUndefined(input.logLevel), "Info"),
+    otlpTracesUrl: input.otlpTracesUrl,
+    otlpExportIntervalMs: Option.getOrElse(
+      input.otlpExportIntervalMs,
+      () => DEFAULT_OTLP_EXPORT_INTERVAL_MS,
+    ),
     preloadPath,
     backendEntryPath,
     backendCwd,
@@ -170,6 +202,12 @@ export function layer(
       const appDataDirectory = yield* Config.string("APPDATA").pipe(Config.option);
       const xdgConfigHome = yield* Config.string("XDG_CONFIG_HOME").pipe(Config.option);
       const serverEntryOverride = yield* Config.string("APP_SERVER_ENTRY").pipe(Config.option);
+      const logDirOverride = yield* Config.string("APP_LOG_DIR").pipe(Config.option);
+      const logLevel = yield* Config.string("APP_LOG_LEVEL").pipe(Config.option);
+      const otlpTracesUrl = yield* Config.string("APP_OTLP_TRACES_URL").pipe(Config.option);
+      const otlpExportIntervalMs = yield* Config.int("APP_OTLP_EXPORT_INTERVAL_MS").pipe(
+        Config.option,
+      );
       const configuredBackendPort = yield* Config.port("APP_SERVER_PORT").pipe(Config.option);
       const devServerUrl = yield* Config.url("APP_DEV_WEB_URL").pipe(Config.option);
       return makeWith(
@@ -178,6 +216,10 @@ export function layer(
           appDataDirectory,
           xdgConfigHome,
           serverEntryOverride,
+          logDirOverride,
+          logLevel,
+          otlpTracesUrl,
+          otlpExportIntervalMs,
           configuredBackendPort,
           devServerUrl,
         },

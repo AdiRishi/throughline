@@ -12,6 +12,7 @@ import type * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import type * as LogLevel from "effect/LogLevel";
 import * as Path from "effect/Path";
 
 import packageJson from "../package.json" with { type: "json" };
@@ -19,6 +20,16 @@ import packageJson from "../package.json" with { type: "json" };
 export const DEFAULT_PORT = 13773;
 export const DEFAULT_HOST = "127.0.0.1";
 export const APP_NAME = "Throughline";
+
+// Observability defaults. Rotation keeps the trace file bounded across months
+// of desktop sessions; the batch window keeps `tail -f` feeling live without a
+// write per span.
+export const TRACE_FILE_NAME = "server.trace.ndjson";
+export const DEFAULT_TRACE_MAX_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_TRACE_MAX_FILES = 10;
+export const DEFAULT_TRACE_BATCH_WINDOW_MS = 200;
+export const DEFAULT_OTLP_EXPORT_INTERVAL_MS = 10_000;
+export const DEFAULT_OTLP_SERVICE_NAME = "throughline-server";
 /** Single-sourced from package.json so `--version` can't drift from the manifest. */
 export const APP_VERSION: string = packageJson.version;
 
@@ -42,6 +53,25 @@ export class ServerConfig extends Context.Service<
     readonly bootstrapToken: string;
     /** Where the server persists domain state (created on first write). */
     readonly dataDir: string;
+    /** Where log/trace artifacts are written (created on first write). */
+    readonly logDir: string;
+    /**
+     * The persisted observability artifact: completed spans as NDJSON. Logs
+     * reach it as span events via `Logger.tracerLogger` — stdout is for humans,
+     * this file is the record.
+     */
+    readonly serverTracePath: string;
+    readonly logLevel: LogLevel.LogLevel;
+    readonly traceMinLevel: LogLevel.LogLevel;
+    readonly traceTimingEnabled: boolean;
+    readonly traceBatchWindowMs: number;
+    readonly traceMaxBytes: number;
+    readonly traceMaxFiles: number;
+    /** Optional OTLP export; local tracing works regardless. */
+    readonly otlpTracesUrl: string | undefined;
+    readonly otlpMetricsUrl: string | undefined;
+    readonly otlpExportIntervalMs: number;
+    readonly otlpServiceName: string;
   }
 >()("@app/server/config/ServerConfig") {}
 

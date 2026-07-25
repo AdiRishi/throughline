@@ -18,6 +18,9 @@ const DESKTOP_BACKEND_ENV_NAMES = [
   "APP_BOOTSTRAP_TOKEN",
   "APP_DATA_DIR",
   "APP_DEV_WEB_URL",
+  "APP_LOG_DIR",
+  "APP_LOG_LEVEL",
+  "APP_OTLP_TRACES_URL",
   "APP_SERVER_HOST",
   "APP_SERVER_PORT",
 ] as const;
@@ -98,6 +101,16 @@ export const make = Effect.gen(function* () {
             // both re-provided here from the resolved environment rather than
             // inherited from the shell's own (clearable) env.
             APP_DATA_DIR: environment.baseDir,
+            // The shell already resolved where artifacts go and how verbose to
+            // be; hand the child the resolved answer so `desktop.trace.ndjson`,
+            // `server-child.log`, and `server.trace.ndjson` share one directory
+            // whether the shell inherited an override or derived a default.
+            APP_LOG_DIR: environment.logDir,
+            APP_LOG_LEVEL: environment.logLevel,
+            ...Option.match(environment.otlpTracesUrl, {
+              onNone: () => ({}),
+              onSome: (otlpTracesUrl) => ({ APP_OTLP_TRACES_URL: otlpTracesUrl }),
+            }),
             ...Option.match(environment.devServerUrl, {
               onNone: () => ({}),
               onSome: (devServerUrl) => ({ APP_DEV_WEB_URL: devServerUrl.href }),

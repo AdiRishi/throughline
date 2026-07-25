@@ -21,6 +21,7 @@ import { waitForHttpReady } from "@app/shared/httpReadiness";
 import { NetService } from "@app/shared/Net";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import * as DesktopObservability from "../app/DesktopObservability.ts";
 import { makeComponentLogger } from "../app/DesktopObservability.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
@@ -108,15 +109,21 @@ interface DesktopBackendReadyCallbacks {
 }
 
 /**
- * Where the child's stdout/stderr go. Dev keeps `inherit` so `pnpm dev`
- * streams to the terminal; packaged apps have no console, so output is
- * captured to `logDir/server-child.log` — otherwise a failing production
- * backend leaves no artifact at all. Appended across runs; no rotation (a
- * starter's log volume is a few lines per boot).
+ * Drain one of the child's output streams into the shell's backend output log,
+ * which records it to `server-child.log` and (in development) echoes it to the
+ * shell's own stdout/stderr. Failures are ignored: a broken log must never take
+ * the backend down with it.
  */
-type BackendOutputTarget =
-  | { readonly _tag: "inherit" }
-  | { readonly _tag: "file"; readonly directory: string; readonly filePath: string };
+function drainBackendOutput(
+  streamName: "stdout" | "stderr",
+  stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>,
+  onOutput: DesktopObservability.DesktopBackendOutputLogShape["writeOutputChunk"],
+): Effect.Effect<void> {
+  return stream.pipe(
+    Stream.runForEach((chunk) => onOutput(streamName, chunk)),
+    Effect.ignore,
+  );
+}
 
 export interface DesktopBackendManagerShape {
   readonly start: Effect.Effect<void>;
@@ -162,6 +169,7 @@ const calculateRestartDelay = (attempt: number): Duration.Duration =>
 type ManagerServices =
   | DesktopBackendConfiguration.DesktopBackendConfiguration
   | DesktopEnvironment.DesktopEnvironment
+  | DesktopObservability.DesktopBackendOutputLog
   | NetService
   | FileSystem.FileSystem
   | ChildProcessSpawner.ChildProcessSpawner
@@ -183,7 +191,7 @@ const resolvePort = Effect.fn("desktop.backend.resolvePort")(function* (
 // Spawn the child + probe readiness (in a forked fiber), then wait for exit.
 const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(function* (
   config: DesktopBackendStartConfig,
-  output: BackendOutputTarget,
+  backendOutputLog: DesktopObservability.DesktopBackendOutputLogShape,
   callbacks: {
     readonly onStarted: (pid: number) => Effect.Effect<void>;
     readonly onReady: Effect.Effect<void>;
@@ -201,7 +209,6 @@ const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(functio
   const bootstrapJson = yield* encodeBootstrapEnvelopeJson(config.bootstrapEnvelope).pipe(
     Effect.mapError((cause) => new DesktopBackendBootstrapEncodeError({ cause })),
   );
-  const stdio = output._tag === "file" ? ("pipe" as const) : ("inherit" as const);
   const command = ChildProcess.make(config.executablePath, [...config.args], {
     cwd: config.cwd,
     env: config.env,
@@ -209,8 +216,11 @@ const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(functio
     // the parent env on top so PATH and friends are still available to the child.
     extendEnv: true,
     stdin: "ignore",
-    stdout: stdio,
-    stderr: stdio,
+    // Always piped, never inherited: the shell has to see the child's bytes to
+    // record them, and a packaged build has no terminal to inherit anyway. The
+    // dev terminal still gets them, echoed by the backend output log.
+    stdout: "pipe",
+    stderr: "pipe",
     killSignal: "SIGTERM",
     forceKillAfter: TERMINATE_GRACE,
     additionalFds: {
@@ -230,22 +240,13 @@ const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(functio
     );
   yield* callbacks.onStarted(handle.pid);
 
-  if (output._tag === "file") {
-    // Scoped file: closed when this run's scope closes. Log I/O failures must
-    // never take the backend down, so the drain is fire-and-forget with logging.
-    yield* Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      yield* fileSystem.makeDirectory(output.directory, { recursive: true });
-      const file = yield* fileSystem.open(output.filePath, { flag: "a" });
-      const header = `--- backend start pid=${handle.pid} port=${config.port}\n`;
-      yield* file.writeAll(new TextEncoder().encode(header));
-      yield* handle.all.pipe(
-        Stream.runForEach((chunk) => file.writeAll(chunk)),
-        Effect.ignore({ log: true }),
-        Effect.forkScoped,
-      );
-    }).pipe(Effect.ignore({ log: true }));
-  }
+  // Both drains live for this run's scope and die with it.
+  yield* drainBackendOutput("stdout", handle.stdout, backendOutputLog.writeOutputChunk).pipe(
+    Effect.forkScoped,
+  );
+  yield* drainBackendOutput("stderr", handle.stderr, backendOutputLog.writeOutputChunk).pipe(
+    Effect.forkScoped,
+  );
 
   yield* waitForHttpReady({
     baseUrl: config.httpBaseUrl.href,
@@ -284,17 +285,10 @@ export const makeManager = (
     const fileSystem = yield* FileSystem.FileSystem;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const httpClient = yield* HttpClient.HttpClient;
+    const backendOutputLog = yield* DesktopObservability.DesktopBackendOutputLog;
     const parentScope = yield* Scope.Scope;
     const state = yield* Ref.make(initialState);
     const mutex = yield* Semaphore.make(1);
-
-    const outputTarget: BackendOutputTarget = environment.isPackaged
-      ? {
-          _tag: "file",
-          directory: environment.logDir,
-          filePath: environment.path.join(environment.logDir, "server-child.log"),
-        }
-      : { _tag: "inherit" };
 
     const currentConfig = Ref.get(state).pipe(Effect.map((current) => current.config));
 
@@ -427,6 +421,7 @@ export const makeManager = (
                   ] as const;
                 });
                 if (isCurrentRun) {
+                  yield* backendOutputLog.writeSessionBoundary({ phase: "END", details: reason });
                   yield* callbacks.onNotReady;
                   const latest = yield* Ref.get(state);
                   if (latest.desiredRunning) {
@@ -437,7 +432,7 @@ export const makeManager = (
             );
           });
 
-          const program = runBackendProcess(config.value, outputTarget, {
+          const program = runBackendProcess(config.value, backendOutputLog, {
             onStarted: (pid) =>
               Effect.gen(function* () {
                 yield* Ref.update(state, (latest) => ({
@@ -446,6 +441,10 @@ export const makeManager = (
                     run.id === runId ? { ...run, pid: Option.some(pid) } : run,
                   ),
                 }));
+                yield* backendOutputLog.writeSessionBoundary({
+                  phase: "START",
+                  details: `pid=${pid} port=${config.value.port} cwd=${config.value.cwd}`,
+                });
                 yield* logInfo("backend started", {
                   pid,
                   port: config.value.port,
@@ -547,6 +546,7 @@ export const layer: Layer.Layer<
   never,
   | DesktopBackendConfiguration.DesktopBackendConfiguration
   | DesktopEnvironment.DesktopEnvironment
+  | DesktopObservability.DesktopBackendOutputLog
   | DesktopWindow.DesktopWindow
   | NetService
   | FileSystem.FileSystem

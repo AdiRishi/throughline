@@ -8,16 +8,28 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import * as Schema from "effect/Schema";
+import {
+  HttpBody,
+  HttpClient,
+  HttpClientResponse,
+  HttpRouter,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/unstable/http";
+import type * as OtlpTracer from "effect/unstable/observability/OtlpTracer";
 
 import { BearerSessionJson, BootstrapBearerInput, type BearerSession } from "@app/contracts";
+import { decodeOtlpTraceRecords } from "@app/shared/observability";
 
 import * as Auth from "./auth.ts";
 import * as ServerConfig from "./config.ts";
+import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as Readiness from "./readiness.ts";
 
 export const HEALTH_PATH = "/.well-known/app/health";
 export const AUTH_BOOTSTRAP_PATH = "/api/auth/bootstrap/bearer";
+export const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 
 // Encodes via the JSON wire codec so `expires_at` leaves as an ISO string —
 // `HttpServerResponse.json` alone would stringify the raw DateTime instance,
@@ -104,6 +116,68 @@ export const authBootstrapRouteLayer = HttpRouter.add(
     // Encoding a value we just constructed can only fail on a schema bug — die.
     return yield* respondBearerSession(session).pipe(Effect.orDie);
   }),
+);
+
+class DecodeOtlpTraceRecordsError extends Schema.TaggedErrorClass<DecodeOtlpTraceRecordsError>()(
+  "DecodeOtlpTraceRecordsError",
+  {
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Failed to decode browser OTLP traces.";
+  }
+}
+
+/**
+ * `POST /api/observability/v1/traces` — where the renderer's `OtlpTracer`
+ * exports its spans.
+ *
+ * Records land in the same sink the server's own tracer writes to, so a
+ * renderer span and the server span it triggered sit in one file under one
+ * `traceId`. When an upstream OTLP collector is configured the payload is also
+ * forwarded to it.
+ *
+ * A decode failure is logged and swallowed: telemetry must never be the thing
+ * that breaks the app reporting its telemetry.
+ */
+export const otlpTracesRouteLayer = HttpRouter.add(
+  "POST",
+  OTLP_TRACES_PROXY_PATH,
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const config = yield* ServerConfig.ServerConfig;
+    const collector = yield* BrowserTraceCollector.BrowserTraceCollector;
+    const httpClient = yield* HttpClient.HttpClient;
+    // OTLP payloads are validated by `decodeOtlpTraceRecords` below, not by the
+    // JSON reader, so the shape is asserted rather than parsed here.
+    const bodyJson = (yield* request.json) as unknown as OtlpTracer.TraceData;
+
+    yield* Effect.try({
+      try: () => decodeOtlpTraceRecords(bodyJson),
+      catch: (cause) => new DecodeOtlpTraceRecordsError({ cause }),
+    }).pipe(
+      Effect.flatMap((records) => collector.record(records)),
+      Effect.catch((cause) => Effect.logWarning("Failed to decode browser OTLP traces", { cause })),
+    );
+
+    const otlpTracesUrl = config.otlpTracesUrl;
+    if (otlpTracesUrl === undefined) {
+      return HttpServerResponse.empty({ status: 204 });
+    }
+
+    return yield* httpClient.post(otlpTracesUrl, { body: HttpBody.jsonUnsafe(bodyJson) }).pipe(
+      Effect.flatMap(HttpClientResponse.filterStatusOk),
+      Effect.as(HttpServerResponse.empty({ status: 204 })),
+      Effect.tapError((cause) =>
+        Effect.logWarning("Failed to export browser OTLP traces", { cause, otlpTracesUrl }),
+      ),
+      Effect.orElseSucceed(() => HttpServerResponse.text("Trace export failed.", { status: 502 })),
+    );
+  }).pipe(
+    // A malformed body is the client's problem, not a reason to 500.
+    Effect.orElseSucceed(() => HttpServerResponse.text("Bad Request", { status: 400 })),
+  ),
 );
 
 /** `GET *` — SPA static serving with `index.html` fallback, plus dev redirect. */

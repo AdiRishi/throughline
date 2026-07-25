@@ -18,6 +18,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { NetService, type NetServiceShape } from "@app/shared/Net";
 
 import * as DesktopEnvironment from "../../src/app/DesktopEnvironment.ts";
+import * as DesktopObservability from "../../src/app/DesktopObservability.ts";
 import * as DesktopBackendConfiguration from "../../src/backend/DesktopBackendConfiguration.ts";
 import {
   makeManager,
@@ -75,9 +76,9 @@ const makeScriptedSpawner = Effect.gen(function* () {
             return Deferred.succeed(exit, 0 as never).pipe(Effect.asVoid);
           }),
         stdin: undefined,
-        stdout: Stream.empty,
-        stderr: Stream.empty,
-        all: Stream.make(new TextEncoder().encode("hello from server\n")),
+        stdout: Stream.make(new TextEncoder().encode("hello from server\n")),
+        stderr: Stream.make(new TextEncoder().encode("server warning\n")),
+        all: Stream.empty,
       } as unknown as ChildProcessSpawner.ChildProcessHandle;
     }),
   );
@@ -99,7 +100,14 @@ const makeScriptedSpawner = Effect.gen(function* () {
   return { spawner, spawnCount, exitCurrent, currentKilled };
 });
 
-const environmentLayer = (input?: { readonly isPackaged?: boolean; readonly entry?: string }) =>
+interface HarnessInput {
+  readonly isPackaged?: boolean;
+  readonly entry?: string;
+  /** Records what the manager reported about the child's output/session. */
+  readonly backendOutputLog?: DesktopObservability.DesktopBackendOutputLogShape;
+}
+
+const environmentLayer = (input?: HarnessInput) =>
   Layer.effect(
     DesktopEnvironment.DesktopEnvironment,
     Effect.map(Path.Path, (path) =>
@@ -115,6 +123,10 @@ const environmentLayer = (input?: { readonly isPackaged?: boolean; readonly entr
           appDataDirectory: Option.none(),
           xdgConfigHome: Option.none(),
           serverEntryOverride: Option.some(input?.entry ?? ENTRY_PATH),
+          logDirOverride: Option.none(),
+          logLevel: Option.none(),
+          otlpTracesUrl: Option.none(),
+          otlpExportIntervalMs: Option.none(),
           configuredBackendPort: Option.some(PORT),
           devServerUrl: Option.none(),
         },
@@ -144,6 +156,10 @@ const makeHarness = (input?: Parameters<typeof environmentLayer>[0]) =>
     }).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, scripted.spawner),
       Effect.provideService(NetService, fakeNet),
+      Effect.provideService(
+        DesktopObservability.DesktopBackendOutputLog,
+        input?.backendOutputLog ?? DesktopObservability.DesktopBackendOutputLogNoop,
+      ),
       Effect.provide(
         DesktopBackendConfiguration.layer.pipe(
           Layer.provideMerge(environmentLayer(input)),
@@ -280,32 +296,74 @@ describe("DesktopBackendManager", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("captures child output to logDir/server-child.log when packaged", () =>
+  it.effect("reports the child's output and session boundaries to the backend output log", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness({ isPackaged: true });
-      yield* harness.manager.start;
-      yield* harness.awaitReady;
+      const chunks: Array<{ stream: string; text: string }> = [];
+      const boundaries: Array<{ phase: string; details: string }> = [];
+      const decoder = new TextDecoder();
 
-      const logPath = NodePath.join(
-        LOG_DIR_HOME,
-        "Library",
-        "Application Support",
-        "throughline",
-        "logs",
-        "server-child.log",
-      );
-      yield* Effect.gen(function* () {
-        while (
-          !NodeFS.existsSync(logPath) ||
-          !NodeFS.readFileSync(logPath, "utf8").includes("hello from server")
-        ) {
-          yield* Effect.yieldNow;
-        }
+      const harness = yield* makeHarness({
+        isPackaged: true,
+        backendOutputLog: {
+          writeSessionBoundary: ({ phase, details }) =>
+            Effect.sync(() => {
+              boundaries.push({ phase, details });
+            }),
+          writeOutputChunk: (stream, chunk) =>
+            Effect.sync(() => {
+              chunks.push({ stream, text: decoder.decode(chunk) });
+            }),
+        },
       });
 
-      const contents = NodeFS.readFileSync(logPath, "utf8");
-      assert.include(contents, "--- backend start pid=4242");
-      assert.include(contents, "hello from server");
+      yield* harness.manager.start;
+      yield* harness.awaitReady;
+      while (chunks.length < 2) {
+        yield* Effect.yieldNow;
+      }
+
+      // Both streams are piped and reported separately, so stderr stays
+      // distinguishable from stdout in `server-child.log`.
+      assert.deepStrictEqual(
+        chunks.toSorted((a, b) => a.stream.localeCompare(b.stream)),
+        [
+          { stream: "stderr", text: "server warning\n" },
+          { stream: "stdout", text: "hello from server\n" },
+        ],
+      );
+
+      assert.strictEqual(boundaries.length, 1);
+      assert.strictEqual(boundaries[0]?.phase, "START");
+      assert.include(boundaries[0]?.details ?? "", "pid=4242");
+      assert.include(boundaries[0]?.details ?? "", `port=${PORT}`);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("writes an END boundary when the child exits", () =>
+    Effect.gen(function* () {
+      const boundaries: Array<{ phase: string; details: string }> = [];
+
+      const harness = yield* makeHarness({
+        backendOutputLog: {
+          writeSessionBoundary: ({ phase, details }) =>
+            Effect.sync(() => {
+              boundaries.push({ phase, details });
+            }),
+          writeOutputChunk: () => Effect.void,
+        },
+      });
+
+      yield* harness.manager.start;
+      yield* harness.awaitReady;
+      yield* harness.exitCurrent(1);
+      while (!boundaries.some((entry) => entry.phase === "END")) {
+        yield* Effect.yieldNow;
+      }
+
+      const end = boundaries.find((entry) => entry.phase === "END");
+      // The exit reason is carried into the log, so a crash loop is readable
+      // from `server-child.log` alone.
+      assert.include(end?.details ?? "", "code=1");
     }).pipe(Effect.scoped),
   );
 });

@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -23,6 +24,7 @@ import { request as rpcRequest, subscribe as rpcSubscribe } from "@app/client-ru
 import type { ServerConfig, ServerLifecyclePhase } from "@app/contracts";
 
 import { isElectron, resolveConnectionTarget } from "../env.ts";
+import { ClientTracingLive, configureClientTracing } from "../observability/clientTracing.ts";
 
 const BOOTSTRAP_TOKEN = import.meta.env.VITE_BOOTSTRAP_TOKEN;
 
@@ -95,8 +97,26 @@ export function makeConnectionLayer(): Layer.Layer<ConnectionSupervisor> {
   };
   return connectionSupervisorLayer(connection).pipe(
     Layer.provide(Socket.layerWebSocketConstructorGlobal),
+    Layer.provideMerge(observabilityLayer),
   );
 }
+
+/**
+ * The renderer's observability, mirroring the server and shell: pretty logs to
+ * the DevTools console, plus `Logger.tracerLogger` so logs emitted inside a
+ * span become span events. The tracer exports those spans to the server, which
+ * writes them into the same trace file it writes its own spans to — so a
+ * renderer failure is readable without opening DevTools.
+ *
+ * `configureClientTracing` is kicked off when the layer is built rather than at
+ * module load, because the export URL depends on the resolved connection
+ * target. Until it completes, spans are local-only.
+ */
+const observabilityLayer = Layer.mergeAll(
+  Logger.layer([Logger.consolePretty(), Logger.tracerLogger], { mergeWithExisting: false }),
+  ClientTracingLive,
+  Layer.effectDiscard(Effect.promise(() => configureClientTracing())),
+);
 
 /**
  * Build the app's atoms against an `AtomRuntime` that provides the supervisor.
