@@ -9,10 +9,10 @@ import { HostProcessPlatform } from "@app/shared/hostProcess";
 
 const { appFocusMock, browserWindowMock, getAllWindowsMock, getFocusedWindowMock } = vi.hoisted(
   () => ({
-    appFocusMock: vi.fn(),
-    browserWindowMock: vi.fn(function BrowserWindowMock() {}),
-    getAllWindowsMock: vi.fn(),
-    getFocusedWindowMock: vi.fn(),
+    appFocusMock: vi.fn<() => void>(),
+    browserWindowMock: vi.fn<() => void>(function BrowserWindowMock() {}),
+    getAllWindowsMock: vi.fn<() => Electron.BrowserWindow[]>(),
+    getFocusedWindowMock: vi.fn<() => Electron.BrowserWindow | null>(),
   }),
 );
 

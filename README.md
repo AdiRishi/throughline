@@ -53,4 +53,10 @@ pnpm dev:desktop    # the Electron shell
 pnpm check          # typecheck + lint + format
 pnpm test           # vitest across every package
 pnpm build          # production builds for server, web, and desktop
+pnpm dist:desktop -- --platform mac --arch arm64
 ```
+
+Desktop artifacts default to the host architecture and are unsigned unless `--signed` is supplied.
+Unsigned builds explicitly ignore signing credentials; signed builds use the platform credentials in
+the environment. The selected target architecture is also used while installing staged production
+dependencies, so native optional packages match the artifact rather than the build host.
