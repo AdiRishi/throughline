@@ -15,14 +15,14 @@ export const HintId = TrimmedNonEmptyString.pipe(Schema.brand("HintId"));
 export type HintId = typeof HintId.Type;
 
 export const RepositoryRef = Schema.Struct({
-  owner: TrimmedNonEmptyString,
-  repo: TrimmedNonEmptyString,
+  owner: TrimmedNonEmptyString.check(Schema.isPattern(/^[A-Za-z0-9_.-]+$/)),
+  repo: TrimmedNonEmptyString.check(Schema.isPattern(/^[A-Za-z0-9_.-]+$/)),
 });
 export type RepositoryRef = typeof RepositoryRef.Type;
 
 export const PrRef = Schema.Struct({
-  owner: TrimmedNonEmptyString,
-  repo: TrimmedNonEmptyString,
+  owner: RepositoryRef.fields.owner,
+  repo: RepositoryRef.fields.repo,
   number: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 export type PrRef = typeof PrRef.Type;
@@ -225,6 +225,8 @@ export const FileContent = Schema.Struct({
   path: TrimmedNonEmptyString,
   oldContent: Schema.NullOr(Schema.String),
   newContent: Schema.NullOr(Schema.String),
+  oldEncoding: Schema.Literals(["text", "base64"]),
+  newEncoding: Schema.Literals(["text", "base64"]),
 });
 export type FileContent = typeof FileContent.Type;
 

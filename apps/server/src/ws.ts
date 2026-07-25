@@ -10,7 +10,6 @@
  *
  * @module ws
  */
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -23,13 +22,20 @@ import {
   WS_METHODS,
   WsRpcGroup,
   type ServerLifecycleStreamEvent,
-  type TickEvent,
+  type GitHubPrsStreamEvent,
+  type PullRequestSummary,
 } from "@app/contracts";
+import { journeyProgress } from "@app/journey/progress";
 
 import * as Auth from "./auth.ts";
 import * as ServerConfig from "./config.ts";
+import { GitHub } from "./github/GitHub.ts";
+import { AnalysisHarness } from "./harness/AnalysisHarness.ts";
+import { Ingestion } from "./ingestion/Ingestion.ts";
+import { JourneyStore } from "./journeys/JourneyStore.ts";
 import * as LifecycleEvents from "./lifecycleEvents.ts";
-import * as NotesStore from "./notes/NotesStore.ts";
+import { ProductServicesLive } from "./product.ts";
+import { Workspaces } from "./workspace/Workspaces.ts";
 
 /**
  * Extract a bearer token from the upgrade request: `Authorization: Bearer <t>`
@@ -54,17 +60,57 @@ function extractBearer(request: HttpServerRequest.HttpServerRequest): Option.Opt
 }
 
 /**
- * Register the RPC handlers. `server.subscribeLifecycle` replays the retained
- * snapshot (sorted by sequence) then follows the live stream filtered to events
- * newer than the snapshot boundary; `notes.subscribe` delegates the same
- * contract to the notes store.
+ * Register the RPC handlers. Snapshot streams subscribe before reading their
+ * durable state, then discard buffered events older than the snapshot boundary.
  */
 const makeWsRpcLayer = () =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* LifecycleEvents.ServerLifecycleEvents;
-      const notes = yield* NotesStore.NotesStore;
+      const github = yield* GitHub;
+      const ingestion = yield* Ingestion;
+      const journeys = yield* JourneyStore;
+      const workspaces = yield* Workspaces;
+      const analysisHarness = yield* AnalysisHarness;
+
+      const enrich = (
+        pullRequests: ReadonlyArray<PullRequestSummary>,
+      ): Effect.Effect<ReadonlyArray<PullRequestSummary>> =>
+        Effect.gen(function* () {
+          const stored = yield* journeys.list;
+          return yield* Effect.forEach(
+            pullRequests,
+            (pullRequest) => {
+              const match = stored.find(
+                ({ journey }) =>
+                  journey.pr.owner === pullRequest.ref.owner &&
+                  journey.pr.repo === pullRequest.ref.repo &&
+                  journey.pr.number === pullRequest.ref.number,
+              );
+              if (match === undefined) return Effect.succeed(pullRequest);
+              return journeys.getReadState(match.journey.id).pipe(
+                Effect.map((readState) => {
+                  const progress = journeyProgress(match.journey.hunks, readState);
+                  return {
+                    ...pullRequest,
+                    journey: {
+                      exists: true,
+                      stale: match.journey.pinned.headSha !== pullRequest.headSha,
+                      readHunks: progress.read,
+                      totalHunks: progress.total,
+                    },
+                  };
+                }),
+                Effect.orElseSucceed(() => pullRequest),
+              );
+            },
+            { concurrency: 8 },
+          );
+        });
+
+      const enrichPrEvent = (event: GitHubPrsStreamEvent): Effect.Effect<GitHubPrsStreamEvent> =>
+        enrich(event.pullRequests).pipe(Effect.map((pullRequests) => ({ ...event, pullRequests })));
 
       return WsRpcGroup.of({
         [WS_METHODS.serverGetConfig]: () =>
@@ -73,26 +119,6 @@ const makeWsRpcLayer = () =>
             version: config.version,
             startedAt: config.startedAt,
           }),
-        [WS_METHODS.serverEcho]: (input) =>
-          DateTime.now.pipe(
-            Effect.map((receivedAt) => ({
-              message: input.message,
-              receivedAt,
-            })),
-          ),
-        [WS_METHODS.serverSubscribeTicks]: () =>
-          Stream.tick("1 second").pipe(
-            Stream.mapAccum(
-              () => 0,
-              (count, _void) => {
-                const next = count + 1;
-                return [next, [next]] as const;
-              },
-            ),
-            Stream.mapEffect((tick) =>
-              DateTime.now.pipe(Effect.map((at): TickEvent => ({ tick, at }))),
-            ),
-          ),
         [WS_METHODS.serverSubscribeLifecycle]: () =>
           Stream.unwrap(
             Effect.gen(function* () {
@@ -114,10 +140,38 @@ const makeWsRpcLayer = () =>
               return Stream.concat(Stream.fromIterable(replay), live);
             }),
           ),
-        [WS_METHODS.notesCreate]: (input) => notes.create(input),
-        [WS_METHODS.notesUpdate]: (input) => notes.update(input),
-        [WS_METHODS.notesDelete]: (input) => notes.remove(input),
-        [WS_METHODS.notesSubscribe]: () => notes.changes,
+        [WS_METHODS.githubViewer]: (input) => github.identity(input.refresh),
+        [WS_METHODS.githubPrs]: (input) =>
+          github.openPrs(input.refresh).pipe(Effect.flatMap(enrich)),
+        [WS_METHODS.githubSubscribePrs]: () => github.changes.pipe(Stream.mapEffect(enrichPrEvent)),
+        [WS_METHODS.ingestionStart]: (input) => ingestion.start(input),
+        [WS_METHODS.ingestionCancel]: (input) => ingestion.cancel(input.id),
+        [WS_METHODS.ingestionSubscribe]: () => ingestion.changes,
+        [WS_METHODS.journeyGet]: (input) =>
+          journeys.get(input.pr).pipe(Effect.map((stored) => stored.journey)),
+        [WS_METHODS.journeyFilePatch]: (input) =>
+          journeys
+            .getById(input.journeyId)
+            .pipe(Effect.flatMap((stored) => workspaces.filePatch(stored, input.path))),
+        [WS_METHODS.journeyFileContent]: (input) =>
+          journeys
+            .getById(input.journeyId)
+            .pipe(Effect.flatMap((stored) => workspaces.fileContent(stored, input.path))),
+        [WS_METHODS.journeyTree]: (input) =>
+          journeys
+            .getById(input.journeyId)
+            .pipe(Effect.flatMap((stored) => workspaces.tree(stored))),
+        [WS_METHODS.readStateGet]: (input) => journeys.getReadState(input.journeyId),
+        [WS_METHODS.readStateMarkFile]: (input) => journeys.markFile({ ...input, read: true }),
+        [WS_METHODS.readStateUnmarkFile]: (input) => journeys.markFile({ ...input, read: false }),
+        [WS_METHODS.readStateSetDisplayMode]: (input) => journeys.setDisplayMode(input),
+        [WS_METHODS.readStateSubscribe]: (input) => journeys.readStateChanges(input.journeyId),
+        [WS_METHODS.prStateReviewed]: (input) => journeys.setPrState("reviewed", input),
+        [WS_METHODS.prStateHide]: (input) => journeys.setPrState("hidden", input),
+        [WS_METHODS.prStateDismissMerged]: (input) => journeys.setPrState("dismissedMerged", input),
+        [WS_METHODS.harnessStatus]: () => analysisHarness.statuses,
+        [WS_METHODS.settingsGet]: () => journeys.getSettings,
+        [WS_METHODS.settingsUpdate]: (input) => journeys.updateSettings(input),
       });
     }),
   );
@@ -144,7 +198,14 @@ export const websocketRpcRouteLayer = HttpRouter.add(
 
     const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
       disableTracing: true,
-    }).pipe(Effect.provide(makeWsRpcLayer().pipe(Layer.provideMerge(RpcSerialization.layerJson))));
+    }).pipe(
+      Effect.provide(
+        makeWsRpcLayer().pipe(
+          Layer.provideMerge(RpcSerialization.layerJson),
+          Layer.provide(ProductServicesLive),
+        ),
+      ),
+    );
 
     return yield* rpcWebSocketHttpEffect;
   }),

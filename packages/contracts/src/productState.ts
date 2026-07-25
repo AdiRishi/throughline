@@ -75,3 +75,17 @@ export const Settings = Schema.Struct({
   harness: Schema.optionalKey(HarnessKind),
 });
 export type Settings = typeof Settings.Type;
+
+export class IngestionJobNotFoundError extends Schema.TaggedErrorClass<IngestionJobNotFoundError>()(
+  "IngestionJobNotFoundError",
+  { id: IngestionJobId },
+) {}
+
+export class OperationFailedError extends Schema.TaggedErrorClass<OperationFailedError>()(
+  "OperationFailedError",
+  {
+    operation: TrimmedNonEmptyString,
+    detail: TrimmedNonEmptyString,
+    retryable: Schema.Boolean,
+  },
+) {}

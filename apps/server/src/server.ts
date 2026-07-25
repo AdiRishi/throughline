@@ -30,7 +30,6 @@ import {
   staticAndDevRouteLayer,
 } from "./http.ts";
 import * as LifecycleEvents from "./lifecycleEvents.ts";
-import * as NotesStore from "./notes/NotesStore.ts";
 import { ObservabilityLive } from "./observability/Layers/Observability.ts";
 import * as Readiness from "./readiness.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
@@ -54,13 +53,7 @@ export const routesLayer = Layer.mergeAll(
 ).pipe(Layer.provide(corsLayer));
 
 /** Application services shared across routes and lifecycle. */
-const RuntimeServicesLive = Layer.mergeAll(
-  Auth.layer,
-  LifecycleEvents.layer,
-  NotesStore.layer,
-  Readiness.layer,
-);
-
+const RuntimeServicesLive = Layer.mergeAll(Auth.layer, LifecycleEvents.layer, Readiness.layer);
 export const makeServerLayer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;

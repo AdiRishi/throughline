@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
@@ -30,7 +31,6 @@ import * as Auth from "../src/auth.ts";
 import * as ServerConfig from "../src/config.ts";
 import { AUTH_BOOTSTRAP_PATH, HEALTH_PATH, OTLP_TRACES_PROXY_PATH } from "../src/http.ts";
 import * as LifecycleEvents from "../src/lifecycleEvents.ts";
-import * as NotesStore from "../src/notes/NotesStore.ts";
 import * as BrowserTraceCollector from "../src/observability/BrowserTraceCollector.ts";
 import * as Readiness from "../src/readiness.ts";
 import { routesLayer } from "../src/server.ts";
@@ -72,7 +72,6 @@ const appLayer = (options: HarnessOptions = {}) =>
         options.lifecycleEvents === undefined
           ? LifecycleEvents.layer
           : Layer.mock(LifecycleEvents.ServerLifecycleEvents)(options.lifecycleEvents),
-        NotesStore.layer,
         Readiness.layer,
       ),
     ),
@@ -109,7 +108,9 @@ const appLayer = (options: HarnessOptions = {}) =>
       ),
     ),
     // NodeServices provides Crypto in production; layerTest does not.
-    Layer.provideMerge(Layer.mergeAll(NodeHttpServer.layerTest, NodeCrypto.layer)),
+    Layer.provideMerge(
+      Layer.mergeAll(NodeHttpServer.layerTest, NodeCrypto.layer, NodeServices.layer),
+    ),
   );
 
 const decodeBearerSession = Schema.decodeUnknownSync(BearerSessionJson);
