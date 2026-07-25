@@ -29,7 +29,7 @@ Throughline has no cloud service and writes nothing to GitHub. GitHub access use
 
 Each journey is an immutable snapshot pinned to the PR's base and head commits. If the PR moves, the saved journey remains readable and is marked stale; manual reanalysis creates a replacement snapshot and resets its read state.
 
-Journeys, settings, local PR state, and per-cluster file read marks are stored in SQLite. Materialized diffs, transcripts, fallback logs, and repository caches remain beside it on local disk. The desktop app uses Electron's application-data directory; development uses `.throughline-data/` in this checkout.
+Journeys, settings, local PR state, and per-cluster file read marks are stored in SQLite. Materialized diffs, transcripts, fallback logs, and repository caches remain beside it on local disk. The installed desktop app uses Electron's `throughline` application-data directory; the development shell uses an isolated `throughline-dev` sibling, while plain-browser development uses `.throughline-data/` in this checkout.
 
 ## Prerequisites
 
@@ -63,7 +63,7 @@ Run the browser or desktop app:
 pnpm dev            # local server + browser UI with HMR
 pnpm dev:server     # local server process only
 pnpm dev:web        # Vite browser process only
-pnpm dev:desktop    # Electron shell + web HMR; builds the server and shell first
+pnpm dev:desktop    # supervised Electron shell + web HMR; builds first, logs to this terminal
 ```
 
 Validate the repository:
@@ -85,10 +85,11 @@ Create a desktop artifact:
 
 ```bash
 pnpm dist:desktop
-pnpm dist:desktop -- --platform mac --target dmg
+pnpm dist:desktop -- --platform mac --target dmg --arch arm64
+pnpm dist:desktop -- --build-version 1.2.3 --signed --update-repository owner/repo
 ```
 
-The packaging command defaults to the host platform and writes artifacts to `release/dist/`. Supported targets are DMG on macOS, NSIS on Windows, and AppImage on Linux. Signing, notarization, icons, and release metadata still require product-specific distribution configuration.
+The packaging command defaults to the host platform and architecture and writes branded artifacts to `release/dist/`. Supported targets are DMG on macOS, NSIS on Windows, and AppImage on Linux; `arm64` and `x64` are supported on each platform, with `universal` also available on macOS. Ordinary local builds explicitly disable signing discovery, contain no update feed, and are never published. A production build opts in with `--signed` and may add `--update-repository owner/repo` (or `THROUGHLINE_DESKTOP_UPDATE_REPOSITORY`) to emit GitHub Releases updater metadata. Packaging always retains `--publish never`, so publication remains an explicit release-workflow step after signing, notarization, and artifact validation.
 
 ## The documents
 

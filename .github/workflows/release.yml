@@ -1,0 +1,460 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "!v*-nightly.*"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        required: true
+        default: stable
+        type: choice
+        options:
+          - stable
+          - nightly
+      version:
+        description: Exact X.Y.Z or X.Y.Z-nightly.YYYYMMDD.RUN version
+        required: true
+        type: string
+      publish:
+        description: Publish a live release after production signing validation
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: none
+
+concurrency:
+  group: desktop-release-${{ github.ref }}-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      channel: ${{ steps.metadata.outputs.channel }}
+      version: ${{ steps.metadata.outputs.version }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      release_name: ${{ steps.metadata.outputs.release_name }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+      make_latest: ${{ steps.metadata.outputs.make_latest }}
+      sha: ${{ steps.metadata.outputs.sha }}
+      publish_requested: ${{ steps.metadata.outputs.publish_requested }}
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Ensure Electron runtime is installed
+        run: pnpm --filter @app/desktop ensure:electron
+
+      - id: metadata
+        name: Validate and freeze release metadata
+        shell: bash
+        env:
+          DISPATCH_CHANNEL: ${{ inputs.channel }}
+          DISPATCH_VERSION: ${{ inputs.version }}
+          DISPATCH_PUBLISH: ${{ inputs.publish }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          release_sha="$(git rev-parse HEAD)"
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            channel=stable
+            version="${GITHUB_REF_NAME#v}"
+            publish_requested=false
+          else
+            channel="$DISPATCH_CHANNEL"
+            version="$DISPATCH_VERSION"
+            publish_requested="${DISPATCH_PUBLISH:-false}"
+          fi
+
+          if [[ "$publish_requested" == "true" ]]; then
+            if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
+              echo "A live release requires an explicit workflow_dispatch publish request." >&2
+              exit 1
+            fi
+            if [[ "$GITHUB_REF_TYPE" != "branch" || "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]]; then
+              echo "A live release must be dispatched from the default branch." >&2
+              exit 1
+            fi
+          fi
+
+          node scripts/desktop-release.ts metadata \
+            --channel "$channel" \
+            --version "$version" \
+            --sha "$release_sha" \
+            --github-output "$GITHUB_OUTPUT"
+          echo "publish_requested=$publish_requested" >> "$GITHUB_OUTPUT"
+
+      - name: Check
+        run: pnpm check
+
+      - name: Test
+        run: pnpm test
+
+  validation_build:
+    name: Validate ${{ matrix.label }}
+    needs: preflight
+    if: needs.preflight.outputs.publish_requested != 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS arm64
+            runner: macos-15
+            platform: mac
+            target: dmg
+            arch: arm64
+          - label: macOS x64
+            runner: macos-15
+            platform: mac
+            target: dmg
+            arch: x64
+          - label: Linux x64
+            runner: ubuntu-24.04
+            platform: linux
+            target: AppImage
+            arch: x64
+          - label: Windows x64
+            runner: windows-2025
+            platform: win
+            target: nsis
+            arch: x64
+    steps:
+      - name: Checkout preflight commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+
+      - name: Verify checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "${{ needs.preflight.outputs.sha }}"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Ensure Electron runtime is installed
+        run: pnpm --filter @app/desktop ensure:electron
+
+      - name: Build unsigned feed-free validation artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm dist:desktop -- \
+            --platform "${{ matrix.platform }}" \
+            --target "${{ matrix.target }}" \
+            --arch "${{ matrix.arch }}" \
+            --build-version "${{ needs.preflight.outputs.version }}"
+
+          node scripts/desktop-release.ts collect \
+            --source release/dist \
+            --destination release-validation \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --channel "${{ needs.preflight.outputs.channel }}" \
+            --sha "${{ needs.preflight.outputs.sha }}" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --mode validation
+
+      - name: Upload validation artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: validation-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release-validation/*
+          if-no-files-found: error
+          retention-days: 7
+
+  production_build:
+    name: Production ${{ matrix.label }}
+    needs: preflight
+    if: needs.preflight.outputs.publish_requested == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    environment:
+      name: production
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS arm64
+            runner: macos-15
+            platform: mac
+            target: dmg
+            arch: arm64
+          - label: macOS x64
+            runner: macos-15
+            platform: mac
+            target: dmg
+            arch: x64
+          - label: Linux x64
+            runner: ubuntu-24.04
+            platform: linux
+            target: AppImage
+            arch: x64
+          - label: Windows x64
+            runner: windows-2025
+            platform: win
+            target: nsis
+            arch: x64
+    steps:
+      - name: Checkout preflight commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Verify checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "${{ needs.preflight.outputs.sha }}"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Ensure Electron runtime is installed
+        run: pnpm --filter @app/desktop ensure:electron
+
+      - name: Build production artifact
+        shell: bash
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_CONTENTS: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          require_values() {
+            for value in "$@"; do
+              if [[ -z "$value" ]]; then
+                echo "Missing required production signing credential for ${{ matrix.platform }}." >&2
+                exit 1
+              fi
+            done
+          }
+
+          if [[ "${{ matrix.platform }}" == "mac" ]]; then
+            require_values \
+              "$MAC_CSC_LINK" \
+              "$MAC_CSC_KEY_PASSWORD" \
+              "$APPLE_API_KEY_CONTENTS" \
+              "$APPLE_API_KEY_ID" \
+              "$APPLE_API_ISSUER"
+            export CSC_LINK="$MAC_CSC_LINK"
+            export CSC_KEY_PASSWORD="$MAC_CSC_KEY_PASSWORD"
+            key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+            printf '%s' "$APPLE_API_KEY_CONTENTS" > "$key_path"
+            export APPLE_API_KEY="$key_path"
+          elif [[ "${{ matrix.platform }}" == "win" ]]; then
+            require_values "$WINDOWS_CSC_LINK" "$WINDOWS_CSC_KEY_PASSWORD"
+            export CSC_LINK="$WINDOWS_CSC_LINK"
+            export CSC_KEY_PASSWORD="$WINDOWS_CSC_KEY_PASSWORD"
+          fi
+
+          pnpm dist:desktop -- \
+            --platform "${{ matrix.platform }}" \
+            --target "${{ matrix.target }}" \
+            --arch "${{ matrix.arch }}" \
+            --build-version "${{ needs.preflight.outputs.version }}" \
+            --signed \
+            --update-repository "$GITHUB_REPOSITORY"
+
+      - name: Validate macOS signature and notarization
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_path="$(find release/dist -type d -name Throughline.app -print -quit)"
+          dmg_path="release/dist/Throughline-${{ needs.preflight.outputs.version }}-${{ matrix.arch }}.dmg"
+          test -n "$app_path"
+          test -f "$dmg_path"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          spctl --assess --type execute --verbose=2 "$app_path"
+          xcrun stapler validate "$app_path"
+
+      - name: Validate Windows signatures
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = "release/dist/Throughline-${{ needs.preflight.outputs.version }}-${{ matrix.arch }}.exe"
+          $application = "release/dist/win-unpacked/Throughline.exe"
+          foreach ($artifact in @($installer, $application)) {
+            if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+              throw "Missing Windows artifact: $artifact"
+            }
+            $signature = Get-AuthenticodeSignature -LiteralPath $artifact
+            if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+              throw "Windows signature for $artifact is $($signature.Status), expected Valid."
+            }
+          }
+
+      - name: Validate Linux executable
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_image="release/dist/Throughline-${{ needs.preflight.outputs.version }}-${{ matrix.arch }}.AppImage"
+          test -x "$app_image"
+          file "$app_image"
+
+      - name: Collect exact production assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/desktop-release.ts collect \
+            --source release/dist \
+            --destination release-production \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --channel "${{ needs.preflight.outputs.channel }}" \
+            --sha "${{ needs.preflight.outputs.sha }}" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --mode production
+
+      - name: Upload signed production artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release-production/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish verified GitHub Release
+    needs:
+      - preflight
+      - production_build
+    if: |
+      !failure() &&
+      !cancelled() &&
+      needs.preflight.outputs.publish_requested == 'true' &&
+      needs.production_build.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: production
+    permissions:
+      contents: write
+      id-token: none
+    steps:
+      - name: Checkout preflight commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Verify checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "${{ needs.preflight.outputs.sha }}"
+
+      - name: Download production artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: production-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Merge and verify updater manifests
+        run: |
+          node scripts/desktop-release.ts assemble \
+            --directory release-assets \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --channel "${{ needs.preflight.outputs.channel }}" \
+            --sha "${{ needs.preflight.outputs.sha }}"
+
+      - name: Refuse to overwrite an existing release
+        env:
+          RELEASE_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag_ref="refs/tags/${{ needs.preflight.outputs.tag }}"
+          if git show-ref --verify --quiet "$tag_ref"; then
+            tag_sha="$(git rev-list -n 1 "$tag_ref")"
+            if [[ "$tag_sha" != "${{ needs.preflight.outputs.sha }}" ]]; then
+              echo "Tag $tag_ref points to $tag_sha, not the frozen release SHA." >&2
+              exit 1
+            fi
+          fi
+          release_status="$(
+            curl --silent --show-error \
+              --output "$RUNNER_TEMP/existing-release.json" \
+              --write-out '%{http_code}' \
+              --header "Authorization: Bearer $RELEASE_TOKEN" \
+              --header "Accept: application/vnd.github+json" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/${{ needs.preflight.outputs.tag }}"
+          )"
+          case "$release_status" in
+            404) ;;
+            200)
+              echo "Release ${{ needs.preflight.outputs.tag }} already exists." >&2
+              exit 1
+              ;;
+            *)
+              echo "Could not establish release absence (GitHub returned $release_status)." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.preflight.outputs.tag }}
+          target_commitish: ${{ needs.preflight.outputs.sha }}
+          name: ${{ needs.preflight.outputs.release_name }}
+          generate_release_notes: true
+          prerelease: ${{ needs.preflight.outputs.prerelease }}
+          make_latest: ${{ needs.preflight.outputs.make_latest }}
+          files: |
+            release-assets/*.dmg
+            release-assets/*.zip
+            release-assets/*.AppImage
+            release-assets/*.exe
+            release-assets/*.blockmap
+            release-assets/*.yml
+          fail_on_unmatched_files: true
