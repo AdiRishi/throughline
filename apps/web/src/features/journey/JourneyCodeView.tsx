@@ -472,6 +472,7 @@ export function JourneyCodeView({
         </div>
       ) : (
         <CodeView<JourneyAnnotation>
+          key={displayMode}
           ref={codeViewRef}
           className="journey-code-view"
           items={items}
