@@ -33,6 +33,7 @@ function makeBridge(overrides?: Partial<DesktopBridge>): DesktopBridge {
     getBearerToken: vi.fn<DesktopBridge["getBearerToken"]>(async () => "bearer"),
     setTheme: vi.fn<DesktopBridge["setTheme"]>(async () => undefined),
     openExternal: vi.fn<DesktopBridge["openExternal"]>(async () => true),
+    openLogsFolder: vi.fn<DesktopBridge["openLogsFolder"]>(async () => true),
     confirm: vi.fn<DesktopBridge["confirm"]>(async () => true),
     pickFolder: vi.fn<DesktopBridge["pickFolder"]>(async () => "/picked"),
     showContextMenu: vi.fn<DesktopBridge["showContextMenu"]>(async () => null),
@@ -90,6 +91,9 @@ describe("localApi in the shell (bridge present)", () => {
     await api.openExternal("https://example.com");
     expect(bridge.openExternal).toHaveBeenCalledWith("https://example.com");
 
+    expect(await api.openLogsFolder()).toBe(true);
+    expect(bridge.openLogsFolder).toHaveBeenCalledOnce();
+
     expect(await api.confirm("sure?")).toBe(true);
     expect(await api.pickFolder({ title: "Pick" })).toBe("/picked");
     expect(bridge.pickFolder).toHaveBeenCalledWith({ title: "Pick" });
@@ -143,7 +147,8 @@ describe("localApi in a plain browser (no bridge)", () => {
     expect(confirm).toHaveBeenCalledWith("sure?");
 
     // No native affordances in a browser: folder picker degrades to null and
-    // menu subscriptions are inert.
+    // diagnostics discovery returns false, while menu subscriptions are inert.
+    expect(await api.openLogsFolder()).toBe(false);
     expect(await api.pickFolder()).toBeNull();
     const unsubscribe = api.onMenuAction(() => {});
     expect(unsubscribe).toBeTypeOf("function");

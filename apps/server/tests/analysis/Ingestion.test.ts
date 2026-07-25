@@ -2,8 +2,10 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -300,24 +302,51 @@ describe("Ingestion", () => {
 
     it.effect("turns post-accept operational failures into failed job events", () =>
       Effect.gen(function* () {
-        const service = yield* makeIngestion(() =>
-          Effect.fail(
-            new AnalysisPipeline.AnalysisPipelineError({
-              code: "workspace",
-              detail: "Clone failed.",
-            }),
-          ),
-        );
-        const pr = ref(31);
-
-        const accepted = yield* service.start({ type: "ref", ref: pr });
-        const failed = yield* awaitPhase(service, pr, "failed");
-
-        assert.strictEqual(accepted.phase, "queued");
-        assert.deepStrictEqual(failed.failure, {
-          code: "workspace",
-          message: "Clone failed.",
+        const records: Array<{
+          readonly messages: ReadonlyArray<unknown>;
+          readonly annotations: unknown;
+        }> = [];
+        const logger = Logger.make<unknown, void>(({ fiber, message }) => {
+          records.push({
+            messages: Array.isArray(message) ? message : [message],
+            annotations: fiber.getRef(References.CurrentLogAnnotations),
+          });
         });
+
+        yield* Effect.gen(function* () {
+          const service = yield* makeIngestion(() =>
+            Effect.fail(
+              new AnalysisPipeline.AnalysisPipelineError({
+                code: "workspace",
+                detail: "Clone failed.",
+              }),
+            ),
+          );
+          const pr = ref(31);
+
+          const accepted = yield* service.start({ type: "ref", ref: pr });
+          const failed = yield* awaitPhase(service, pr, "failed");
+          while (!records.some((record) => record.messages.includes("ingestion failed"))) {
+            yield* Effect.yieldNow;
+          }
+
+          assert.strictEqual(accepted.phase, "queued");
+          assert.deepStrictEqual(failed.failure, {
+            code: "workspace",
+            message: "Clone failed.",
+          });
+          const failureRecord = records.find((record) =>
+            record.messages.includes("ingestion failed"),
+          );
+          assert.deepInclude(failureRecord?.annotations, {
+            component: "ingestion",
+            failureCode: "workspace",
+            harness: "test",
+            jobId: accepted.id,
+            pr: "acme/rocket#31",
+          });
+          assert.notInclude(JSON.stringify(records), "Clone failed.");
+        }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
       }),
     );
 

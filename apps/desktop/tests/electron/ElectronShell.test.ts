@@ -2,13 +2,15 @@ import { assert, beforeEach, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { vi } from "vitest";
 
-const { openExternalMock } = vi.hoisted(() => ({
+const { openExternalMock, openPathMock } = vi.hoisted(() => ({
   openExternalMock: vi.fn<(url: string) => Promise<void>>(),
+  openPathMock: vi.fn<(path: string) => Promise<string>>(),
 }));
 
 vi.mock("electron", () => ({
   shell: {
     openExternal: openExternalMock,
+    openPath: openPathMock,
   },
 }));
 
@@ -17,6 +19,7 @@ import * as ElectronShell from "../../src/electron/ElectronShell.ts";
 describe("ElectronShell", () => {
   beforeEach(() => {
     openExternalMock.mockReset();
+    openPathMock.mockReset();
   });
 
   it.effect("opens safe external URLs", () =>
@@ -47,6 +50,29 @@ describe("ElectronShell", () => {
 
       const electronShell = yield* ElectronShell.ElectronShell;
       const result = yield* electronShell.openExternal("https://example.com/path");
+
+      assert.equal(result, false);
+    }).pipe(Effect.provide(ElectronShell.layer)),
+  );
+
+  it.effect("opens a trusted local path", () =>
+    Effect.gen(function* () {
+      openPathMock.mockResolvedValue("");
+
+      const electronShell = yield* ElectronShell.ElectronShell;
+      const result = yield* electronShell.openPath("/tmp/throughline/logs");
+
+      assert.equal(result, true);
+      assert.deepEqual(openPathMock.mock.calls, [["/tmp/throughline/logs"]]);
+    }).pipe(Effect.provide(ElectronShell.layer)),
+  );
+
+  it.effect("returns false when Electron cannot open a trusted local path", () =>
+    Effect.gen(function* () {
+      openPathMock.mockResolvedValue("No application knows how to open this path");
+
+      const electronShell = yield* ElectronShell.ElectronShell;
+      const result = yield* electronShell.openPath("/tmp/throughline/logs");
 
       assert.equal(result, false);
     }).pipe(Effect.provide(ElectronShell.layer)),

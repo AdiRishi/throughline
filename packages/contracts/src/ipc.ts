@@ -33,6 +33,8 @@ export interface DesktopBridge {
 
   readonly setTheme: (theme: DesktopTheme) => Promise<void>;
   readonly openExternal: (url: string) => Promise<boolean>;
+  /** Opens Throughline's app-owned diagnostics directory in the file manager. */
+  readonly openLogsFolder: () => Promise<boolean>;
   readonly confirm: (message: string) => Promise<boolean>;
   readonly pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   /** Resolves with the id of the picked item — narrowed to the ids passed in. */
@@ -63,6 +65,8 @@ export interface LocalApi {
   readonly getTheme: () => DesktopTheme;
   readonly setTheme: (theme: DesktopTheme) => Promise<void>;
   readonly openExternal: (url: string) => Promise<void>;
+  /** Returns false in a plain browser, which has no native file manager. */
+  readonly openLogsFolder: () => Promise<boolean>;
   readonly confirm: (message: string) => Promise<boolean>;
   /** Returns null in the browser (no native folder picker). */
   readonly pickFolder: (options?: PickFolderOptions) => Promise<string | null>;

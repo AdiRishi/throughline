@@ -145,6 +145,24 @@ const errorDetail = (
   return { code: "analysis", message: String(squashed) || "Analysis failed." };
 };
 
+const jobLogAnnotations = (
+  runtime: RuntimeJob,
+  extra: Readonly<Record<string, unknown>> = {},
+): Record<string, unknown> => ({
+  component: "ingestion",
+  jobId: runtime.job.id,
+  pr: prKey(runtime.job.pr),
+  harness: runtime.harness.kind,
+  phase: runtime.job.phase,
+  stage: runtime.stage,
+  ...extra,
+});
+
+const elapsedJobMs = (runtime: RuntimeJob, now: DateTime.Utc): number | undefined =>
+  runtime.job.startedAt === null
+    ? undefined
+    : Math.max(0, DateTime.toEpochMillis(now) - DateTime.toEpochMillis(runtime.job.startedAt));
+
 export const make = Effect.gen(function* () {
   const github = yield* GitHub.GitHub;
   const store = yield* JourneyStore.JourneyStore;
@@ -201,6 +219,7 @@ export const make = Effect.gen(function* () {
         ) {
           return;
         }
+        const previousPhase = runtime.job.phase;
         const now = yield* DateTime.now;
         runtime.job = {
           ...runtime.job,
@@ -210,6 +229,9 @@ export const make = Effect.gen(function* () {
           activity: phase === "analyzing" ? runtime.job.activity : null,
         };
         yield* publish(runtime);
+        yield* Effect.logInfo("ingestion phase changed").pipe(
+          Effect.annotateLogs(jobLogAnnotations(runtime, { previousPhase })),
+        );
       }),
     );
 
@@ -224,6 +246,9 @@ export const make = Effect.gen(function* () {
         const now = yield* DateTime.now;
         runtime.job = { ...runtime.job, activity: null, updatedAt: now };
         yield* publish(runtime);
+        yield* Effect.logInfo("analysis stage changed").pipe(
+          Effect.annotateLogs(jobLogAnnotations(runtime)),
+        );
       }),
     );
 
@@ -304,6 +329,14 @@ export const make = Effect.gen(function* () {
             failure: null,
           };
           yield* publish(runtime);
+          yield* Effect.logInfo("ingestion cancelled").pipe(
+            Effect.annotateLogs(
+              jobLogAnnotations(runtime, {
+                elapsedMs: elapsedJobMs(runtime, now),
+                cancellationPoint: "completion",
+              }),
+            ),
+          );
           if (state.activeByPr.get(key) === id) state.activeByPr.delete(key);
           if (state.running === id) state.running = null;
           return;
@@ -320,6 +353,14 @@ export const make = Effect.gen(function* () {
           failure: null,
         };
         yield* publish(runtime);
+        yield* Effect.logInfo("ingestion completed").pipe(
+          Effect.annotateLogs(
+            jobLogAnnotations(runtime, {
+              elapsedMs: elapsedJobMs(runtime, now),
+              journeyId: result.journey.id,
+            }),
+          ),
+        );
         if (state.activeByPr.get(key) === id) state.activeByPr.delete(key);
         if (state.running === id) state.running = null;
       }),
@@ -346,6 +387,16 @@ export const make = Effect.gen(function* () {
             failure: null,
           };
           if (!alreadyPublished) yield* publish(runtime);
+          if (!alreadyPublished) {
+            yield* Effect.logInfo("ingestion cancelled").pipe(
+              Effect.annotateLogs(
+                jobLogAnnotations(runtime, {
+                  elapsedMs: elapsedJobMs(runtime, now),
+                  cancellationPoint: "analysis",
+                }),
+              ),
+            );
+          }
           if (state.activeByPr.get(key) === id) state.activeByPr.delete(key);
           if (state.running === id) state.running = null;
           return;
@@ -362,6 +413,14 @@ export const make = Effect.gen(function* () {
           failure,
         };
         yield* publish(runtime);
+        yield* Effect.logError("ingestion failed").pipe(
+          Effect.annotateLogs(
+            jobLogAnnotations(runtime, {
+              elapsedMs: elapsedJobMs(runtime, now),
+              failureCode: failure.code,
+            }),
+          ),
+        );
         if (state.activeByPr.get(key) === id) state.activeByPr.delete(key);
         if (state.running === id) state.running = null;
       }),
@@ -387,6 +446,9 @@ export const make = Effect.gen(function* () {
           };
           yield* publish(candidate);
           yield* updateQueuePositions();
+          yield* Effect.logInfo("ingestion started").pipe(
+            Effect.annotateLogs(jobLogAnnotations(candidate)),
+          );
           return candidate;
         }),
       );
@@ -412,6 +474,13 @@ export const make = Effect.gen(function* () {
             onSuccess: (result) => finishComplete(id, result),
           }),
           Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
+          Effect.withSpan("ingestion.run", {
+            attributes: {
+              jobId: runtime.job.id,
+              pr: prKey(runtime.job.pr),
+              harness: runtime.harness.kind,
+            },
+          }),
         );
       const fiber = yield* Effect.forkIn(program, parentScope);
       const shouldCancel = yield* mutationGate.withPermit(
@@ -528,10 +597,31 @@ export const make = Effect.gen(function* () {
         state.pending.push(id);
         yield* publish(runtime);
         yield* Queue.offer(workQueue, id);
+        yield* Effect.logInfo("ingestion accepted").pipe(
+          Effect.annotateLogs(
+            jobLogAnnotations(runtime, {
+              queuePosition: runtime.job.queuePosition,
+              sourceType: source.type,
+            }),
+          ),
+        );
         return runtime.job;
       }),
     );
   });
+
+  const startWithDiagnostics = (source: IngestionSource) =>
+    start(source).pipe(
+      Effect.tapError((error) =>
+        Effect.logWarning("ingestion rejected before acceptance").pipe(
+          Effect.annotateLogs({
+            component: "ingestion",
+            reason: error.reason,
+            sourceType: source.type,
+          }),
+        ),
+      ),
+    );
 
   const cancel = (jobId: IngestionJobIdValue): Effect.Effect<IngestionJob | null> =>
     Effect.gen(function* () {
@@ -561,6 +651,14 @@ export const make = Effect.gen(function* () {
             if (state.activeByPr.get(key) === jobId) state.activeByPr.delete(key);
           }
           yield* publish(runtime);
+          yield* Effect.logInfo("ingestion cancelled").pipe(
+            Effect.annotateLogs(
+              jobLogAnnotations(runtime, {
+                elapsedMs: elapsedJobMs(runtime, now),
+                cancellationPoint: wasQueued ? "queue" : "request",
+              }),
+            ),
+          );
           if (wasQueued) yield* updateQueuePositions();
           return { job: runtime.job, fiber: runtime.fiber };
         }),
@@ -570,7 +668,7 @@ export const make = Effect.gen(function* () {
     });
 
   return Ingestion.of({
-    start,
+    start: startWithDiagnostics,
     cancel,
     subscribe: (ref) =>
       Stream.unwrap(

@@ -39,7 +39,7 @@ Every diff surface is `@pierre/diffs` (React bindings); every tree is `@pierre/t
 
 **Free file reading** — opening any file from the tree renders its full diff with every hunk labeled by home cluster; same read state, same marks, viewed from the file side. Open files sit in tabs — renderer ephemera; the URL holds only the active file. Files outside the changed set are served from the repository clone ([03](./03-github.md)).
 
-**Settings** — detected harnesses with install/auth state (`harness.status`) and the active-harness selection (`settings.update`), plus theme. Calm, one page; T3 Code's provider settings page is the shape reference ([04](./04-analysis.md)).
+**Settings** — detected harnesses with install/auth state (`harness.status`) and the active-harness selection (`settings.update`), plus theme. The desktop host adds a quiet Diagnostics section whose **Open logs folder** action creates the configured log directory when necessary and opens that trusted local path through `LocalApi`; the plain-browser build omits the section because it has no native file-manager capability. Calm, one page; T3 Code's provider settings page is the shape reference ([04](./04-analysis.md)).
 
 ## Routing
 
@@ -47,7 +47,7 @@ Every diff surface is `@pierre/diffs` (React bindings); every tree is `@pierre/t
 
 ```
 /                              welcome
-/settings                      harness selection, appearance
+/settings                      harness selection, appearance, desktop diagnostics discovery
 /pr/$owner/$repo/$number       journey layout — resolves the journey; renders the
   │                            ingestion transition while one is running or absent
   ├─ /                         overview

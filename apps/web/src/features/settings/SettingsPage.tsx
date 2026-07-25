@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import type { DesktopTheme, HarnessStatus } from "@app/contracts";
 
@@ -15,6 +15,7 @@ import {
   SunIcon,
 } from "../../components/Icons.tsx";
 import { useTheme } from "../../hooks/useTheme.ts";
+import { localApi } from "../../localApi.ts";
 import { productAtoms } from "../../state/product.ts";
 import {
   automaticHarnessKind,
@@ -59,6 +60,9 @@ export function SettingsPage() {
   const refreshHarnesses = useAtomSet(productAtoms.refreshHarnesses);
   const setHarness = useAtomSet(productAtoms.setHarness);
   const { setTheme, theme } = useTheme();
+  const host = localApi();
+  const [openingLogsFolder, setOpeningLogsFolder] = useState(false);
+  const [logsFolderError, setLogsFolderError] = useState<string | null>(null);
 
   const automatic = automaticHarnessKind(harnesses);
   const orderedHarnesses = harnesses.toSorted((left, right) => {
@@ -75,6 +79,20 @@ export function SettingsPage() {
     window.addEventListener("focus", refreshOnFocus);
     return () => window.removeEventListener("focus", refreshOnFocus);
   }, [refreshHarnesses]);
+
+  const openLogsFolder = async () => {
+    setOpeningLogsFolder(true);
+    setLogsFolderError(null);
+    try {
+      if (!(await host.openLogsFolder())) {
+        setLogsFolderError("Throughline couldn’t open the logs folder.");
+      }
+    } catch {
+      setLogsFolderError("Throughline couldn’t open the logs folder.");
+    } finally {
+      setOpeningLogsFolder(false);
+    }
+  };
 
   return (
     <main className="settings-page">
@@ -217,6 +235,37 @@ export function SettingsPage() {
           })}
         </div>
       </section>
+
+      {host.isDesktop ? (
+        <section className="settings-section" aria-labelledby="diagnostics-heading">
+          <div className="settings-section-heading">
+            <div>
+              <h2 id="diagnostics-heading">Diagnostics</h2>
+              <p>Find the local records Throughline keeps for troubleshooting.</p>
+            </div>
+          </div>
+
+          <div className="diagnostics-row">
+            <span className="diagnostics-copy">
+              <strong>Application logs</strong>
+              <span>Desktop startup, local server output, and operational failures.</span>
+            </span>
+            <button
+              className="button button-secondary"
+              type="button"
+              disabled={openingLogsFolder}
+              onClick={() => void openLogsFolder()}
+            >
+              {openingLogsFolder ? "Opening…" : "Open logs folder"}
+            </button>
+          </div>
+          {logsFolderError === null ? null : (
+            <p className="diagnostics-error" role="alert">
+              {logsFolderError}
+            </p>
+          )}
+        </section>
+      ) : null}
     </main>
   );
 }

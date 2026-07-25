@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -21,7 +22,7 @@ import { waitForHttpReady } from "@app/shared/httpReadiness";
 import { NetService } from "@app/shared/Net";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
-import { makeComponentLogger } from "../app/DesktopObservability.ts";
+import { DesktopBackendOutputLog, makeComponentLogger } from "../app/DesktopObservability.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import type { DesktopBackendStartConfig } from "./DesktopBackendConfiguration.ts";
@@ -39,8 +40,6 @@ const READINESS_INTERVAL = Duration.millis(100);
 const READINESS_REQUEST_TIMEOUT = Duration.seconds(1);
 const TERMINATE_GRACE = Duration.seconds(2);
 const HEALTH_PATH = "/.well-known/app/health";
-const BACKEND_LOG_FILE_LIMIT = FileSystem.MiB(8);
-const BACKEND_LOG_FILE_LIMIT_BYTES = Number(BACKEND_LOG_FILE_LIMIT);
 
 const encodeBootstrapEnvelopeJson = Schema.encodeEffect(
   Schema.fromJsonString(ServerBootstrapEnvelope),
@@ -80,10 +79,20 @@ class BackendProcessSpawnError extends Schema.TaggedErrorClass<BackendProcessSpa
   }
 }
 
+class BackendProcessTerminationError extends Schema.TaggedErrorClass<BackendProcessTerminationError>()(
+  "BackendProcessTerminationError",
+  {
+    pid: Schema.Number,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Failed to terminate desktop backend process ${this.pid}.`;
+  }
+}
+
 interface BackendProcessExit {
-  readonly code: Option.Option<number>;
   readonly reason: string;
-  readonly result: Result.Result<ChildProcessSpawner.ExitCode, PlatformError.PlatformError>;
 }
 
 function describeProcessExit(
@@ -91,16 +100,12 @@ function describeProcessExit(
 ): BackendProcessExit {
   if (Result.isSuccess(result)) {
     return {
-      code: Option.some(result.success),
       reason: `code=${result.success}`,
-      result,
     };
   }
 
   return {
-    code: Option.none(),
     reason: result.failure.message,
-    result,
   };
 }
 
@@ -108,23 +113,6 @@ interface DesktopBackendReadyCallbacks {
   readonly onReady: (config: DesktopBackendStartConfig) => Effect.Effect<void>;
   readonly onNotReady: Effect.Effect<void>;
 }
-
-/**
- * Where the child's stdout/stderr go. Dev keeps `inherit` so `pnpm dev`
- * streams to the terminal; packaged apps have no console, so output is
- * captured to two bounded files under `logDir` — otherwise a failing
- * production backend leaves no artifact at all. The active file and one
- * rollover retain up to 8 MiB each, keeping the newest crash context without
- * allowing server output to grow indefinitely.
- */
-type BackendOutputTarget =
-  | { readonly _tag: "inherit" }
-  | {
-      readonly _tag: "file";
-      readonly directory: string;
-      readonly filePath: string;
-      readonly previousFilePath: string;
-    };
 
 export interface DesktopBackendManagerShape {
   readonly start: Effect.Effect<void>;
@@ -139,9 +127,8 @@ export class DesktopBackendManager extends Context.Service<
 
 interface ActiveRun {
   readonly id: number;
-  readonly scope: Scope.Closeable;
   readonly fiber: Option.Option<Fiber.Fiber<void, never>>;
-  readonly pid: Option.Option<number>;
+  readonly shutdown: Deferred.Deferred<void>;
 }
 
 interface ManagerState {
@@ -173,63 +160,10 @@ type ManagerServices =
   | NetService
   | FileSystem.FileSystem
   | ChildProcessSpawner.ChildProcessSpawner
-  | HttpClient.HttpClient;
+  | HttpClient.HttpClient
+  | DesktopBackendOutputLog;
 
 const { logInfo, logWarning, logError } = makeComponentLogger("desktop-backend");
-
-const readBackendLogTail = Effect.fn("desktop.backend.readBackendLogTail")(function* (
-  filePath: string,
-  fileSize: FileSystem.Size,
-) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const file = yield* fileSystem.open(filePath, { flag: "r" });
-  yield* file.seek(fileSize - BACKEND_LOG_FILE_LIMIT, "start");
-  const tail = yield* file.readAlloc(BACKEND_LOG_FILE_LIMIT);
-  return Option.getOrElse(tail, () => new Uint8Array());
-}, Effect.scoped);
-
-const rotateBackendLog = Effect.fn("desktop.backend.rotateBackendLog")(function* (
-  output: Extract<BackendOutputTarget, { readonly _tag: "file" }>,
-  fileSize: FileSystem.Size,
-) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  yield* fileSystem.remove(output.previousFilePath, { force: true });
-
-  if (fileSize <= BACKEND_LOG_FILE_LIMIT) {
-    yield* fileSystem.rename(output.filePath, output.previousFilePath);
-    return;
-  }
-
-  const tail = yield* readBackendLogTail(output.filePath, fileSize);
-  yield* fileSystem.writeFile(output.previousFilePath, tail);
-  yield* fileSystem.remove(output.filePath);
-});
-
-const appendBackendLog = Effect.fn("desktop.backend.appendBackendLog")(function* (
-  output: Extract<BackendOutputTarget, { readonly _tag: "file" }>,
-  chunk: Uint8Array,
-) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const currentInfo = yield* fileSystem.stat(output.filePath).pipe(Effect.option);
-  const currentSize = Option.match(currentInfo, {
-    onNone: () => FileSystem.Size(0),
-    onSome: (info) => info.size,
-  });
-
-  if (
-    currentSize > 0 &&
-    (currentSize > BACKEND_LOG_FILE_LIMIT ||
-      currentSize + BigInt(chunk.byteLength) > BACKEND_LOG_FILE_LIMIT)
-  ) {
-    yield* rotateBackendLog(output, currentSize);
-  }
-
-  const retainedChunk =
-    chunk.byteLength > BACKEND_LOG_FILE_LIMIT_BYTES
-      ? chunk.slice(chunk.byteLength - BACKEND_LOG_FILE_LIMIT_BYTES)
-      : chunk;
-  yield* fileSystem.writeFile(output.filePath, retainedChunk, { flag: "a" });
-});
 
 // Resolve the backend port: the configured/default port when free on both
 // loopback stacks, otherwise a fresh ephemeral loopback port.
@@ -245,25 +179,28 @@ const resolvePort = Effect.fn("desktop.backend.resolvePort")(function* (
 // Spawn the child + probe readiness (in a forked fiber), then wait for exit.
 const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(function* (
   config: DesktopBackendStartConfig,
-  output: BackendOutputTarget,
   callbacks: {
     readonly onStarted: (pid: number) => Effect.Effect<void>;
     readonly onReady: Effect.Effect<void>;
     readonly onReadinessFailure: (error: DesktopBackendReadinessError) => Effect.Effect<void>;
+    readonly awaitShutdown: Effect.Effect<void>;
   },
 ): Effect.fn.Return<
   BackendProcessExit,
-  DesktopBackendBootstrapEncodeError | BackendProcessSpawnError,
+  | DesktopBackendBootstrapEncodeError
+  | BackendProcessSpawnError
+  | BackendProcessTerminationError
+  | PlatformError.PlatformError,
   | ChildProcessSpawner.ChildProcessSpawner
-  | FileSystem.FileSystem
   | HttpClient.HttpClient
+  | DesktopBackendOutputLog
   | Scope.Scope
 > {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const output = yield* DesktopBackendOutputLog;
   const bootstrapJson = yield* encodeBootstrapEnvelopeJson(config.bootstrapEnvelope).pipe(
     Effect.mapError((cause) => new DesktopBackendBootstrapEncodeError({ cause })),
   );
-  const stdio = output._tag === "file" ? ("pipe" as const) : ("inherit" as const);
   const command = ChildProcess.make(config.executablePath, [...config.args], {
     cwd: config.cwd,
     env: config.env,
@@ -271,8 +208,8 @@ const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(functio
     // the parent env on top so PATH and friends are still available to the child.
     extendEnv: true,
     stdin: "ignore",
-    stdout: stdio,
-    stderr: stdio,
+    stdout: "pipe",
+    stderr: "pipe",
     killSignal: "SIGTERM",
     forceKillAfter: TERMINATE_GRACE,
     additionalFds: {
@@ -291,22 +228,23 @@ const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(functio
       ),
     );
   yield* callbacks.onStarted(handle.pid);
-
-  if (output._tag === "file") {
-    // Log I/O failures must never take the backend down, so the drain is
-    // fire-and-forget with logging.
-    yield* Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      yield* fileSystem.makeDirectory(output.directory, { recursive: true });
-      const header = `--- backend start pid=${handle.pid} port=${config.port}\n`;
-      yield* appendBackendLog(output, new TextEncoder().encode(header));
-      yield* handle.all.pipe(
-        Stream.runForEach((chunk) => appendBackendLog(output, chunk)),
-        Effect.ignore({ log: true }),
-        Effect.forkScoped,
-      );
-    }).pipe(Effect.ignore({ log: true }));
-  }
+  yield* output.writeSessionBoundary({
+    phase: "START",
+    pid: handle.pid,
+    port: config.port,
+  });
+  const stdoutDrain = yield* handle.stdout.pipe(
+    Stream.runForEach((chunk) => output.writeOutputChunk("stdout", chunk)),
+    Effect.ensuring(Effect.suspend(() => output.flushOutput("stdout"))),
+    Effect.ignore({ log: true }),
+    Effect.forkScoped,
+  );
+  const stderrDrain = yield* handle.stderr.pipe(
+    Stream.runForEach((chunk) => output.writeOutputChunk("stderr", chunk)),
+    Effect.ensuring(Effect.suspend(() => output.flushOutput("stderr"))),
+    Effect.ignore({ log: true }),
+    Effect.forkScoped,
+  );
 
   yield* waitForHttpReady({
     baseUrl: config.httpBaseUrl.href,
@@ -326,10 +264,61 @@ const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(functio
     Effect.forkScoped,
   );
 
-  // Block on the child's exit. When it resolves the run scope closes and the
-  // finalize path decides whether to restart, with the exit code (or kill
-  // signal) carried in the restart reason.
-  return describeProcessExit(yield* Effect.result(handle.exitCode));
+  const processEnd = yield* Effect.raceFirst(
+    Effect.result(handle.exitCode).pipe(
+      Effect.map((result) => ({ _tag: "Exit" as const, result })),
+    ),
+    callbacks.awaitShutdown.pipe(Effect.as({ _tag: "Shutdown" as const })),
+  );
+  const exit =
+    processEnd._tag === "Exit"
+      ? describeProcessExit(processEnd.result)
+      : yield* handle
+          .kill({
+            killSignal: "SIGTERM",
+            forceKillAfter: TERMINATE_GRACE,
+          })
+          .pipe(
+            Effect.catch((error) =>
+              handle.isRunning.pipe(
+                Effect.flatMap((isRunning) =>
+                  isRunning
+                    ? Effect.fail(
+                        new BackendProcessTerminationError({
+                          pid: handle.pid,
+                          cause: error,
+                        }),
+                      )
+                    : logWarning("backend termination raced with process exit", {
+                        errorType: error._tag,
+                      }),
+                ),
+              ),
+            ),
+            Effect.as({
+              reason: "desktop shutdown",
+            } satisfies BackendProcessExit),
+          );
+  yield* Effect.all([Fiber.join(stdoutDrain), Fiber.join(stderrDrain)], {
+    concurrency: "unbounded",
+    discard: true,
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: TERMINATE_GRACE,
+      orElse: () =>
+        Effect.all([Fiber.interrupt(stdoutDrain), Fiber.interrupt(stderrDrain)], {
+          concurrency: "unbounded",
+          discard: true,
+        }),
+    }),
+  );
+  yield* output.writeSessionBoundary({
+    phase: "END",
+    pid: handle.pid,
+    port: config.port,
+    reason: exit.reason,
+  });
+  return exit;
 });
 
 // Builds a backend manager bound to the given readiness callbacks. `layer`
@@ -345,18 +334,10 @@ export const makeManager = (
     const fileSystem = yield* FileSystem.FileSystem;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const httpClient = yield* HttpClient.HttpClient;
+    const backendOutput = yield* DesktopBackendOutputLog;
     const parentScope = yield* Scope.Scope;
     const state = yield* Ref.make(initialState);
     const mutex = yield* Semaphore.make(1);
-
-    const outputTarget: BackendOutputTarget = environment.isPackaged
-      ? {
-          _tag: "file",
-          directory: environment.logDir,
-          filePath: environment.path.join(environment.logDir, "server-child.log"),
-          previousFilePath: environment.path.join(environment.logDir, "server-child.1.log"),
-        }
-      : { _tag: "inherit" };
 
     const currentConfig = Ref.get(state).pipe(Effect.map((current) => current.config));
 
@@ -457,15 +438,15 @@ export const makeManager = (
           }
 
           const runScope = yield* Scope.make("sequential");
+          const shutdown = yield* Deferred.make<void>();
           const runId = yield* Ref.modify(state, (latest) => [
             latest.nextRunId,
             {
               ...latest,
               active: Option.some({
                 id: latest.nextRunId,
-                scope: runScope,
                 fiber: Option.none<Fiber.Fiber<void, never>>(),
-                pid: Option.none<number>(),
+                shutdown,
               } satisfies ActiveRun),
               nextRunId: latest.nextRunId + 1,
             },
@@ -499,15 +480,9 @@ export const makeManager = (
             );
           });
 
-          const program = runBackendProcess(config.value, outputTarget, {
+          const program = runBackendProcess(config.value, {
             onStarted: (pid) =>
               Effect.gen(function* () {
-                yield* Ref.update(state, (latest) => ({
-                  ...latest,
-                  active: Option.map(latest.active, (run) =>
-                    run.id === runId ? { ...run, pid: Option.some(pid) } : run,
-                  ),
-                }));
                 yield* logInfo("backend started", {
                   pid,
                   port: config.value.port,
@@ -533,13 +508,24 @@ export const makeManager = (
               logWarning("backend readiness check failed", {
                 error: error.message,
               }),
+            awaitShutdown: Deferred.await(shutdown),
           }).pipe(
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.provideService(HttpClient.HttpClient, httpClient),
+            Effect.provideService(DesktopBackendOutputLog, backendOutput),
             Scope.provide(runScope),
             Effect.matchEffect({
-              onFailure: (error) => finalizeRun(error.message),
+              onFailure: (error) => {
+                const terminationFailed = error instanceof BackendProcessTerminationError;
+                return logError(
+                  terminationFailed ? "backend termination failed" : "backend process failed",
+                  {
+                    errorType: error._tag,
+                    ...(terminationFailed ? { pid: error.pid, port: config.value.port } : {}),
+                  },
+                ).pipe(Effect.andThen(finalizeRun(error.message)));
+              },
               onSuccess: (exit) => finalizeRun(exit.reason),
             }),
             Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
@@ -559,7 +545,10 @@ export const makeManager = (
     const stop = Effect.gen(function* () {
       const { active, restartFiber } = yield* mutex.withPermits(1)(
         Ref.modify(state, (latest) => [
-          { active: latest.active, restartFiber: latest.restartFiber },
+          {
+            active: latest.active,
+            restartFiber: latest.restartFiber,
+          },
           {
             ...latest,
             desiredRunning: false,
@@ -577,18 +566,13 @@ export const makeManager = (
       yield* Option.match(active, {
         onNone: () => Effect.void,
         onSome: (run) =>
-          // Closing the run scope tears down the ChildProcessSpawner handle,
-          // which sends SIGTERM and force-kills after the grace window.
-          Scope.close(run.scope, Exit.void)
-            .pipe(
-              Effect.andThen(
-                Option.match(run.fiber, {
-                  onNone: () => Effect.void,
-                  onSome: (fiber) => Fiber.await(fiber).pipe(Effect.asVoid),
-                }),
-              ),
-            )
-            .pipe(Effect.ignore),
+          Effect.gen(function* () {
+            yield* Deferred.succeed(run.shutdown, undefined);
+            yield* Option.match(run.fiber, {
+              onNone: () => Effect.void,
+              onSome: (fiber) => Fiber.await(fiber).pipe(Effect.asVoid),
+            });
+          }),
       });
     }).pipe(Effect.withSpan("desktop.backend.stop"));
 
@@ -614,6 +598,7 @@ export const layer: Layer.Layer<
   | FileSystem.FileSystem
   | ChildProcessSpawner.ChildProcessSpawner
   | HttpClient.HttpClient
+  | DesktopBackendOutputLog
 > = Layer.effect(
   DesktopBackendManager,
   Effect.gen(function* () {

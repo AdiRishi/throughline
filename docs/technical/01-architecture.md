@@ -27,6 +27,36 @@ The division of labor is the important commitment:
 
 Everything is local-first: there is no Throughline cloud, no telemetry, no server other than the one the shell spawns. The reviewer's own `gh` login and their own agent-harness logins are the only credentials in the system.
 
+## Local diagnostics
+
+The desktop shell and local server each install an Effect logger set with a
+human-readable terminal logger and a batched structured file logger.
+Development therefore keeps `pnpm dev:desktop` as the live, searchable view of
+desktop and server behavior; the same metadata-only events also survive in the
+platform application-data directory:
+
+| File                    | Contents                                                                                                                            |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `logs/desktop.log`      | Desktop startup, lifecycle, window, IPC, updater, and supervision events.                                                           |
+| `logs/server.log`       | Server startup, RPC-owned operations, ingestion lifecycle, and typed operational failures.                                          |
+| `logs/server-child.log` | The supervised child's sanitized stdout/stderr plus process session boundaries, including failures before the server logger starts. |
+
+Each file keeps an 8 MiB active file and one previous generation. The Settings
+page reveals this directory directly in the desktop app. On macOS it is
+`~/Library/Application Support/throughline/logs`; on Windows it is
+`%APPDATA%/throughline/logs`; on Linux it is
+`${XDG_CONFIG_HOME:-~/.config}/throughline/logs`.
+If a platform log path is unavailable, observability degrades to the launching
+terminal instead of preventing the desktop or server from starting.
+
+These logs are local diagnostics, not telemetry. They record stable structural
+context such as component, run, job, pull request, stage, outcome, and typed
+error code. Credentials, authenticated URL query strings, prompts, diffs,
+harness output, and transcript contents are excluded. The verbatim harness
+transcripts described in [04](./04-analysis.md) remain separate sensitive run
+artifacts and are never gathered into general diagnostics automatically
+([ADR-0008](../adr/0008-local-diagnostics-use-terminal-and-bounded-files.md)).
+
 ## Package map
 
 The monorepo keeps pure journey logic separate from host-specific runtime modules:

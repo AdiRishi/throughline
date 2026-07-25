@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Ref from "effect/Ref";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 
 import {
@@ -11,6 +12,7 @@ import {
   type DesktopUpdateState,
   type DesktopUpdateStatus,
 } from "@app/contracts";
+import { safeDiagnosticErrorType, sanitizeDiagnosticText } from "@app/shared/safeLog";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import { makeComponentLogger } from "../app/DesktopObservability.ts";
@@ -24,7 +26,7 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 // not packaged there is no feed/signing, so it stays "disabled" and the action
 // methods are inert — the renderer's update UI degrades to read-only.
 
-const { logInfo } = makeComponentLogger("desktop-updater");
+const { logInfo, logWarning } = makeComponentLogger("desktop-updater");
 
 type DesktopUpdateAction = "check" | "download" | "install";
 
@@ -112,6 +114,7 @@ export const make = Effect.gen(function* () {
   // against the captured context so pushes reach the renderer.
   const context = yield* Effect.context<ElectronWindow.ElectronWindow>();
   const runFork = Effect.runForkWith(context);
+  const callbackAnnotationsRef = yield* Ref.make<Record<string, unknown>>({});
 
   const pushState = (state: DesktopUpdateState) =>
     electronWindow.sendAll(UPDATE_STATE_CHANNEL, state);
@@ -135,7 +138,25 @@ export const make = Effect.gen(function* () {
   if (enabled) {
     for (const [eventName, toPatch] of UPDATER_EVENTS) {
       yield* electronUpdater.on(eventName, (...args: ReadonlyArray<unknown>) => {
-        runFork(applyPatch(toPatch(...args)));
+        const patch = toPatch(...args);
+        runFork(
+          Ref.get(callbackAnnotationsRef).pipe(
+            Effect.flatMap((annotations) =>
+              Effect.gen(function* () {
+                if (eventName === "error") {
+                  yield* logWarning("updater reported an error", {
+                    errorType: safeDiagnosticErrorType(args[0]),
+                    message:
+                      patch.message === null || patch.message === undefined
+                        ? "Unknown updater error."
+                        : sanitizeDiagnosticText(patch.message, 2_048),
+                  });
+                }
+                yield* applyPatch(patch);
+              }).pipe(Effect.annotateLogs(annotations)),
+            ),
+          ),
+        );
       });
     }
   }
@@ -166,7 +187,12 @@ export const make = Effect.gen(function* () {
       }
       yield* applyPatch(start).pipe(
         Effect.andThen(driver),
-        Effect.catch((error) => applyPatch({ status: "error", message: error.message })),
+        Effect.catch((error) =>
+          logWarning("updater action failed", {
+            action,
+            errorType: safeDiagnosticErrorType(error),
+          }).pipe(Effect.andThen(applyPatch({ status: "error", message: error.message }))),
+        ),
         Effect.asVoid,
         Effect.ensuring(releaseAction),
       );
@@ -175,6 +201,7 @@ export const make = Effect.gen(function* () {
   return DesktopUpdater.of({
     configure: enabled
       ? Effect.gen(function* () {
+          yield* Ref.set(callbackAnnotationsRef, yield* References.CurrentLogAnnotations);
           yield* electronUpdater.setAutoDownload(false);
           yield* electronUpdater.setAutoInstallOnAppQuit(false);
           yield* electronUpdater.setChannel(persisted.updateChannel);
@@ -232,7 +259,12 @@ export const make = Effect.gen(function* () {
             return;
           }
           yield* electronUpdater.quitAndInstall({ isSilent: false, isForceRunAfter: true }).pipe(
-            Effect.catch((error) => applyPatch({ status: "error", message: error.message })),
+            Effect.catch((error) =>
+              logWarning("updater action failed", {
+                action: "install",
+                errorType: safeDiagnosticErrorType(error),
+              }).pipe(Effect.andThen(applyPatch({ status: "error", message: error.message }))),
+            ),
             Effect.asVoid,
             Effect.ensuring(releaseAction),
           );

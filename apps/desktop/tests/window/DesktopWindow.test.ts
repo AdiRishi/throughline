@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
@@ -137,6 +138,7 @@ function makeTestLayer(input: {
               input.openedExternalUrls?.push(url);
               return true;
             }),
+          openPath: () => Effect.succeed(true),
         } satisfies ElectronShell.ElectronShell["Service"]),
         electronThemeLayer,
         electronWindowLayer,
@@ -229,6 +231,56 @@ describe("DesktopWindow", () => {
         assert.isTrue(prevented);
         assert.deepEqual(openedExternalUrls, ["https://accounts.microsoft.com/oauth"]);
       }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("captures sanitized renderer failures with the desktop run id", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const records: Array<ReturnType<typeof Logger.formatStructured.log>> = [];
+      const recordingLogger = Logger.make((options) => {
+        records.push(Logger.formatStructured.log(options));
+      });
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady(backendConfig);
+        const consoleMessage = fakeWindow.webContentsListeners.get("console-message");
+        if (!consoleMessage) {
+          return yield* Effect.die("console-message listener was not registered");
+        }
+
+        consoleMessage({
+          level: "error",
+          message: "Authorization: Bearer renderer-secret-sentinel",
+          lineNumber: 42,
+          sourceId: "data:text/javascript,private-diff-prompt-sentinel",
+        });
+        while (!records.some((record) => record.message === "renderer console diagnostic")) {
+          yield* Effect.yieldNow;
+        }
+      }).pipe(
+        Effect.annotateLogs({ scope: "desktop", runId: "window-run-test" }),
+        Effect.provide(layer),
+        Effect.provide(Logger.layer([recordingLogger])),
+      );
+
+      const record = records.find(
+        (candidate) => candidate.message === "renderer console diagnostic",
+      );
+      assert.equal(record?.annotations.runId, "window-run-test");
+      assert.equal(record?.annotations.component, "desktop-window");
+      assert.equal(record?.annotations.rendererLevel, "error");
+      assert.equal(record?.annotations.message, "Authorization: Bearer [redacted]");
+      assert.equal(record?.annotations.source, "[unsupported-url]");
+      assert.notInclude(JSON.stringify(record), "private-diff-prompt-sentinel");
     }),
   );
 });

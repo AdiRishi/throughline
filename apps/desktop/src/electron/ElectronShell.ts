@@ -22,6 +22,7 @@ export class ElectronShell extends Context.Service<
   ElectronShell,
   {
     readonly openExternal: (rawUrl: unknown) => Effect.Effect<boolean>;
+    readonly openPath: (path: string) => Effect.Effect<boolean>;
   }
 >()("@app/desktop/electron/ElectronShell") {}
 
@@ -37,6 +38,13 @@ export const make = ElectronShell.of({
           ),
         ),
     }),
+  openPath: (path) =>
+    Effect.promise(() =>
+      Electron.shell.openPath(path).then(
+        (errorMessage) => errorMessage.length === 0,
+        () => false,
+      ),
+    ),
 });
 
 export const layer = Layer.succeed(ElectronShell, make);

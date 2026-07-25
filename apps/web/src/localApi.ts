@@ -57,6 +57,11 @@ function createLocalApi(): LocalApi {
       window.open(url, "_blank", "noopener,noreferrer");
     },
 
+    openLogsFolder: async () => {
+      if (bridge) return bridge.openLogsFolder();
+      return false;
+    },
+
     confirm: async (message: string) => {
       if (bridge) return bridge.confirm(message);
       return window.confirm(message);

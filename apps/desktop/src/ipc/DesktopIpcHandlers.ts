@@ -15,6 +15,7 @@ import {
   getServerBootstrap,
   getTheme,
   openExternal,
+  openLogsFolder,
   pickFolder,
   setTheme,
   showContextMenu,
@@ -33,6 +34,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
 
   yield* ipc.handle(setTheme);
   yield* ipc.handle(openExternal);
+  yield* ipc.handle(openLogsFolder);
   yield* ipc.handle(confirm);
   yield* ipc.handle(pickFolder);
   yield* ipc.handle(showContextMenu);

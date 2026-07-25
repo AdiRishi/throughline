@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
 
   setTheme: (theme) => ipcRenderer.invoke(IpcChannels.SET_THEME_CHANNEL, theme),
   openExternal: (url) => ipcRenderer.invoke(IpcChannels.OPEN_EXTERNAL_CHANNEL, url),
+  openLogsFolder: () => ipcRenderer.invoke(IpcChannels.OPEN_LOGS_FOLDER_CHANNEL),
   confirm: (message) => ipcRenderer.invoke(IpcChannels.CONFIRM_CHANNEL, message),
   pickFolder: (options) => ipcRenderer.invoke(IpcChannels.PICK_FOLDER_CHANNEL, options),
   showContextMenu: (items, position) =>

@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -97,6 +98,19 @@ export const openExternal = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.window.openExternal")(function* (url) {
     const shell = yield* ElectronShell.ElectronShell;
     return yield* shell.openExternal(url);
+  }),
+});
+
+export const openLogsFolder = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.OPEN_LOGS_FOLDER_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.window.openLogsFolder")(function* () {
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const shell = yield* ElectronShell.ElectronShell;
+    yield* fileSystem.makeDirectory(environment.logDir, { recursive: true });
+    return yield* shell.openPath(environment.logDir);
   }),
 });
 

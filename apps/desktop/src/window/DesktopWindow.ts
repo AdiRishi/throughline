@@ -4,7 +4,10 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as References from "effect/References";
 import type * as Electron from "electron";
+
+import { sanitizeDiagnosticText, sanitizeDiagnosticUrl } from "@app/shared/safeLog";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import { makeComponentLogger } from "../app/DesktopObservability.ts";
@@ -61,7 +64,7 @@ export class DesktopWindow extends Context.Service<
   }
 >()("@app/desktop/window/DesktopWindow") {}
 
-const { logInfo, logWarning } = makeComponentLogger("desktop-window");
+const { logInfo, logWarning, logError } = makeComponentLogger("desktop-window");
 
 function initialBackgroundColor(shouldUseDarkColors: boolean): string {
   return shouldUseDarkColors ? "#0f1116" : "#f7f8fa";
@@ -181,6 +184,11 @@ export const make = Effect.gen(function* () {
   const createWindow = Effect.fn("desktop.window.createWindow")(function* () {
     const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
     const applicationUrl = yield* Ref.get(applicationUrlRef);
+    const callbackAnnotations = yield* References.CurrentLogAnnotations;
+    const runWindowFork = <A, E>(effect: Effect.Effect<A, E, DesktopWindowRuntimeServices>) =>
+      runFork(effect.pipe(Effect.annotateLogs(callbackAnnotations)));
+    const runWindowPromise = <A, E>(effect: Effect.Effect<A, E, DesktopWindowRuntimeServices>) =>
+      runPromise(effect.pipe(Effect.annotateLogs(callbackAnnotations)));
     const window = yield* electronWindow.create({
       width: 1440,
       height: 900,
@@ -221,7 +229,7 @@ export const make = Effect.gen(function* () {
     // Open http/https links externally instead of navigating the shell.
     yield* electronWindow.setWindowOpenHandler(window, ({ url }) => {
       if (Option.isSome(ElectronShell.parseSafeExternalUrl(url))) {
-        void runPromise(electronShell.openExternal(url));
+        void runWindowPromise(electronShell.openExternal(url));
       }
       return { action: "deny" };
     });
@@ -237,7 +245,7 @@ export const make = Effect.gen(function* () {
 
       event.preventDefault();
       if (Option.isSome(ElectronShell.parseSafeExternalUrl(url))) {
-        void runPromise(electronShell.openExternal(url));
+        void runWindowPromise(electronShell.openExternal(url));
       }
     });
 
@@ -247,10 +255,10 @@ export const make = Effect.gen(function* () {
     });
 
     yield* electronWindow.onReadyToShow(window, () => {
-      void runPromise(electronWindow.reveal(window));
+      void runWindowPromise(electronWindow.reveal(window));
     });
     yield* electronWindow.onClosed(window, () => {
-      void runPromise(electronWindow.clearMain(Option.some(window)));
+      void runWindowPromise(electronWindow.clearMain(Option.some(window)));
     });
 
     let developmentLoadRetryIndex = 0;
@@ -261,7 +269,7 @@ export const make = Effect.gen(function* () {
       }
       const retryFiber = developmentLoadRetryFiber;
       developmentLoadRetryFiber = undefined;
-      runFork(Fiber.interrupt(retryFiber));
+      runWindowFork(Fiber.interrupt(retryFiber));
     };
     const loadApplication = () => {
       if (window.isDestroyed()) {
@@ -280,7 +288,7 @@ export const make = Effect.gen(function* () {
       );
       const retryInMs = DEVELOPMENT_LOAD_RETRY_DELAYS_MS[retryIndex] ?? 2_000;
       developmentLoadRetryIndex += 1;
-      developmentLoadRetryFiber = runFork(
+      developmentLoadRetryFiber = runWindowFork(
         Effect.sleep(retryInMs).pipe(
           Effect.andThen(
             Effect.sync(() => {
@@ -325,7 +333,7 @@ export const make = Effect.gen(function* () {
           })
             ? scheduleDevelopmentLoadRetry()
             : undefined;
-        void runPromise(
+        void runWindowPromise(
           logWarning("main window failed to load", {
             errorCode,
             errorDescription,
@@ -336,12 +344,37 @@ export const make = Effect.gen(function* () {
       },
     );
     window.webContents.on("render-process-gone", (_event, details) => {
-      void runPromise(
+      void runWindowPromise(
         logWarning("main window render process gone", {
           reason: details.reason,
           exitCode: details.exitCode,
         }),
       );
+    });
+    window.webContents.on("console-message", (details) => {
+      if (details.level !== "warning" && details.level !== "error") {
+        return;
+      }
+      const log = details.level === "error" ? logError : logWarning;
+      void runWindowPromise(
+        log("renderer console diagnostic", {
+          rendererLevel: details.level,
+          message: sanitizeDiagnosticText(details.message, 4_096),
+          lineNumber: details.lineNumber,
+          source: sanitizeDiagnosticUrl(details.sourceId),
+        }),
+      );
+    });
+    window.webContents.on("preload-error", (_event, preloadPath, error) => {
+      void runWindowPromise(
+        logError("renderer preload failed", {
+          preloadPath,
+          message: sanitizeDiagnosticText(error.message, 4_096),
+        }),
+      );
+    });
+    window.webContents.on("unresponsive", () => {
+      void runWindowPromise(logWarning("main window became unresponsive"));
     });
 
     loadApplication();
@@ -377,11 +410,17 @@ export const make = Effect.gen(function* () {
   // Menu clicks arrive as raw Electron callbacks, so bridge each back into the
   // Effect world via `runPromise` (a dispatch failure is logged, not thrown).
   const installApplicationMenu = Effect.gen(function* () {
+    const callbackAnnotations = yield* References.CurrentLogAnnotations;
     const template = buildApplicationMenuTemplate(
       environment.displayName,
       environment.platform,
       (action) => {
-        void runPromise(dispatchMenuAction(action).pipe(Effect.ignore({ log: true })));
+        void runPromise(
+          dispatchMenuAction(action).pipe(
+            Effect.ignore({ log: true }),
+            Effect.annotateLogs(callbackAnnotations),
+          ),
+        );
       },
     );
     yield* electronMenu.setApplicationMenu(template);

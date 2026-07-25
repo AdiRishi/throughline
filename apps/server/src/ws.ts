@@ -27,6 +27,7 @@ import {
   WsRpcGroup,
   type ServerLifecycleStreamEvent,
 } from "@app/contracts";
+import { safeDiagnosticErrorType } from "@app/shared/safeLog";
 
 import * as Ingestion from "./analysis/Ingestion.ts";
 import * as Auth from "./auth.ts";
@@ -106,6 +107,25 @@ const makeCoreWsRpcLayer = () =>
 
 const nonEmptyDetail = (detail: string): string =>
   detail.trim() || "The operation could not be completed.";
+
+const logRpcFailure = (method: string, error: unknown) =>
+  Effect.logWarning("RPC operation failed").pipe(
+    Effect.annotateLogs({
+      component: "rpc",
+      rpcMethod: method,
+      errorType: safeDiagnosticErrorType(error),
+    }),
+  );
+
+const withRpcFailureLogging =
+  (method: string) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    effect.pipe(Effect.tapError((error) => logRpcFailure(method, error)));
+
+const withRpcStreamFailureLogging =
+  (method: string) =>
+  <A, E, R>(stream: Stream.Stream<A, E, R>): Stream.Stream<A, E, R> =>
+    stream.pipe(Stream.tapError((error) => logRpcFailure(method, error)));
 
 const storeOperationError =
   (operation: string) =>
@@ -239,15 +259,18 @@ export const makeProductWsRpcLayer = () =>
         );
 
       return ProductWsRpcGroup.of({
-        [PRODUCT_WS_METHODS.githubViewer]: () => github.identity(),
+        [PRODUCT_WS_METHODS.githubViewer]: () =>
+          github.identity().pipe(withRpcFailureLogging(PRODUCT_WS_METHODS.githubViewer)),
         [PRODUCT_WS_METHODS.githubPrs]: () =>
           pullRequests.subscribe.pipe(
+            withRpcStreamFailureLogging(PRODUCT_WS_METHODS.githubPrs),
             Stream.mapError(indexOperationError(PRODUCT_WS_METHODS.githubPrs)),
           ),
         [PRODUCT_WS_METHODS.githubRefreshPrs]: () =>
           pullRequests
             .refresh()
             .pipe(
+              withRpcFailureLogging(PRODUCT_WS_METHODS.githubRefreshPrs),
               Effect.mapError(indexOperationError(PRODUCT_WS_METHODS.githubRefreshPrs)),
               Effect.asVoid,
             ),
@@ -255,6 +278,7 @@ export const makeProductWsRpcLayer = () =>
           pullRequests
             .retry()
             .pipe(
+              withRpcFailureLogging(PRODUCT_WS_METHODS.githubRetry),
               Effect.mapError(indexOperationError(PRODUCT_WS_METHODS.githubRetry)),
               Effect.asVoid,
             ),
@@ -265,58 +289,83 @@ export const makeProductWsRpcLayer = () =>
         [PRODUCT_WS_METHODS.journeyGet]: ({ pr }) =>
           journeyQuery
             .get(pr)
-            .pipe(Effect.mapError(journeyQueryGetError(PRODUCT_WS_METHODS.journeyGet))),
+            .pipe(
+              withRpcFailureLogging(PRODUCT_WS_METHODS.journeyGet),
+              Effect.mapError(journeyQueryGetError(PRODUCT_WS_METHODS.journeyGet)),
+            ),
         [PRODUCT_WS_METHODS.journeyFilePatch]: ({ journeyId, path }) =>
           journeyQuery
             .filePatch(journeyId, path)
-            .pipe(Effect.mapError(journeyQueryFileError(PRODUCT_WS_METHODS.journeyFilePatch))),
+            .pipe(
+              withRpcFailureLogging(PRODUCT_WS_METHODS.journeyFilePatch),
+              Effect.mapError(journeyQueryFileError(PRODUCT_WS_METHODS.journeyFilePatch)),
+            ),
         [PRODUCT_WS_METHODS.journeyFileContent]: ({ journeyId, path }) =>
           journeyQuery
             .fileContent(journeyId, path)
-            .pipe(Effect.mapError(journeyQueryFileError(PRODUCT_WS_METHODS.journeyFileContent))),
+            .pipe(
+              withRpcFailureLogging(PRODUCT_WS_METHODS.journeyFileContent),
+              Effect.mapError(journeyQueryFileError(PRODUCT_WS_METHODS.journeyFileContent)),
+            ),
         [PRODUCT_WS_METHODS.journeyTree]: ({ journeyId }) =>
           journeyQuery
             .tree(journeyId)
-            .pipe(Effect.mapError(journeyQueryArtifactError(PRODUCT_WS_METHODS.journeyTree))),
+            .pipe(
+              withRpcFailureLogging(PRODUCT_WS_METHODS.journeyTree),
+              Effect.mapError(journeyQueryArtifactError(PRODUCT_WS_METHODS.journeyTree)),
+            ),
         [PRODUCT_WS_METHODS.readStateGet]: ({ journeyId }) =>
           journeyState
             .get(journeyId)
-            .pipe(Effect.mapError(journeyStateError(PRODUCT_WS_METHODS.readStateGet))),
+            .pipe(
+              withRpcFailureLogging(PRODUCT_WS_METHODS.readStateGet),
+              Effect.mapError(journeyStateError(PRODUCT_WS_METHODS.readStateGet)),
+            ),
         [PRODUCT_WS_METHODS.readStateMarkFile]: ({ clusterId, journeyId, path }) =>
           journeyState.mark(journeyId, { clusterId, path }).pipe(
+            withRpcFailureLogging(PRODUCT_WS_METHODS.readStateMarkFile),
             Effect.mapError(journeyStateMutationError(PRODUCT_WS_METHODS.readStateMarkFile)),
             Effect.tap(() => recomputePullRequests(PRODUCT_WS_METHODS.readStateMarkFile)),
           ),
         [PRODUCT_WS_METHODS.readStateUnmarkFile]: ({ clusterId, journeyId, path }) =>
           journeyState.unmark(journeyId, { clusterId, path }).pipe(
+            withRpcFailureLogging(PRODUCT_WS_METHODS.readStateUnmarkFile),
             Effect.mapError(journeyStateMutationError(PRODUCT_WS_METHODS.readStateUnmarkFile)),
             Effect.tap(() => recomputePullRequests(PRODUCT_WS_METHODS.readStateUnmarkFile)),
           ),
         [PRODUCT_WS_METHODS.readStateSetDisplayMode]: ({ displayMode, journeyId }) =>
           journeyState.setDisplayMode(journeyId, displayMode).pipe(
+            withRpcFailureLogging(PRODUCT_WS_METHODS.readStateSetDisplayMode),
             Effect.mapError(journeyStateError(PRODUCT_WS_METHODS.readStateSetDisplayMode)),
             Effect.tap(() => recomputePullRequests(PRODUCT_WS_METHODS.readStateSetDisplayMode)),
           ),
         [PRODUCT_WS_METHODS.readStateSubscribe]: ({ journeyId }) =>
           journeyState
             .subscribe(journeyId)
-            .pipe(Stream.mapError(journeyStateError(PRODUCT_WS_METHODS.readStateSubscribe))),
+            .pipe(
+              withRpcStreamFailureLogging(PRODUCT_WS_METHODS.readStateSubscribe),
+              Stream.mapError(journeyStateError(PRODUCT_WS_METHODS.readStateSubscribe)),
+            ),
         [PRODUCT_WS_METHODS.prStateGet]: () =>
           store.getLocalPrState.pipe(
+            withRpcFailureLogging(PRODUCT_WS_METHODS.prStateGet),
             Effect.mapError(storeOperationError(PRODUCT_WS_METHODS.prStateGet)),
           ),
         [PRODUCT_WS_METHODS.prStateReviewed]: ({ active, pr }) =>
           store.setReviewed(pr, active).pipe(
+            withRpcFailureLogging(PRODUCT_WS_METHODS.prStateReviewed),
             Effect.mapError(storeOperationError(PRODUCT_WS_METHODS.prStateReviewed)),
             Effect.tap(() => recomputePullRequests(PRODUCT_WS_METHODS.prStateReviewed)),
           ),
         [PRODUCT_WS_METHODS.prStateHide]: ({ active, pr }) =>
           store.setHidden(pr, active).pipe(
+            withRpcFailureLogging(PRODUCT_WS_METHODS.prStateHide),
             Effect.mapError(storeOperationError(PRODUCT_WS_METHODS.prStateHide)),
             Effect.tap(() => recomputePullRequests(PRODUCT_WS_METHODS.prStateHide)),
           ),
         [PRODUCT_WS_METHODS.prStateDismissMerged]: ({ active, pr }) =>
           store.setDismissedMerged(pr, active).pipe(
+            withRpcFailureLogging(PRODUCT_WS_METHODS.prStateDismissMerged),
             Effect.mapError(storeOperationError(PRODUCT_WS_METHODS.prStateDismissMerged)),
             Effect.tap(() => recomputePullRequests(PRODUCT_WS_METHODS.prStateDismissMerged)),
           ),
@@ -324,12 +373,16 @@ export const makeProductWsRpcLayer = () =>
           harnesses.statuses.pipe(Effect.map((statuses) => ({ harnesses: statuses }))),
         [PRODUCT_WS_METHODS.settingsGet]: () =>
           store.getSettings.pipe(
+            withRpcFailureLogging(PRODUCT_WS_METHODS.settingsGet),
             Effect.mapError(storeOperationError(PRODUCT_WS_METHODS.settingsGet)),
           ),
         [PRODUCT_WS_METHODS.settingsUpdate]: ({ harness }) =>
           store
             .setHarness(harness === null ? undefined : harness)
-            .pipe(Effect.mapError(storeOperationError(PRODUCT_WS_METHODS.settingsUpdate))),
+            .pipe(
+              withRpcFailureLogging(PRODUCT_WS_METHODS.settingsUpdate),
+              Effect.mapError(storeOperationError(PRODUCT_WS_METHODS.settingsUpdate)),
+            ),
       });
     }),
   );

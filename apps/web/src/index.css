@@ -971,6 +971,38 @@ p.merged-title {
   line-height: 1.35;
 }
 
+.diagnostics-row {
+  display: flex;
+  min-height: 84px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  border-bottom: 1px solid var(--border);
+  padding: 16px 4px;
+}
+
+.diagnostics-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.diagnostics-copy strong {
+  color: var(--reading);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.diagnostics-copy span {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.diagnostics-error {
+  margin: 10px 4px 0;
+  color: var(--danger);
+  font-size: 11px;
+}
+
 .about-backdrop {
   position: fixed;
   z-index: 100;
@@ -1112,6 +1144,12 @@ p.merged-title {
 
   .row-actions {
     grid-column: auto;
+  }
+
+  .diagnostics-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
   }
 }
 

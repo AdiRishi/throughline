@@ -13,7 +13,7 @@ import * as DesktopUpdater from "../updates/DesktopUpdater.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopLifecycle from "./DesktopLifecycle.ts";
-import { makeComponentLogger } from "./DesktopObservability.ts";
+import { DesktopFileLog, makeComponentLogger } from "./DesktopObservability.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as DesktopState from "./DesktopState.ts";
 
@@ -102,9 +102,22 @@ const scopedProgram = Effect.scoped(
 
     const shutdown = yield* DesktopShutdown.DesktopShutdown;
     const manager = yield* DesktopBackendManager.DesktopBackendManager;
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    const fileLog = yield* DesktopFileLog;
 
-    yield* Effect.addFinalizer(() => manager.stop.pipe(Effect.ensuring(shutdown.markComplete)));
+    yield* Effect.addFinalizer(() =>
+      manager.stop.pipe(
+        Effect.andThen(logStartupInfo("desktop process stopped")),
+        Effect.andThen(fileLog.flush),
+        Effect.ensuring(shutdown.markComplete),
+      ),
+    );
 
+    yield* logStartupInfo("desktop process starting", {
+      version: environment.appVersion,
+      mode: environment.isDevelopment ? "development" : "packaged",
+      logFile: environment.path.join(environment.logDir, "desktop.log"),
+    });
     yield* startup;
     yield* shutdown.awaitRequest;
   }),
