@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -127,8 +128,9 @@ function drainBackendOutput(
 
 export interface DesktopBackendManagerShape {
   readonly start: Effect.Effect<void>;
-  readonly stop: Effect.Effect<void>;
+  readonly stop: (options?: { readonly timeout?: Duration.Duration }) => Effect.Effect<void>;
   readonly currentConfig: Effect.Effect<Option.Option<DesktopBackendStartConfig>>;
+  readonly snapshot: Effect.Effect<DesktopBackendSnapshot>;
 }
 
 export class DesktopBackendManager extends Context.Service<
@@ -153,6 +155,14 @@ interface ManagerState {
   readonly nextRunId: number;
 }
 
+export interface DesktopBackendSnapshot {
+  readonly desiredRunning: boolean;
+  readonly ready: boolean;
+  readonly activePid: Option.Option<number>;
+  readonly restartAttempt: number;
+  readonly restartScheduled: boolean;
+}
+
 const initialState: ManagerState = {
   desiredRunning: false,
   ready: false,
@@ -163,8 +173,33 @@ const initialState: ManagerState = {
   nextRunId: 1,
 };
 
+const activePid = (active: Option.Option<ActiveRun>): Option.Option<number> =>
+  Option.flatMap(active, (run) => run.pid);
+
+const withActiveRun =
+  (runId: number, update: (run: ActiveRun) => ActiveRun) =>
+  (state: ManagerState): ManagerState => ({
+    ...state,
+    active: Option.map(state.active, (run) => (run.id === runId ? update(run) : run)),
+  });
+
 const calculateRestartDelay = (attempt: number): Duration.Duration =>
   Duration.min(Duration.times(INITIAL_RESTART_DELAY, 2 ** attempt), MAX_RESTART_DELAY);
+
+const closeRun = (
+  run: ActiveRun,
+  options?: { readonly timeout?: Duration.Duration },
+): Effect.Effect<void> => {
+  const waitForFiber = Option.match(run.fiber, {
+    onNone: () => Effect.void,
+    onSome: (fiber) => Fiber.await(fiber).pipe(Effect.asVoid),
+  });
+  const close = Scope.close(run.scope, Exit.void).pipe(Effect.andThen(waitForFiber));
+
+  return (
+    options?.timeout ? close.pipe(Effect.timeoutOption(options.timeout), Effect.asVoid) : close
+  ).pipe(Effect.ignore);
+};
 
 type ManagerServices =
   | DesktopBackendConfiguration.DesktopBackendConfiguration
@@ -290,7 +325,27 @@ export const makeManager = (
     const state = yield* Ref.make(initialState);
     const mutex = yield* Semaphore.make(1);
 
+    const updateActiveRun = (runId: number, update: (run: ActiveRun) => ActiveRun) =>
+      Ref.update(state, withActiveRun(runId, update));
+    const snapshot = Ref.get(state).pipe(
+      Effect.map(
+        (current): DesktopBackendSnapshot => ({
+          desiredRunning: current.desiredRunning,
+          ready: current.ready,
+          activePid: activePid(current.active),
+          restartAttempt: current.restartAttempt,
+          restartScheduled: Option.isSome(current.restartFiber),
+        }),
+      ),
+    );
     const currentConfig = Ref.get(state).pipe(Effect.map((current) => current.config));
+    const notifyNotReady = callbacks.onNotReady.pipe(
+      Effect.catchCause((cause) =>
+        logWarning("backend not-ready callback failed", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
 
     const cancelRestart = Effect.gen(function* () {
       const restartFiber = yield* Ref.modify(state, (current) => [
@@ -334,7 +389,16 @@ export const makeManager = (
                   ]),
                 ),
                 Effect.flatMap((shouldRestart) => (shouldRestart ? start : Effect.void)),
-                Effect.ignore({ log: true }),
+                Effect.catchCause((cause) => {
+                  if (Cause.hasInterruptsOnly(cause)) {
+                    return Effect.void;
+                  }
+                  return logError("desktop backend restart fiber failed", {
+                    reason,
+                    delayMs: Duration.toMillis(delay),
+                    cause: Cause.pretty(cause),
+                  });
+                }),
               ),
               parentScope,
             );
@@ -422,7 +486,7 @@ export const makeManager = (
                 });
                 if (isCurrentRun) {
                   yield* backendOutputLog.writeSessionBoundary({ phase: "END", details: reason });
-                  yield* callbacks.onNotReady;
+                  yield* notifyNotReady;
                   const latest = yield* Ref.get(state);
                   if (latest.desiredRunning) {
                     yield* scheduleRestart(reason);
@@ -435,12 +499,7 @@ export const makeManager = (
           const program = runBackendProcess(config.value, backendOutputLog, {
             onStarted: (pid) =>
               Effect.gen(function* () {
-                yield* Ref.update(state, (latest) => ({
-                  ...latest,
-                  active: Option.map(latest.active, (run) =>
-                    run.id === runId ? { ...run, pid: Option.some(pid) } : run,
-                  ),
-                }));
+                yield* updateActiveRun(runId, (run) => ({ ...run, pid: Option.some(pid) }));
                 yield* backendOutputLog.writeSessionBoundary({
                   phase: "START",
                   details: `pid=${pid} port=${config.value.port} cwd=${config.value.cwd}`,
@@ -483,28 +542,31 @@ export const makeManager = (
           );
 
           const fiber = yield* Effect.forkIn(program, parentScope);
-          yield* Ref.update(state, (latest) => ({
-            ...latest,
-            active: Option.map(latest.active, (run) =>
-              run.id === runId ? { ...run, fiber: Option.some(fiber) } : run,
-            ),
-          }));
+          yield* updateActiveRun(runId, (run) => ({ ...run, fiber: Option.some(fiber) }));
         }),
       ),
     ).pipe(Effect.withSpan("desktop.backend.start"));
 
-    const stop = Effect.gen(function* () {
+    const stop = Effect.fn("desktop.backend.stop")(function* (options?: {
+      readonly timeout?: Duration.Duration;
+    }) {
       const { active, restartFiber } = yield* mutex.withPermits(1)(
-        Ref.modify(state, (latest) => [
-          { active: latest.active, restartFiber: latest.restartFiber },
-          {
-            ...latest,
-            desiredRunning: false,
-            ready: false,
-            active: Option.none<ActiveRun>(),
-            restartFiber: Option.none<Fiber.Fiber<void, never>>(),
-          },
-        ]),
+        Effect.gen(function* () {
+          const result = yield* Ref.modify(state, (latest) => [
+            { active: latest.active, restartFiber: latest.restartFiber },
+            {
+              ...latest,
+              desiredRunning: false,
+              ready: false,
+              active: Option.none<ActiveRun>(),
+              restartFiber: Option.none<Fiber.Fiber<void, never>>(),
+            },
+          ]);
+          if (Option.isSome(result.active)) {
+            yield* notifyNotReady;
+          }
+          return result;
+        }),
       );
 
       yield* Option.match(restartFiber, {
@@ -513,28 +575,17 @@ export const makeManager = (
       });
       yield* Option.match(active, {
         onNone: () => Effect.void,
-        onSome: (run) =>
-          // Closing the run scope tears down the ChildProcessSpawner handle,
-          // which sends SIGTERM and force-kills after the grace window.
-          Scope.close(run.scope, Exit.void)
-            .pipe(
-              Effect.andThen(
-                Option.match(run.fiber, {
-                  onNone: () => Effect.void,
-                  onSome: (fiber) => Fiber.await(fiber).pipe(Effect.asVoid),
-                }),
-              ),
-            )
-            .pipe(Effect.ignore),
+        onSome: (run) => closeRun(run, options),
       });
-    }).pipe(Effect.withSpan("desktop.backend.stop"));
+    });
 
-    yield* Effect.addFinalizer(() => stop);
+    yield* Effect.addFinalizer(() => stop());
 
     return {
       start,
       stop,
       currentConfig,
+      snapshot,
     } satisfies DesktopBackendManagerShape;
   });
 
@@ -557,10 +608,14 @@ export const layer: Layer.Layer<
   Effect.gen(function* () {
     const window = yield* DesktopWindow.DesktopWindow;
     const manager = yield* makeManager({
-      // A window-create failure while revealing on backend-ready is unexpected
-      // and fatal; surface it as a defect rather than widening the callback's
-      // error channel.
-      onReady: (config) => window.handleBackendReady(config).pipe(Effect.orDie),
+      onReady: (config) =>
+        window.handleBackendReady(config).pipe(
+          Effect.catch((error) =>
+            logWarning("failed to open main window after backend readiness", {
+              error: error.message,
+            }),
+          ),
+        ),
       onNotReady: window.handleBackendNotReady,
     });
     return manager;
