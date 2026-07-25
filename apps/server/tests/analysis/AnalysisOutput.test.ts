@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
@@ -16,8 +17,12 @@ import { makePinnedFileLookup } from "@app/journey/evidence";
 
 import {
   assembleJourney,
+  clusterNarrationJsonSchema,
   ClusterNarrationOutput,
   completePlan,
+  decodePlanOutput,
+  overviewJsonSchema,
+  planJsonSchema,
   PlanOutput,
 } from "../../src/analysis/AnalysisOutput.ts";
 
@@ -72,6 +77,50 @@ const seeds: ReadonlyArray<SeedHunkValue> = [
 ];
 
 describe("analysis deterministic completion", () => {
+  it.effect("exposes OpenAI-compatible schemas with matching optional-field decoding", () =>
+    Effect.gen(function* () {
+      assert.notInclude(
+        JSON.stringify([planJsonSchema, overviewJsonSchema, clusterNarrationJsonSchema]),
+        '"allOf"',
+      );
+      const hunkSchema = (
+        (planJsonSchema.properties as Record<string, unknown>).hunks as {
+          readonly items: {
+            readonly required: ReadonlyArray<string>;
+          };
+        }
+      ).items;
+      assert.include(hunkSchema.required, "fileKind");
+
+      const decoded = yield* decodePlanOutput({
+        clusters: [
+          {
+            id: "core",
+            title: "Core behavior",
+            weight: "core",
+            buildsOn: [],
+            fileOrder: ["src/core.ts"],
+          },
+        ],
+        hunks: [
+          {
+            id: "h1",
+            seedId: "s1",
+            path: "src/core.ts",
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            fileKind: null,
+            home: "core",
+          },
+        ],
+      });
+
+      assert.isFalse("fileKind" in decoded.hunks[0]!);
+    }),
+  );
+
   it("keeps valid refinements and places uncovered seeds in an honest final cluster", () => {
     const output = decodePlan({
       clusters: [

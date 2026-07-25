@@ -228,6 +228,54 @@ describe("Ingestion", () => {
       }),
     );
 
+    it.effect("publishes a concise trail of distinct observed actions", () =>
+      Effect.gen(function* () {
+        const activityPublished = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const service = yield* makeIngestion((input) =>
+          Effect.gen(function* () {
+            yield* input.callbacks.onPhase("analyzing");
+            yield* input.callbacks.onStage("planning");
+            for (const action of [
+              "Reading the pinned change",
+              "Reading the pinned change",
+              "Tracing the change through repository context",
+              "Tracing the change through repository context",
+              "Reading the pinned change",
+            ]) {
+              yield* input.callbacks.onHarnessEvent("planning", {
+                type: "activity",
+                action,
+              });
+            }
+            yield* Deferred.succeed(activityPublished, undefined);
+            yield* Deferred.await(release);
+            return { journey: journey(input.pr, input.journeyId) };
+          }),
+        );
+        const pr = ref(12);
+
+        yield* service.start({ type: "ref", ref: pr });
+        yield* Deferred.await(activityPublished);
+        const active = yield* service.subscribe(pr).pipe(
+          Stream.filter(
+            (event) =>
+              event.job?.activity?.currentAction === "Reading the pinned change" &&
+              event.job.activity.recentActions[0] ===
+                "Tracing the change through repository context",
+          ),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+
+        assert.deepStrictEqual(active.job?.activity?.recentActions, [
+          "Tracing the change through repository context",
+        ]);
+        yield* Deferred.succeed(release, undefined);
+        yield* awaitPhase(service, pr, "complete");
+      }),
+    );
+
     it.effect("interrupts a running job and exposes cancellation as terminal state", () =>
       Effect.gen(function* () {
         const started = yield* Deferred.make<void>();

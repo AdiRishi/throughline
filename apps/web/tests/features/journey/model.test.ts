@@ -10,6 +10,7 @@ import type {
 } from "@app/contracts";
 
 import {
+  advanceIngestionRun,
   changedRegionsForPath,
   codeModeLineAnchor,
   countHeadLines,
@@ -18,12 +19,17 @@ import {
   describeFileLevelChange,
   fileHomes,
   findSymbolLine,
+  INITIAL_INGESTION_RUN_TRACKING,
   isClusterHomePath,
   journeyWasReplaced,
   parsePrRouteParams,
+  retainRetryableIngestionJob,
   resolveClusterRoute,
   resolveEvidenceTarget,
   resolveFileRoute,
+  shouldAutomaticallyStartIngestion,
+  shouldShowJourneyLoadFailure,
+  visibleIngestionJob,
 } from "../../../src/features/journey/model.ts";
 
 const makeJourney = (): Journey =>
@@ -299,6 +305,90 @@ describe("route resolution", () => {
     expect(journeyWasReplaced(null, firstJourneyId)).toBe(false);
     expect(journeyWasReplaced(firstJourneyId, firstJourneyId)).toBe(false);
     expect(journeyWasReplaced(firstJourneyId, replacementJourneyId.id)).toBe(true);
+  });
+});
+
+describe("ingestion run continuity", () => {
+  it("keeps a server-lost run visible until the reviewer explicitly retries", () => {
+    const active = advanceIngestionRun(INITIAL_INGESTION_RUN_TRACKING, {
+      type: "started",
+      kind: "initial",
+    });
+    const lost = advanceIngestionRun(active, { type: "server-replaced" });
+
+    expect(
+      advanceIngestionRun(lost, {
+        type: "job-observed",
+        terminal: false,
+        kindWhenActive: "initial",
+      }),
+    ).toBe(lost);
+    expect(lost).toEqual({ expected: null, lost: "initial" });
+    expect(
+      advanceIngestionRun(lost, {
+        type: "started",
+        kind: "initial",
+      }),
+    ).toEqual({ expected: "initial", lost: null });
+  });
+
+  it("retains a retryable terminal run when a restarted server reports no job", () => {
+    const failed = ingestionJob("failed", {
+      failure: { code: "harness", message: "The harness stopped." },
+    });
+    const retained = retainRetryableIngestionJob(null, failed);
+
+    expect(retainRetryableIngestionJob(retained, null)).toBe(failed);
+    expect(retainRetryableIngestionJob(retained, ingestionJob("analyzing"))).toBeNull();
+    expect(retainRetryableIngestionJob(retained, ingestionJob("complete"))).toBeNull();
+  });
+
+  it("keeps a pre-restart job hidden until retry observes a fresh job id", () => {
+    const stale = ingestionJob("analyzing");
+    const fresh = ingestionJob("analyzing", { id: "job-2" as IngestionJob["id"] });
+
+    expect(visibleIngestionJob(stale, stale.id)).toBeNull();
+    expect(visibleIngestionJob(fresh, stale.id)).toBe(fresh);
+    expect(visibleIngestionJob(null, stale.id)).toBeNull();
+  });
+
+  it("surfaces journey load failures whenever no run is still active", () => {
+    expect(shouldShowJourneyLoadFailure(null, true)).toBe(true);
+    expect(shouldShowJourneyLoadFailure(ingestionJob("failed"), true)).toBe(true);
+    expect(shouldShowJourneyLoadFailure(ingestionJob("analyzing"), true)).toBe(false);
+    expect(shouldShowJourneyLoadFailure(null, false)).toBe(false);
+  });
+
+  it("waits for both server snapshots before starting a missing journey", () => {
+    const ready = {
+      serverReady: true,
+      journeyHydrated: true,
+      hasJourney: false,
+      ingestionHydrated: true,
+      hasJob: false,
+      attempted: false,
+      runTracking: INITIAL_INGESTION_RUN_TRACKING,
+    };
+
+    expect(shouldAutomaticallyStartIngestion(ready)).toBe(true);
+    expect(
+      shouldAutomaticallyStartIngestion({
+        ...ready,
+        journeyHydrated: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutomaticallyStartIngestion({
+        ...ready,
+        ingestionHydrated: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutomaticallyStartIngestion({
+        ...ready,
+        hasJourney: true,
+      }),
+    ).toBe(false);
   });
 });
 

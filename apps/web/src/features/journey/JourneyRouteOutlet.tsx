@@ -27,11 +27,18 @@ import {
 } from "./JourneyContext.tsx";
 import { JourneyRouteNotice } from "./JourneyRouteNotice.tsx";
 import {
+  advanceIngestionRun,
   deriveIngestionStages,
+  INITIAL_INGESTION_RUN_TRACKING,
   journeyWasReplaced,
   parsePrRouteParams,
+  retainRetryableIngestionJob,
   resolveEvidenceTarget,
   resolveFileRoute,
+  shouldAutomaticallyStartIngestion,
+  shouldShowJourneyLoadFailure,
+  type IngestionRunKind,
+  visibleIngestionJob,
 } from "./model.ts";
 
 import "./journey.css";
@@ -85,37 +92,45 @@ export function JourneyLayoutRoute() {
 function JourneyResolver({ pr }: { readonly pr: PrRef }) {
   const navigate = useNavigate();
   const journeyAtoms = useMemo(() => productAtoms.journeyDocument(pr), [pr]);
-  const ingestionAtom = useMemo(() => productAtoms.ingestionJob(pr), [pr]);
+  const ingestionAtoms = useMemo(() => productAtoms.ingestionJob(pr), [pr]);
   const document = useAtomValue(journeyAtoms.value);
+  const journeyHydrated = useAtomValue(journeyAtoms.hydrated);
   const documentResult = useAtomValue(journeyAtoms.result);
-  const job = useAtomValue(ingestionAtom);
+  const job = useAtomValue(ingestionAtoms.value);
+  const ingestionHydrated = useAtomValue(ingestionAtoms.hydrated);
   const startResult = useAtomValue(productAtoms.startIngestion);
   const cancelResult = useAtomValue(productAtoms.cancelIngestion);
   const serverConfig = useAtomValue(connectionAtoms.serverConfig);
   const startIngestion = useAtomSet(productAtoms.startIngestion);
   const cancelIngestion = useAtomSet(productAtoms.cancelIngestion);
   const automaticStartAttempted = useRef(false);
-  const expectedRunKind = useRef<"initial" | "reanalysis" | null>(null);
+  const runTracking = useRef(INITIAL_INGESTION_RUN_TRACKING);
   const previousServerEpoch = useRef<number | null>(null);
-  const awaitingRestartSnapshot = useRef(false);
-  const previousJob = useRef(job);
-  const [lostRun, setLostRun] = useState<"initial" | "reanalysis" | null>(null);
+  const [lostRun, setLostRun] = useState<IngestionRunKind | null>(null);
+  const [retainedTerminalJob, setRetainedTerminalJob] = useState<IngestionJob | null>(null);
+  const latestJob = useRef(job);
+  const suppressedJobId = useRef<IngestionJob["id"] | null>(null);
   const mountedJourneyId = useRef<JourneyDocument["journey"]["id"] | null>(null);
   const serverEpoch = serverConfig === null ? null : DateTime.toEpochMillis(serverConfig.startedAt);
+  latestJob.current = job;
+  const currentJob = visibleIngestionJob(job, suppressedJobId.current);
+  const visibleJob = lostRun === null ? (currentJob ?? retainedTerminalJob) : null;
 
   const loseExpectedRun = useCallback(() => {
-    const kind = expectedRunKind.current;
-    if (kind === null) return;
-    expectedRunKind.current = null;
-    awaitingRestartSnapshot.current = false;
-    setLostRun(kind);
+    const next = advanceIngestionRun(runTracking.current, { type: "server-replaced" });
+    runTracking.current = next;
+    setLostRun(next.lost);
   }, []);
 
   const startRun = useCallback(
-    (kind: "initial" | "reanalysis") => {
-      expectedRunKind.current = kind;
-      awaitingRestartSnapshot.current = false;
+    (kind: IngestionRunKind) => {
+      suppressedJobId.current = latestJob.current?.id ?? null;
+      runTracking.current = advanceIngestionRun(runTracking.current, {
+        type: "started",
+        kind,
+      });
       setLostRun(null);
+      setRetainedTerminalJob(null);
       startIngestion({ type: "ref", ref: pr });
     },
     [pr, startIngestion],
@@ -144,45 +159,50 @@ function JourneyResolver({ pr }: { readonly pr: PrRef }) {
     if (
       previousEpoch === null ||
       previousEpoch === serverEpoch ||
-      expectedRunKind.current === null
+      runTracking.current.expected === null
     ) {
       return;
     }
-    awaitingRestartSnapshot.current = true;
-    if (job === null) loseExpectedRun();
-  }, [job, loseExpectedRun, serverEpoch]);
+    loseExpectedRun();
+  }, [loseExpectedRun, serverEpoch]);
 
   useEffect(() => {
-    const changed = previousJob.current !== job;
-    previousJob.current = job;
-    if (job === null) {
-      if (changed && awaitingRestartSnapshot.current) loseExpectedRun();
-      return;
+    if (job === null || job.id !== suppressedJobId.current) {
+      suppressedJobId.current = null;
     }
-    if (terminalIngestion(job)) {
-      expectedRunKind.current = null;
-      awaitingRestartSnapshot.current = false;
-      setLostRun(null);
-      return;
-    }
-    if (changed) awaitingRestartSnapshot.current = false;
-    expectedRunKind.current ??= document === null ? "initial" : "reanalysis";
-    setLostRun(null);
-  }, [document, job, loseExpectedRun]);
+    setRetainedTerminalJob((retained) => retainRetryableIngestionJob(retained, job));
+    if (job === null) return;
+    const previous = runTracking.current;
+    const next = advanceIngestionRun(previous, {
+      type: "job-observed",
+      terminal: terminalIngestion(job),
+      kindWhenActive: document === null ? "initial" : "reanalysis",
+    });
+    runTracking.current = next;
+    if (previous.lost !== null) return;
+
+    automaticStartAttempted.current = true;
+    setLostRun(next.lost);
+  }, [document, job]);
 
   useEffect(() => {
+    if (!AsyncResult.isSuccess(documentResult)) return;
     if (
-      serverEpoch === null ||
-      document !== null ||
-      job !== null ||
-      !AsyncResult.isSuccess(documentResult) ||
-      automaticStartAttempted.current
+      !shouldAutomaticallyStartIngestion({
+        serverReady: serverEpoch !== null,
+        journeyHydrated,
+        hasJourney: document !== null,
+        ingestionHydrated,
+        hasJob: job !== null,
+        attempted: automaticStartAttempted.current,
+        runTracking: runTracking.current,
+      })
     ) {
       return;
     }
     automaticStartAttempted.current = true;
     startRun("initial");
-  }, [document, documentResult, job, serverEpoch, startRun]);
+  }, [document, documentResult, ingestionHydrated, job, journeyHydrated, serverEpoch, startRun]);
 
   const retry = useCallback(() => {
     startRun(document === null ? "initial" : "reanalysis");
@@ -195,42 +215,54 @@ function JourneyResolver({ pr }: { readonly pr: PrRef }) {
         ? "The local server restarted before this analysis run reappeared. Retry to begin a new run."
         : "The local server restarted before the reanalysis run reappeared. The pinned journey remains available.";
 
-  if (document === null && (activeIngestion(job) || !terminalIngestion(job))) {
+  if (
+    document === null &&
+    shouldShowJourneyLoadFailure(visibleJob, AsyncResult.isFailure(documentResult))
+  ) {
+    return (
+      <JourneyRouteNotice
+        eyebrow="Journey unavailable"
+        title="The pinned journey could not be opened."
+        detail={
+          AsyncResult.isFailure(documentResult)
+            ? causeMessage(documentResult.cause)
+            : "The journey could not be opened."
+        }
+        action="Reload"
+        onAction={() => window.location.reload()}
+      />
+    );
+  }
+
+  if (document === null && (activeIngestion(visibleJob) || !terminalIngestion(visibleJob))) {
     return (
       <IngestionTransition
         pr={pr}
-        job={job}
+        job={visibleJob}
         starting={startResult.waiting}
         error={
           lostRunMessage ??
           (AsyncResult.isFailure(startResult) ? causeMessage(startResult.cause) : null)
         }
         cancelError={AsyncResult.isFailure(cancelResult) ? causeMessage(cancelResult.cause) : null}
-        onCancel={job === null || !activeIngestion(job) ? null : () => cancelIngestion(job.id)}
+        onCancel={
+          visibleJob === null || !activeIngestion(visibleJob)
+            ? null
+            : () => cancelIngestion(visibleJob.id)
+        }
         onRetry={retry}
       />
     );
   }
 
   if (document === null) {
-    if (AsyncResult.isFailure(documentResult)) {
-      return (
-        <JourneyRouteNotice
-          eyebrow="Journey unavailable"
-          title="The pinned journey could not be opened."
-          detail={causeMessage(documentResult.cause)}
-          action="Reload"
-          onAction={() => window.location.reload()}
-        />
-      );
-    }
     return (
       <IngestionTransition
         pr={pr}
-        job={job}
+        job={visibleJob}
         starting={startResult.waiting}
         error={
-          job?.failure?.message ??
+          visibleJob?.failure?.message ??
           lostRunMessage ??
           (AsyncResult.isFailure(startResult) ? causeMessage(startResult.cause) : null)
         }
@@ -248,9 +280,9 @@ function JourneyResolver({ pr }: { readonly pr: PrRef }) {
       document={document}
       runIssue={
         lostRunMessage ??
-        (job?.phase === "failed"
-          ? (job.failure?.message ?? "The latest reanalysis did not complete.")
-          : job?.phase === "cancelled"
+        (visibleJob?.phase === "failed"
+          ? (visibleJob.failure?.message ?? "The latest reanalysis did not complete.")
+          : visibleJob?.phase === "cancelled"
             ? "The latest reanalysis was cancelled. The pinned journey remains available."
             : AsyncResult.isFailure(startResult)
               ? causeMessage(startResult.cause)
@@ -258,10 +290,12 @@ function JourneyResolver({ pr }: { readonly pr: PrRef }) {
                 ? causeMessage(cancelResult.cause)
                 : null)
       }
-      activeReanalysis={activeIngestion(job) ? job : null}
+      activeReanalysis={activeIngestion(visibleJob) ? visibleJob : null}
       cancellingReanalysis={cancelResult.waiting}
       onCancelReanalysis={
-        job === null || !activeIngestion(job) ? null : () => cancelIngestion(job.id)
+        visibleJob === null || !activeIngestion(visibleJob)
+          ? null
+          : () => cancelIngestion(visibleJob.id)
       }
       onReanalyze={retry}
     />

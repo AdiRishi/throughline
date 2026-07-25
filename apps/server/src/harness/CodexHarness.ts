@@ -84,6 +84,14 @@ const usageFromCodex = (usage: Usage | undefined): HarnessUsage | undefined =>
         cachedInputTokens: usage.cached_input_tokens,
       };
 
+const commandActivity = (command: string): string => {
+  if (/\binputs(?:\/|\b)/u.test(command)) return "Reading the pinned change";
+  if (/\brepository(?:\/|\b)/u.test(command)) {
+    return "Tracing the change through repository context";
+  }
+  return "Inspecting the analysis workspace";
+};
+
 const activityFromEvent = (
   event: ThreadEvent,
 ):
@@ -103,7 +111,7 @@ const activityFromEvent = (
   const item = event.item;
   switch (item.type) {
     case "command_execution":
-      return { action: item.command };
+      return { action: commandActivity(item.command) };
     case "mcp_tool_call":
       return { action: `${item.server}.${item.tool}` };
     case "reasoning":
@@ -120,7 +128,7 @@ const activityFromEvent = (
         ...(item.changes[0] === undefined ? {} : { path: item.changes[0].path }),
       };
     case "error":
-      return { action: item.message };
+      return undefined;
     case "agent_message":
       return undefined;
   }
@@ -273,13 +281,22 @@ export const makeCodexHarness = (dependencies: CodexHarnessDependencies): Analys
           });
         }
 
-        const controller = yield* Effect.acquireRelease(
-          Effect.sync(() => new AbortController()),
-          (active) => Effect.sync(() => active.abort()),
+        const activeRun = yield* Effect.acquireRelease(
+          Effect.sync(() => ({
+            controller: new AbortController(),
+            settled: false,
+          })),
+          (active) => (active.settled ? Effect.void : Effect.sync(() => active.controller.abort())),
         );
 
         const result = yield* Effect.tryPromise({
-          try: () => runSdk(task, binary, controller, sdk),
+          try: async () => {
+            try {
+              return await runSdk(task, binary, activeRun.controller, sdk);
+            } finally {
+              activeRun.settled = true;
+            }
+          },
           catch: (cause) =>
             cause instanceof HarnessRunError
               ? cause
@@ -289,7 +306,7 @@ export const makeCodexHarness = (dependencies: CodexHarnessDependencies): Analys
                   detail: cause instanceof Error ? cause.message : String(cause),
                   cause,
                 }),
-        }).pipe(Effect.onInterrupt(() => Effect.sync(() => controller.abort())));
+        }).pipe(Effect.onInterrupt(() => Effect.sync(() => activeRun.controller.abort())));
 
         const value = yield* decodeOutput("codex", task, result.raw);
         yield* task.onEvent({ type: "completed" });

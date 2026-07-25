@@ -16,7 +16,7 @@ AnalysisHarness {
 AnalysisTask {
   world,                                   // absolute path; repository/ + inputs/, the agent's whole world
   prompt,                                  // instructions + paths relative to world
-  outputSchema,                            // JSON Schema the result must satisfy
+  outputSchema,                            // provider-compatible JSON Schema the result must satisfy
   continuation?,                           // opaque adapter-owned token from a prior result
   onEvent,                                 // structured progress: started/completed/failed + activity
                                            // (current action, file, monotonic counters) from harness events
@@ -30,13 +30,15 @@ AnalysisResult {
 
 That is the entire interface: detect, run-with-schema, cancel-via-scope. Everything harness-specific — subprocess supervision, protocol, streaming, auth — is implementation behind it. This is T3 Code's provider architecture (`~/forks/t3code`, five harnesses behind one interface) shrunk to Throughline's actual need: **batch analysis with structured output**, no interactive sessions, no approvals, no tool bridging. Both SDKs manage their own CLI binaries, so "install the app" is the whole install.
 
+The application schemas remain Effect schemas. At the harness boundary they pass through Effect's OpenAI structured-output codec: unsupported `allOf` constraints are flattened, optional fields become required nullable fields for the provider, and the paired codec decodes those nulls back to the original optional application shape. Codex therefore receives the subset its response API accepts without weakening the domain decoder; Claude receives the same deterministic wire schema.
+
 | Adapter | Implementation                                                                                                                                                                                                                                |
 | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Codex   | `@openai/codex-sdk`: `startThread({ workingDirectory, sandboxMode: "read-only", approvalPolicy: "never", skipGitRepoCheck })`, then `runStreamed(prompt, { outputSchema, signal })`; auth = the user's Codex CLI login, detected via a probe. |
 | Claude  | `@anthropic-ai/claude-agent-sdk`: `query({ prompt, options: { cwd, allowedTools: read-only set, outputFormat: { type: "json_schema", schema }, abortController } })`; auth = the user's Claude Code login / `claude setup-token`.             |
 | ACP     | _Planned, not v1._ `@agentclientprotocol/sdk` as a third adapter at the same seam — one adapter opens Gemini CLI, Cursor, Goose, and the rest. The seam is shaped so this lands without touching the pipeline.                                |
 
-**Read-only is enforced, not requested**: Codex runs under `sandboxMode: "read-only"`; Claude gets a read-only tool allowlist (no write/edit tools, no shell). A harness that cannot enforce read-only cannot be a v1 adapter. Harness stderr/event streams are logged to the run directory verbatim — the honesty trail for a product whose output is an inference.
+**Read-only is enforced, not requested**: Codex runs under `sandboxMode: "read-only"`; Claude gets a read-only tool allowlist (no write/edit tools, no shell). A harness that cannot enforce read-only cannot be a v1 adapter. Harness stderr/event streams are logged to the run directory verbatim — the honesty trail for a product whose output is an inference. The Codex adapter's owning scope aborts its SDK stream only while that stream is active; a normally settled Codex child is never signalled again during scope cleanup.
 
 Harness selection: the app picks the first authenticated harness (order: Codex, Claude) unless the reviewer set one explicitly in **settings** — a small surface listing every detected harness with its install/auth state and one selection (T3 Code's provider settings page is the shape reference). The choice used is always recorded in the journey's `provenance`; changing it affects future analyses only — to apply it to an existing journey, rerun ingestion. No harness installed/authenticated is a door-level parked state with setup instructions, like `gh`.
 
@@ -91,7 +93,7 @@ The final rung is what makes "the agent always commits" an invariant of the _sys
 
 `Ingestion` (in `apps/server/src/analysis/`) orchestrates the whole flow as a supervised job — one active job per PR, a global cap of one running analysis at a time (harness runs are heavy; queued jobs say so honestly).
 
-Phases are published through the shared snapshot-then-live push-bus contract and consumed directly by the transition UI — the narrated stages the product docs promise are these events, so the narration is honest by construction. `analyzing` events additionally carry a structured activity payload — the current action, a short trail of recent ones, and monotonic counters (files walked, symbols traced, call sites followed) — derived only from observed harness events, never invented; this is what the transition's live feed and counters render (design `02-ingestion`):
+Phases are published through the shared snapshot-then-live push-bus contract and consumed directly by the transition UI — the narrated stages the product docs promise are these events, so the narration is honest by construction. `analyzing` events additionally carry a structured activity payload — the current action, a short trail of recent ones, and monotonic counters (files walked, symbols traced, call sites followed) — derived only from observed harness events, never invented; this is what the transition's live feed and counters render (design `02-ingestion`). Low-level harness commands are mapped to stable product narration, and repeated lifecycle observations do not duplicate the recent-action trail. The run transcript remains verbatim for diagnosis:
 
 ```
 resolving → cloning → diffing → analyzing(stage, detail) → validating → saving → complete

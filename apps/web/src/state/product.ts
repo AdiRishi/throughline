@@ -1,11 +1,14 @@
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import * as SubscriptionRef from "effect/SubscriptionRef";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
-import { ConnectionSupervisor } from "@app/client-runtime/connection";
-import { request as rpcRequest, subscribe as rpcSubscribe } from "@app/client-runtime/rpc";
+import {
+  request as rpcRequest,
+  requestOnEachSession,
+  requestOnEachSessionAndAfter,
+  subscribe as rpcSubscribe,
+} from "@app/client-runtime/rpc";
 import type {
   ClusterId,
   GitHubPrListStreamEvent,
@@ -54,24 +57,6 @@ export const applyPullRequestListEvent = (
   pullRequests: event.pullRequests,
   refreshedAt: event.refreshedAt,
 });
-
-const requestOnEachSession = <A, E>(
-  request: () => Effect.Effect<A, E, ConnectionSupervisor>,
-): Stream.Stream<A, E, ConnectionSupervisor> =>
-  Stream.unwrap(
-    ConnectionSupervisor.pipe(
-      Effect.map((supervisor) =>
-        SubscriptionRef.changes(supervisor.session).pipe(
-          Stream.switchMap(
-            Option.match({
-              onNone: () => Stream.empty,
-              onSome: () => Stream.fromEffect(request()),
-            }),
-          ),
-        ),
-      ),
-    ),
-  );
 
 const viewerResultAtom = connectionRuntime.atom(
   requestOnEachSession(() => rpcRequest("github.viewer", {})),
@@ -189,15 +174,42 @@ const recalledPr = (key: string): PrRef => {
   return pr;
 };
 
+interface HydratedValue<A> {
+  readonly hydrated: boolean;
+  readonly value: A;
+}
+
+const unhydrated = <A>(value: A): HydratedValue<A> => ({
+  hydrated: false,
+  value,
+});
+
+const hydrated = <A>(value: A): HydratedValue<A> => ({
+  hydrated: true,
+  value,
+});
+
 const ingestionJobFamily = Atom.family((key: string) => {
   const pr = recalledPr(key);
   const result = connectionRuntime.atom(
-    rpcSubscribe("ingestion.subscribe", { pr }).pipe(Stream.map((event) => event.job)),
-    { initialValue: null },
+    rpcSubscribe("ingestion.subscribe", { pr }).pipe(Stream.map((event) => hydrated(event.job))),
+    { initialValue: unhydrated<IngestionJob | null>(null) },
   );
-  return Atom.make((get): IngestionJob | null =>
-    Option.getOrElse(AsyncResult.value(get(result)), () => null),
-  ).pipe(Atom.withLabel(`ingestion:${key}`));
+  return {
+    result,
+    hydrated: Atom.make((get): boolean =>
+      Option.match(AsyncResult.value(get(result)), {
+        onNone: () => false,
+        onSome: (snapshot) => snapshot.hydrated,
+      }),
+    ).pipe(Atom.withLabel(`ingestion-hydrated:${key}`)),
+    value: Atom.make((get): IngestionJob | null =>
+      Option.match(AsyncResult.value(get(result)), {
+        onNone: () => null,
+        onSome: (snapshot) => snapshot.value,
+      }),
+    ).pipe(Atom.withLabel(`ingestion:${key}`)),
+  } as const;
 });
 
 const journeyDocumentFamily = Atom.family((key: string) => {
@@ -209,16 +221,24 @@ const journeyDocumentFamily = Atom.family((key: string) => {
     );
   const afterCompletion = rpcSubscribe("ingestion.subscribe", { pr }).pipe(
     Stream.filter((event) => event.type === "updated" && event.job.phase === "complete"),
-    Stream.mapEffect(getJourney),
   );
   const result = connectionRuntime.atom(
-    Stream.merge(requestOnEachSession(getJourney), afterCompletion),
-    { initialValue: null },
+    requestOnEachSessionAndAfter(afterCompletion, getJourney).pipe(Stream.map(hydrated)),
+    { initialValue: unhydrated<JourneyDocument | null>(null) },
   );
   return {
     result,
+    hydrated: Atom.make((get): boolean =>
+      Option.match(AsyncResult.value(get(result)), {
+        onNone: () => false,
+        onSome: (snapshot) => snapshot.hydrated,
+      }),
+    ).pipe(Atom.withLabel(`journey-hydrated:${key}`)),
     value: Atom.make((get): JourneyDocument | null =>
-      Option.getOrElse(AsyncResult.value(get(result)), () => null),
+      Option.match(AsyncResult.value(get(result)), {
+        onNone: () => null,
+        onSome: (snapshot) => snapshot.value,
+      }),
     ).pipe(Atom.withLabel(`journey:${key}`)),
   } as const;
 });

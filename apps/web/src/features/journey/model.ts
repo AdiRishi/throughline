@@ -111,6 +111,101 @@ export interface IngestionStagesView {
   readonly failure: IngestionJob["failure"];
 }
 
+export type IngestionRunKind = "initial" | "reanalysis";
+
+export interface IngestionRunTracking {
+  readonly expected: IngestionRunKind | null;
+  readonly lost: IngestionRunKind | null;
+}
+
+export type IngestionRunEvent =
+  | {
+      readonly type: "started";
+      readonly kind: IngestionRunKind;
+    }
+  | {
+      readonly type: "server-replaced";
+    }
+  | {
+      readonly type: "job-observed";
+      readonly terminal: boolean;
+      readonly kindWhenActive: IngestionRunKind;
+    };
+
+export const INITIAL_INGESTION_RUN_TRACKING: IngestionRunTracking = {
+  expected: null,
+  lost: null,
+};
+
+export function advanceIngestionRun(
+  tracking: IngestionRunTracking,
+  event: IngestionRunEvent,
+): IngestionRunTracking {
+  switch (event.type) {
+    case "started":
+      return { expected: event.kind, lost: null };
+    case "server-replaced":
+      return tracking.expected === null ? tracking : { expected: null, lost: tracking.expected };
+    case "job-observed":
+      if (tracking.lost !== null) return tracking;
+      return event.terminal
+        ? INITIAL_INGESTION_RUN_TRACKING
+        : {
+            expected: tracking.expected ?? event.kindWhenActive,
+            lost: null,
+          };
+  }
+}
+
+export function shouldAutomaticallyStartIngestion(input: {
+  readonly serverReady: boolean;
+  readonly journeyHydrated: boolean;
+  readonly hasJourney: boolean;
+  readonly ingestionHydrated: boolean;
+  readonly hasJob: boolean;
+  readonly attempted: boolean;
+  readonly runTracking: IngestionRunTracking;
+}): boolean {
+  return (
+    input.serverReady &&
+    input.journeyHydrated &&
+    !input.hasJourney &&
+    input.ingestionHydrated &&
+    !input.hasJob &&
+    !input.attempted &&
+    input.runTracking.expected === null &&
+    input.runTracking.lost === null
+  );
+}
+
+export function retainRetryableIngestionJob(
+  retained: IngestionJob | null,
+  observed: IngestionJob | null,
+): IngestionJob | null {
+  if (observed === null) return retained;
+  return observed.phase === "failed" || observed.phase === "cancelled" ? observed : null;
+}
+
+export function visibleIngestionJob(
+  observed: IngestionJob | null,
+  suppressedJobId: IngestionJob["id"] | null,
+): IngestionJob | null {
+  return observed?.id === suppressedJobId ? null : observed;
+}
+
+export function shouldShowJourneyLoadFailure(
+  job: IngestionJob | null,
+  documentFailed: boolean,
+): boolean {
+  return (
+    documentFailed &&
+    (job === null ||
+      job.phase === "complete" ||
+      job.phase === "failed" ||
+      job.phase === "cancelled")
+  );
+}
+
 const decodePrRef = Schema.decodeUnknownOption(PrRef);
 const decodeRepositoryPath = Schema.decodeUnknownOption(RepositoryPath);
 

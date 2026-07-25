@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
-import type { Components } from "react-markdown";
-import ReactMarkdown from "react-markdown";
+import type { Components, UrlTransform } from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { localApi } from "../../localApi.ts";
@@ -10,6 +10,9 @@ const REMARK_PLUGINS = [remarkGfm];
 const MARKDOWN_COMPONENTS: Components = {
   a: JourneyMarkdownAnchor,
 };
+
+const transformJourneyMarkdownUrl: UrlTransform = (url, key) =>
+  key === "href" && url.startsWith("tl:") ? url : defaultUrlTransform(url);
 
 export function JourneyMarkdown({
   markdown,
@@ -23,7 +26,11 @@ export function JourneyMarkdown({
   return (
     <EvidenceNavigationContext value={onEvidence}>
       <div className={className}>
-        <ReactMarkdown components={MARKDOWN_COMPONENTS} remarkPlugins={REMARK_PLUGINS}>
+        <ReactMarkdown
+          components={MARKDOWN_COMPONENTS}
+          remarkPlugins={REMARK_PLUGINS}
+          urlTransform={transformJourneyMarkdownUrl}
+        >
           {markdown}
         </ReactMarkdown>
       </div>

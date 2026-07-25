@@ -271,7 +271,9 @@ export const make = Effect.gen(function* () {
           recentActions:
             previous === null
               ? []
-              : [previous.currentAction, ...previous.recentActions].slice(0, 5),
+              : [...new Set([previous.currentAction, ...previous.recentActions])]
+                  .filter((previousAction) => previousAction !== action)
+                  .slice(0, 5),
           counters,
         };
         const now = yield* DateTime.now;

@@ -28,8 +28,10 @@ import {
 
 import * as GhCli from "./GhCli.ts";
 
-const GRAPHQL_PAGE_SIZE = 100;
-const GRAPHQL_CONNECTION_BATCH_SIZE = 20;
+const GRAPHQL_REPOSITORY_PAGE_SIZE = 20;
+const GRAPHQL_INITIAL_PULL_REQUEST_PAGE_SIZE = 1;
+const GRAPHQL_PULL_REQUEST_PAGE_SIZE = 25;
+const GRAPHQL_CONNECTION_BATCH_SIZE = 10;
 
 const GRAPHQL_PULL_REQUEST_PAGE_FRAGMENT = `fragment ThroughlinePullRequestPage on PullRequestConnection {
   nodes {
@@ -58,7 +60,7 @@ const GRAPHQL_PULL_REQUEST_PAGE_FRAGMENT = `fragment ThroughlinePullRequestPage 
 const GRAPHQL_PULL_REQUESTS_QUERY = `query ThroughlinePullRequests($repositoryCursor: String) {
   viewer {
     repositories(
-      first: ${GRAPHQL_PAGE_SIZE}
+      first: ${GRAPHQL_REPOSITORY_PAGE_SIZE}
       after: $repositoryCursor
       affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]
       orderBy: { field: PUSHED_AT, direction: DESC }
@@ -69,14 +71,14 @@ const GRAPHQL_PULL_REQUESTS_QUERY = `query ThroughlinePullRequests($repositoryCu
           login
         }
         openPullRequests: pullRequests(
-          first: ${GRAPHQL_PAGE_SIZE}
+          first: ${GRAPHQL_INITIAL_PULL_REQUEST_PAGE_SIZE}
           states: OPEN
           orderBy: { field: UPDATED_AT, direction: DESC }
         ) {
           ...ThroughlinePullRequestPage
         }
         mergedPullRequests: pullRequests(
-          first: ${GRAPHQL_PAGE_SIZE}
+          first: ${GRAPHQL_INITIAL_PULL_REQUEST_PAGE_SIZE}
           states: MERGED
           orderBy: { field: UPDATED_AT, direction: DESC }
         ) {
@@ -519,7 +521,7 @@ const pullRequestPagesQuery = (requests: ReadonlyArray<PullRequestPageRequest>):
     .map(
       (request, index) => `page${index}: repository(owner: $owner${index}, name: $name${index}) {
     page: pullRequests(
-      first: ${GRAPHQL_PAGE_SIZE}
+      first: ${GRAPHQL_PULL_REQUEST_PAGE_SIZE}
       after: $cursor${index}
       states: ${request.kind === "open" ? "OPEN" : "MERGED"}
       orderBy: { field: UPDATED_AT, direction: DESC }

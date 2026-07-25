@@ -6,7 +6,7 @@ How `apps/web` renders the product: state architecture, the Pierre rendering fou
 
 Throughline uses `@effect/atom-react` to project server-owned RPC state into renderer view models. The reviewer's state of record — journeys, read state, PR lists, job progress — lives in the server ([02](./02-domain-model.md)):
 
-- **Server-owned state** arrives as unary fetches (immutable journey data) or snapshot-then-live streams (ingestion progress, read state, PR list) and is folded into purpose-built atoms. Reconnects replay snapshots; the UI can always be rebuilt from the wire.
+- **Server-owned state** arrives as unary fetches (immutable journey data) or snapshot-then-live streams (ingestion progress, read state, PR list) and is folded into purpose-built atoms. Reconnects replay snapshots; per-session unary hydration ignores only socket-race failures and retries on the next session, while domain failures remain visible. The UI can always be rebuilt from the wire.
 - **Renderer-local state** is only ephemera: scroll positions, collapsed-narrative flags, the changed-files-filter toggle. Location — which PR, cluster, or file is open — lives in the URL (see Routing). React state and a few atoms suffice for the rest.
 - Read marks are **optimistic**: the atom updates on click, the RPC persists, the `readState.subscribe` stream confirms (and reconciles other windows). A failed persist rolls back visibly rather than lying.
 
@@ -29,7 +29,7 @@ Every diff surface is `@pierre/diffs` (React bindings); every tree is `@pierre/t
 
 **Welcome** — folds `github.prs` + `harness.status` + local `prState` into one list. Ingested PRs carry derived journey progress; parked states ([03](./03-github.md): `gh` missing, rate-limit parked; [04](./04-analysis.md): no harness) render as calm, instructive banners. Refresh is on-focus and manual only — the no-polling rule is a UI rule too.
 
-**Ingestion transition** — a direct rendering of the `ingestion.subscribe` stream: the displayed stages are a grouped view of the job's phases, the live activity lines and counters render the `analyzing` payload ([04](./04-analysis.md)), and there is no invented progress because there is no other data source. Reconnect mid-run replays the snapshot and the transition resumes where reality is.
+**Ingestion transition** — a direct rendering of the `ingestion.subscribe` stream: the displayed stages are a grouped view of the job's phases, the live activity lines and counters render the `analyzing` payload ([04](./04-analysis.md)), and there is no invented progress because there is no other data source. Reconnect mid-run against the same server replays the snapshot and resumes where reality is. A changed server epoch means the memory-owned job is gone; the renderer discards any stale pre-drop snapshot and offers a fresh retry instead of showing a run that no longer exists.
 
 **Overview** — `journey.overview` rendered as a document across the middle+right panels: Markdown with `tl:` links resolved to navigation, map entries joined with per-cluster derived scale and live progress. The PR's own words sit collapsed at the bottom, from `journey.get` metadata.
 

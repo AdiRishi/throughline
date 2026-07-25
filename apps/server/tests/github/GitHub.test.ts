@@ -619,6 +619,30 @@ describe("GitHub", () => {
     }),
   );
 
+  it.effect("bounds nested pull-request payloads in every repository page", () =>
+    Effect.gen(function* () {
+      let observedQuery = "";
+      const service = yield* makeService(({ args }) => {
+        if (isAuthStatus(args)) {
+          return Effect.succeed({ exitCode: 0, stdout: "", stderr: "" });
+        }
+        if (isViewer(args)) {
+          return Effect.succeed(viewerResult);
+        }
+        if (isGraphQl(args)) {
+          observedQuery = graphQlField(args, "query") ?? "";
+          return Effect.succeed(repositoriesResult());
+        }
+        return Effect.die(`Unexpected gh invocation: ${args.join(" ")}`);
+      });
+
+      yield* service.repositories();
+
+      assert.isTrue(observedQuery.includes("repositories(\n      first: 20"));
+      assert.strictEqual(observedQuery.match(/pullRequests\(\n          first: 1/g)?.length, 2);
+    }),
+  );
+
   it.effect("batches overflow PR connections and follows every advancing cursor", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
@@ -677,6 +701,7 @@ describe("GitHub", () => {
             assert.strictEqual(graphQlField(args, "cursor1"), "rocket-merged-2");
             assert.strictEqual(graphQlField(args, "name2"), "satellite");
             assert.strictEqual(graphQlField(args, "cursor2"), "satellite-open-2");
+            assert.isTrue(query.includes("first: 25"));
             assert.isTrue(query.includes("states: OPEN"));
             assert.isTrue(query.includes("states: MERGED"));
             return Effect.succeed(

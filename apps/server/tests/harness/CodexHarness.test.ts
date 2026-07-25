@@ -210,6 +210,7 @@ describe("CodexHarness", () => {
         additionalProperties: false,
       });
       assert.instanceOf(capture.turnOptions?.signal, AbortSignal);
+      assert.isFalse(capture.turnOptions?.signal?.aborted);
       assert.deepStrictEqual(progress, [
         { type: "started" },
         { type: "activity", action: "Inspecting the hunk index" },
@@ -220,6 +221,92 @@ describe("CodexHarness", () => {
       );
       assert.lengthOf(transcript, successfulEvents().length);
       assert.isTrue(transcript.every((entry) => entry.source === "event"));
+    }),
+  );
+
+  it.effect("maps low-level command events to stable product activity", () =>
+    Effect.gen(function* () {
+      const progress: Array<HarnessProgressEvent> = [];
+      const transcript: Array<HarnessTranscriptEntry> = [];
+      const events: ReadonlyArray<ThreadEvent> = [
+        { type: "thread.started", thread_id: "thread-1" },
+        { type: "turn.started" },
+        {
+          type: "item.completed",
+          item: {
+            id: "command-inputs",
+            type: "command_execution",
+            command: "jq . inputs/hunks.json",
+            aggregated_output: "",
+            exit_code: 0,
+            status: "completed",
+          },
+        },
+        {
+          type: "item.completed",
+          item: {
+            id: "command-repository",
+            type: "command_execution",
+            command: "rg Market repository/src",
+            aggregated_output: "",
+            exit_code: 0,
+            status: "completed",
+          },
+        },
+        {
+          type: "item.completed",
+          item: {
+            id: "command-workspace",
+            type: "command_execution",
+            command: "pwd",
+            aggregated_output: "",
+            exit_code: 0,
+            status: "completed",
+          },
+        },
+        {
+          type: "item.completed",
+          item: {
+            id: "nonfatal-error",
+            type: "error",
+            message: "Raw SDK item error",
+          },
+        },
+        {
+          type: "item.completed",
+          item: { id: "message-1", type: "agent_message", text: '{"ok":true}' },
+        },
+        {
+          type: "turn.completed",
+          usage: {
+            input_tokens: 20,
+            cached_input_tokens: 5,
+            cache_write_input_tokens: 0,
+            output_tokens: 10,
+            reasoning_output_tokens: 3,
+          },
+        },
+      ];
+      const harness = makeCodexHarness({
+        process: processReturning(() => ({ exitCode: 0, stdout: "", stderr: "" })),
+        resolveBinary: () => "/bundled/codex",
+        sdk: sdkReturning({}, () => eventStream(events)),
+      });
+
+      yield* harness.run(makeTask(progress, transcript)).pipe(Effect.scoped);
+
+      assert.deepStrictEqual(
+        progress.filter((event) => event.type === "activity"),
+        [
+          { type: "activity", action: "Reading the pinned change" },
+          { type: "activity", action: "Tracing the change through repository context" },
+          { type: "activity", action: "Inspecting the analysis workspace" },
+        ],
+      );
+      assert.isFalse(
+        progress.some((event) => JSON.stringify(event).includes("Raw SDK item error")),
+      );
+      assert.lengthOf(transcript, events.length);
     }),
   );
 

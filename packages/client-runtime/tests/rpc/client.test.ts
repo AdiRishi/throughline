@@ -11,6 +11,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { RpcClientError } from "effect/unstable/rpc";
+import * as Socket from "effect/unstable/socket/Socket";
 
 import {
   EnvironmentAuthorizationError,
@@ -21,7 +22,13 @@ import {
 
 import { INITIAL_CONNECTION_STATE, type ConnectionState } from "../../src/connection/model.ts";
 import { ConnectionSupervisor } from "../../src/connection/supervisor.ts";
-import { RpcUnavailableError, request, subscribe } from "../../src/rpc/client.ts";
+import {
+  RpcUnavailableError,
+  request,
+  requestOnEachSession,
+  requestOnEachSessionAndAfter,
+  subscribe,
+} from "../../src/rpc/client.ts";
 import type { WsRpcProtocolClient } from "../../src/rpc/protocol.ts";
 import type { RpcSession } from "../../src/rpc/session.ts";
 
@@ -43,9 +50,17 @@ const session = (client: WsRpcProtocolClient): RpcSession => ({
 
 const transportError = () =>
   new RpcClientError.RpcClientError({
+    reason: new Socket.SocketCloseError({
+      code: 1006,
+      closeReason: "socket closed",
+    }),
+  });
+
+const protocolDefect = () =>
+  new RpcClientError.RpcClientError({
     reason: new RpcClientError.RpcClientDefect({
-      message: "socket closed",
-      cause: new Error("socket closed"),
+      message: "incompatible response",
+      cause: new Error("incompatible response"),
     }),
   });
 
@@ -102,6 +117,37 @@ describe("rpc client", () => {
     }),
   );
 
+  it.effect(
+    "per-session requests wait out a transport race and hydrate from the next session",
+    () =>
+      Effect.gen(function* () {
+        const { activeSession, supervisor } = yield* makeHarness;
+        const firstAttempted = yield* Deferred.make<void>();
+        let attempts = 0;
+        const hydration = yield* requestOnEachSession(() => {
+          attempts += 1;
+          return attempts === 1
+            ? Deferred.succeed(firstAttempted, undefined).pipe(
+                Effect.andThen(Effect.fail(transportError())),
+              )
+            : Effect.succeed("fresh");
+        }).pipe(
+          Stream.runHead,
+          Effect.provideService(ConnectionSupervisor, supervisor),
+          Effect.forkChild,
+        );
+
+        const emptyClient = {} as WsRpcProtocolClient;
+        yield* SubscriptionRef.set(activeSession, Option.some(session(emptyClient)));
+        yield* Deferred.await(firstAttempted);
+        yield* SubscriptionRef.set(activeSession, Option.none());
+        yield* SubscriptionRef.set(activeSession, Option.some(session(emptyClient)));
+
+        assert.deepStrictEqual(yield* Fiber.join(hydration), Option.some("fresh"));
+        assert.strictEqual(attempts, 2);
+      }),
+  );
+
   it.effect("subscribe re-attaches to each fresh session across reconnects", () =>
     Effect.gen(function* () {
       const { activeSession, supervisor } = yield* makeHarness;
@@ -148,6 +194,75 @@ describe("rpc client", () => {
 
       assert.deepEqual(yield* Ref.get(values), [1, 2]);
       yield* Fiber.interrupt(consumer);
+    }),
+  );
+
+  it.effect("per-session requests surface RPC protocol defects", () =>
+    Effect.gen(function* () {
+      const { activeSession, supervisor } = yield* makeHarness;
+      const emptyClient = {} as WsRpcProtocolClient;
+      yield* SubscriptionRef.set(activeSession, Option.some(session(emptyClient)));
+
+      const exit = yield* requestOnEachSession(() => Effect.fail(protocolDefect())).pipe(
+        Stream.runHead,
+        Effect.provideService(ConnectionSupervisor, supervisor),
+        Effect.exit,
+      );
+
+      assert.isTrue(Exit.isFailure(exit));
+      if (Exit.isFailure(exit)) {
+        const defectFailure = exit.cause.reasons.some(
+          (reason) =>
+            reason._tag === "Fail" &&
+            reason.error instanceof RpcClientError.RpcClientError &&
+            reason.error.reason._tag === "RpcClientDefect",
+        );
+        assert.isTrue(defectFailure, "expected the RPC protocol defect to surface");
+      }
+    }),
+  );
+
+  it.effect("completion refresh races do not cancel hydration on the next session", () =>
+    Effect.gen(function* () {
+      const { activeSession, supervisor } = yield* makeHarness;
+      const triggers = yield* Queue.unbounded<"complete">();
+      const initialObserved = yield* Deferred.make<void>();
+      const refreshAttempted = yield* Deferred.make<void>();
+      let attempts = 0;
+      const hydration = yield* requestOnEachSessionAndAfter(Stream.fromQueue(triggers), () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return Effect.succeed("initial");
+        }
+        if (attempts === 2) {
+          return Deferred.succeed(refreshAttempted, undefined).pipe(
+            Effect.andThen(Effect.fail(transportError())),
+          );
+        }
+        return Effect.succeed("fresh");
+      }).pipe(
+        Stream.tap((value) =>
+          value === "initial"
+            ? Deferred.succeed(initialObserved, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        ),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.provideService(ConnectionSupervisor, supervisor),
+        Effect.forkChild,
+      );
+
+      const emptyClient = {} as WsRpcProtocolClient;
+      yield* SubscriptionRef.set(activeSession, Option.some(session(emptyClient)));
+      yield* Deferred.await(initialObserved);
+      yield* Queue.offer(triggers, "complete");
+      yield* Deferred.await(refreshAttempted);
+      yield* SubscriptionRef.set(activeSession, Option.none());
+      yield* SubscriptionRef.set(activeSession, Option.some(session(emptyClient)));
+
+      const hydrated = yield* Fiber.join(hydration);
+      assert.deepStrictEqual(hydrated, ["initial", "fresh"]);
+      assert.strictEqual(attempts, 3);
     }),
   );
 

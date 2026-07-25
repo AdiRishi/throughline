@@ -1,5 +1,6 @@
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
+import { toCodecOpenAI } from "effect/unstable/ai/OpenAiStructuredOutput";
 
 import {
   ClusterId,
@@ -58,22 +59,19 @@ export const ClusterNarrationOutput = Schema.Struct({
 });
 export type ClusterNarrationOutput = typeof ClusterNarrationOutput.Type;
 
-export const decodePlanOutput = Schema.decodeUnknownEffect(PlanOutput);
-export const decodeOverviewOutput = Schema.decodeUnknownEffect(OverviewOutput);
-export const decodeClusterNarrationOutput = Schema.decodeUnknownEffect(ClusterNarrationOutput);
+const planStructuredOutput = toCodecOpenAI(PlanOutput);
+const overviewStructuredOutput = toCodecOpenAI(OverviewOutput);
+const clusterNarrationStructuredOutput = toCodecOpenAI(ClusterNarrationOutput);
 
-const jsonSchema = (schema: Schema.Top): Readonly<Record<string, unknown>> => {
-  const document = Schema.toJsonSchemaDocument(schema);
-  return {
-    $schema: "https://json-schema.org/draft/2020-12/schema",
-    ...document.schema,
-    ...(Object.keys(document.definitions).length === 0 ? {} : { $defs: document.definitions }),
-  };
-};
+export const decodePlanOutput = Schema.decodeUnknownEffect(planStructuredOutput.codec);
+export const decodeOverviewOutput = Schema.decodeUnknownEffect(overviewStructuredOutput.codec);
+export const decodeClusterNarrationOutput = Schema.decodeUnknownEffect(
+  clusterNarrationStructuredOutput.codec,
+);
 
-export const planJsonSchema = jsonSchema(PlanOutput);
-export const overviewJsonSchema = jsonSchema(OverviewOutput);
-export const clusterNarrationJsonSchema = jsonSchema(ClusterNarrationOutput);
+export const planJsonSchema = planStructuredOutput.jsonSchema;
+export const overviewJsonSchema = overviewStructuredOutput.jsonSchema;
+export const clusterNarrationJsonSchema = clusterNarrationStructuredOutput.jsonSchema;
 
 export interface FrozenPlan {
   readonly clusters: ReadonlyArray<Cluster>;
