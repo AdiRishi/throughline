@@ -1,7 +1,7 @@
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { IngestionJob, LocalPrState, PrRef, PullRequestSummary } from "@app/contracts";
 
@@ -30,6 +30,113 @@ function phaseLabel(job: IngestionJob): string {
   }
 }
 
+const INGESTION_STAGES = [
+  "Resolve pull request",
+  "Clone pinned head",
+  "Read changed code",
+  "Map the journey",
+  "Write the narrative",
+  "Validate coverage",
+  "Save locally",
+] as const;
+
+function phaseIndex(job: IngestionJob): number {
+  switch (job.phase.type) {
+    case "queued":
+    case "resolving":
+      return 0;
+    case "cloning":
+      return 1;
+    case "diffing":
+      return 2;
+    case "analyzing":
+      return job.phase.stage === "planning" ? 3 : 4;
+    case "validating":
+      return 5;
+    case "saving":
+    case "complete":
+      return 6;
+    default:
+      return -1;
+  }
+}
+
+function IngestionTransition({
+  job,
+  title,
+  onCancel,
+  onRetry,
+}: {
+  readonly job: IngestionJob;
+  readonly title: string;
+  readonly onCancel: () => void;
+  readonly onRetry: () => void;
+}) {
+  const current = phaseIndex(job);
+  return (
+    <section className={`ingestion-transition ${job.phase.type}`} aria-live="polite">
+      <header>
+        <div>
+          <p className="eyebrow">Building a journey</p>
+          <h2>{title}</h2>
+          <p>
+            {job.pr.owner}/{job.pr.repo} · #{job.pr.number}
+          </p>
+        </div>
+        {job.phase.type === "failed" ? (
+          <button className="secondary-button" onClick={onRetry}>
+            Try again
+          </button>
+        ) : (
+          <button className="secondary-button" onClick={onCancel}>
+            Cancel
+          </button>
+        )}
+      </header>
+      {job.phase.type === "failed" ? (
+        <div className="ingestion-failure">
+          <strong>The run stopped.</strong>
+          <p>{job.phase.detail}</p>
+        </div>
+      ) : (
+        <>
+          <ol>
+            {INGESTION_STAGES.map((stage, index) => (
+              <li
+                key={stage}
+                className={index < current ? "complete" : index === current ? "active" : ""}
+              >
+                <span>{index < current ? "✓" : String(index + 1).padStart(2, "0")}</span>
+                {stage}
+              </li>
+            ))}
+          </ol>
+          {job.phase.type === "analyzing" && (
+            <div className="ingestion-activity">
+              <strong>{job.phase.detail.action}</strong>
+              <div>
+                <span>{job.phase.detail.filesWalked} files walked</span>
+                <span>{job.phase.detail.symbolsTraced} symbols traced</span>
+                <span>{job.phase.detail.callSitesFollowed} call sites followed</span>
+              </div>
+              {job.phase.detail.recent.length > 0 && (
+                <ul>
+                  {job.phase.detail.recent.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          <p className="ingestion-leave-note">
+            You can leave this screen. Throughline will keep the run safe and resumable here.
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
 function ProgressBar({ pr }: { readonly pr: PullRequestSummary }) {
   const percentage =
     pr.journey.totalHunks === 0
@@ -47,11 +154,13 @@ function PrRow({
   job,
   localState,
   onAnalyze,
+  onDismiss,
 }: {
   readonly pr: PullRequestSummary;
   readonly job: IngestionJob | undefined;
   readonly localState: LocalPrState;
   readonly onAnalyze: (pr: PrRef) => void;
+  readonly onDismiss?: (pr: PrRef) => void;
 }) {
   const reviewed = isIn(localState.reviewed, pr.ref);
   return (
@@ -84,18 +193,29 @@ function PrRow({
       </div>
       <div className="pr-action">
         {pr.journey.exists || job?.phase.type === "complete" ? (
-          <Link
-            to="/journey/$owner/$repo/$number"
-            params={{
-              owner: pr.ref.owner,
-              repo: pr.ref.repo,
-              number: String(pr.ref.number),
-            }}
-            className="text-action"
-          >
-            {pr.journey.readHunks > 0 ? "Continue" : "Begin"}
-            <ProgressBar pr={pr} />
-          </Link>
+          <div className="journey-actions">
+            <Link
+              to="/pr/$owner/$repo/$number"
+              params={{
+                owner: pr.ref.owner,
+                repo: pr.ref.repo,
+                number: String(pr.ref.number),
+              }}
+              className="text-action"
+            >
+              {pr.journey.readHunks > 0 ? "Continue" : "Begin"}
+              <ProgressBar pr={pr} />
+            </Link>
+            {pr.journey.stale && (
+              <button
+                className="text-action rebuild-action"
+                onClick={() => onAnalyze(pr.ref)}
+                disabled={job !== undefined && job.phase.type !== "failed"}
+              >
+                Rebuild →
+              </button>
+            )}
+          </div>
         ) : (
           <button
             className="text-action"
@@ -105,23 +225,57 @@ function PrRow({
             Build journey →
           </button>
         )}
+        {onDismiss !== undefined && (
+          <button className="text-action dismiss-action" onClick={() => onDismiss(pr.ref)}>
+            Dismiss
+          </button>
+        )}
       </div>
     </article>
   );
 }
 
 export function WelcomeScreen() {
+  const navigate = useNavigate();
   const pullRequestView = useAtomValue(productAtoms.pullRequests);
   const ingestion = useAtomValue(productAtoms.ingestion);
   const viewerResult = useAtomValue(productAtoms.viewer);
   const prStateResult = useAtomValue(productAtoms.prState);
-  const startIngestion = useAtomSet(productAtoms.startIngestion);
+  const [prStateUpdateResult, updatePrState] = useAtom(productAtoms.updatePrState);
+  const [startResult, startIngestion] = useAtom(productAtoms.startIngestion);
+  const cancelIngestion = useAtomSet(productAtoms.cancelIngestion);
   const refresh = useAtomSet(productAtoms.refreshPullRequests);
   const [url, setUrl] = useState("");
   const [addOpen, setAddOpen] = useState(false);
-  const localState = AsyncResult.isSuccess(prStateResult)
-    ? prStateResult.value
-    : { reviewed: [], hidden: [], dismissedMerged: [] };
+  const [pendingPr, setPendingPr] = useState<PrRef | null>(null);
+  const localState = AsyncResult.isSuccess(prStateUpdateResult)
+    ? prStateUpdateResult.value
+    : AsyncResult.isSuccess(prStateResult)
+      ? prStateResult.value
+      : { reviewed: [], hidden: [], dismissedMerged: [] };
+
+  useEffect(() => {
+    const onFocus = () => refresh();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refresh]);
+
+  useEffect(() => {
+    if (pendingPr === null) return;
+    const complete = ingestion.jobs.find(
+      (job) => samePr(job.pr, pendingPr) && job.phase.type === "complete",
+    );
+    if (complete === undefined) return;
+    setPendingPr(null);
+    navigate({
+      to: "/pr/$owner/$repo/$number",
+      params: {
+        owner: complete.pr.owner,
+        repo: complete.pr.repo,
+        number: String(complete.pr.number),
+      },
+    });
+  }, [ingestion.jobs, navigate, pendingPr]);
 
   const visible = pullRequestView.pullRequests.filter(
     (pr) =>
@@ -139,9 +293,22 @@ export function WelcomeScreen() {
     return [...grouped];
   }, [open]);
 
-  const analyze = (pr: PrRef) => startIngestion({ pr });
+  const analyze = (pr: PrRef) => {
+    setPendingPr(pr);
+    startIngestion({ pr });
+  };
   const jobFor = (pr: PrRef) =>
     ingestion.jobs.find((job) => samePr(job.pr, pr) && job.phase.type !== "cancelled");
+  const transitionJob =
+    ingestion.jobs.find(
+      (job) =>
+        job.phase.type !== "complete" &&
+        job.phase.type !== "cancelled" &&
+        job.phase.type !== "failed",
+    ) ?? ingestion.jobs.find((job) => job.phase.type === "failed");
+  const transitionPr = transitionJob
+    ? pullRequestView.pullRequests.find((pr) => samePr(pr.ref, transitionJob.pr))
+    : undefined;
 
   if (!AsyncResult.isSuccess(viewerResult)) {
     return <main className="journey-loading">Connecting to GitHub…</main>;
@@ -191,7 +358,17 @@ export function WelcomeScreen() {
           className="add-pr"
           onSubmit={(event) => {
             event.preventDefault();
-            if (url.trim()) startIngestion({ url: url.trim() });
+            const trimmed = url.trim();
+            if (!trimmed) return;
+            const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/.exec(trimmed);
+            if (match?.[1] !== undefined && match[2] !== undefined && match[3] !== undefined) {
+              setPendingPr({
+                owner: match[1],
+                repo: match[2],
+                number: Number(match[3]),
+              });
+            }
+            startIngestion({ url: trimmed });
           }}
         >
           <label htmlFor="pr-url">GitHub pull request URL</label>
@@ -201,11 +378,26 @@ export function WelcomeScreen() {
               value={url}
               onChange={(event) => setUrl(event.target.value)}
               placeholder="https://github.com/owner/repository/pull/42"
-              autoFocus
             />
             <button className="primary-button">Build journey</button>
           </div>
         </form>
+      )}
+
+      {AsyncResult.isFailure(startResult) && (
+        <div className="state-error">{String(startResult.cause)}</div>
+      )}
+
+      {transitionJob && (
+        <IngestionTransition
+          job={transitionJob}
+          title={transitionPr?.title ?? `Pull request #${transitionJob.pr.number}`}
+          onCancel={() => {
+            setPendingPr(null);
+            cancelIngestion(transitionJob.id);
+          }}
+          onRetry={() => analyze(transitionJob.pr)}
+        />
       )}
 
       {!pullRequestView.ready ? (
@@ -247,6 +439,7 @@ export function WelcomeScreen() {
               job={jobFor(pr.ref)}
               localState={localState}
               onAnalyze={analyze}
+              onDismiss={(pr) => updatePrState({ kind: "dismissedMerged", pr, value: true })}
             />
           ))}
         </section>

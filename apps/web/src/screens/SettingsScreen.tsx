@@ -39,16 +39,28 @@ export function SettingsScreen() {
           <p>Throughline runs the selected agent read-only inside the pinned worktree.</p>
         </div>
         <div className="harness-options">
+          <button
+            className={settings.harness === undefined ? "selected" : ""}
+            onClick={() => updateSettings({})}
+          >
+            <span>Automatic</span>
+            <small>first authenticated harness · recommended</small>
+          </button>
           {harnesses.map((harness) => (
             <button
               key={harness.kind}
               className={settings.harness === harness.kind ? "selected" : ""}
+              disabled={!harness.installed || harness.auth !== "authenticated"}
               onClick={() => updateSettings({ harness: harness.kind })}
             >
               <span>{harness.kind === "codex" ? "Codex" : "Claude Code"}</span>
               <small>
                 {harness.installed ? harness.auth : "not installed"} ·{" "}
-                {harness.kind === "codex" ? "recommended" : "available"}
+                {harness.installed && harness.auth === "authenticated"
+                  ? "ready"
+                  : harness.kind === "codex"
+                    ? "run codex login"
+                    : "run claude login"}
               </small>
             </button>
           ))}

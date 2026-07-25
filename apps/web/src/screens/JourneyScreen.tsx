@@ -1,25 +1,28 @@
-import { useAtom, useAtomSet } from "@effect/atom-react";
-import { PatchDiff } from "@pierre/diffs/react";
-import { FileTree, useFileTree } from "@pierre/trees/react";
+import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useNavigate } from "@tanstack/react-router";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 
-import {
-  type Cluster,
-  type ClusterId,
-  type DisplayMode,
-  type FileContent,
-  type FilePatch,
-  type Journey,
-  type ReadState,
+import type {
+  Cluster,
+  ClusterId,
+  DisplayMode,
+  Journey,
+  JourneyFiles,
+  PrRef,
+  ReadState,
 } from "@app/contracts";
 import { clusterProgress, journeyProgress } from "@app/journey/progress";
 
-import { journeyRoute } from "../router.tsx";
 import { productAtoms } from "../state/product.ts";
+import { CodeSurface, type CodeFocus } from "./journey/CodeSurface.tsx";
+import { JourneyNavigation, type JourneyView } from "./journey/JourneyNavigation.tsx";
 
-type JourneySection = "overview" | "cluster" | "files";
+export interface JourneyScreenLocation {
+  readonly pr: PrRef;
+  readonly view: JourneyView;
+}
 
 function resultValue<A>(result: AsyncResult.AsyncResult<A, unknown>): A | null {
   return AsyncResult.isSuccess(result) ? result.value : null;
@@ -42,10 +45,11 @@ function Narrative({
 }: {
   readonly markdown: string;
   readonly journey: Journey;
-  readonly onEvidence: (path: string) => void;
+  readonly onEvidence: (focus: CodeFocus, clusterId?: ClusterId) => void;
 }) {
   return (
     <ReactMarkdown
+      urlTransform={(url) => url}
       components={{
         a: ({ href, children }) => (
           <a
@@ -54,12 +58,27 @@ function Narrative({
               if (!href?.startsWith("tl:")) return;
               event.preventDefault();
               if (href.startsWith("tl:file/")) {
-                onEvidence(href.slice("tl:file/".length));
-              } else if (href.startsWith("tl:hunk/")) {
-                const hunk = journey.hunks.find(
-                  (candidate) => candidate.id === href.slice("tl:hunk/".length),
+                onEvidence({ path: href.slice("tl:file/".length) });
+                return;
+              }
+              if (href.startsWith("tl:symbol/")) {
+                const target = href.slice("tl:symbol/".length);
+                onEvidence({ path: target.slice(0, target.lastIndexOf("#")) });
+                return;
+              }
+              if (!href.startsWith("tl:hunk/")) return;
+              const hunk = journey.hunks.find(
+                (candidate) => candidate.id === href.slice("tl:hunk/".length),
+              );
+              if (hunk) {
+                onEvidence(
+                  {
+                    path: hunk.path,
+                    lineNumber: Math.max(1, hunk.newStart),
+                    side: "additions",
+                  },
+                  hunk.home,
                 );
-                if (hunk) onEvidence(hunk.path);
               }
             }}
           >
@@ -77,40 +96,76 @@ function JourneyOverview({
   journey,
   readState,
   onBegin,
+  onCluster,
+  onEvidence,
 }: {
   readonly journey: Journey;
-  readonly readState: ReadState | null;
+  readonly readState: ReadState;
   readonly onBegin: () => void;
+  readonly onCluster: (clusterId: ClusterId) => void;
+  readonly onEvidence: (focus: CodeFocus, clusterId?: ClusterId) => void;
 }) {
-  const progress = journeyProgress(journey.hunks, readState ?? { readFiles: [] });
+  const progress = journeyProgress(journey.hunks, readState);
   return (
     <section className="journey-overview">
       <div className="overview-hero">
         <p className="eyebrow">Journey overview</p>
         <h1>{journey.prMetadata.title}</h1>
         <div className="overview-copy">
-          <ReactMarkdown>{journey.overview.brief.markdown}</ReactMarkdown>
+          <Narrative
+            markdown={journey.overview.brief.markdown}
+            journey={journey}
+            onEvidence={onEvidence}
+          />
         </div>
         <div className="where-to-begin">
           <span>Where to begin</span>
-          <ReactMarkdown>{journey.overview.whereToBegin.markdown}</ReactMarkdown>
+          <Narrative
+            markdown={journey.overview.whereToBegin.markdown}
+            journey={journey}
+            onEvidence={onEvidence}
+          />
         </div>
         <button className="primary-button" onClick={onBegin}>
           {progress.read > 0 ? "Continue the journey" : "Begin the journey"} →
         </button>
       </div>
       <ol className="journey-map">
-        {journey.clusters.map((cluster) => (
-          <li key={cluster.id}>
-            <span>{String(cluster.position).padStart(2, "0")}</span>
-            <div>
-              <h2>{cluster.title}</h2>
-              <ReactMarkdown>{cluster.mapEntry.markdown}</ReactMarkdown>
-            </div>
-            <small>{cluster.weight}</small>
-          </li>
-        ))}
+        {journey.clusters.map((cluster) => {
+          const item = clusterProgress(cluster.id, journey.hunks, readState.readFiles);
+          const owned = journey.hunks.filter((hunk) => hunk.home === cluster.id);
+          return (
+            <li key={cluster.id}>
+              <button onClick={() => onCluster(cluster.id)}>
+                <span>{String(cluster.position).padStart(2, "0")}</span>
+                <div>
+                  <h2>{cluster.title}</h2>
+                  <Narrative
+                    markdown={cluster.mapEntry.markdown}
+                    journey={journey}
+                    onEvidence={onEvidence}
+                  />
+                  <small>
+                    {cluster.fileOrder.length} {cluster.fileOrder.length === 1 ? "file" : "files"} ·{" "}
+                    {owned.length} {owned.length === 1 ? "hunk" : "hunks"} · {item.read}/
+                    {item.total} read
+                  </small>
+                </div>
+                <strong>{cluster.weight}</strong>
+              </button>
+            </li>
+          );
+        })}
       </ol>
+      <details className="pr-words">
+        <summary>The pull request’s own words</summary>
+        <h2>{journey.prMetadata.title}</h2>
+        <p>
+          {journey.prMetadata.author} · {journey.prMetadata.headBranch} into{" "}
+          {journey.prMetadata.baseBranch}
+        </p>
+        <ReactMarkdown>{journey.prMetadata.body || "_No description provided._"}</ReactMarkdown>
+      </details>
       <footer className="overview-stats">
         <span>{journey.clusters.length} clusters</span>
         <span>{journey.files.length} files</span>
@@ -123,152 +178,321 @@ function JourneyOverview({
   );
 }
 
-function DiffViewer({
-  patch,
-  content,
+function DisplayControls({
   mode,
+  onChange,
 }: {
-  readonly patch: FilePatch | null;
-  readonly content: FileContent | null;
   readonly mode: DisplayMode;
+  readonly onChange: (mode: DisplayMode) => void;
 }) {
-  if (mode === "just-the-code") {
-    const text = content?.newEncoding === "text" ? content.newContent : null;
-    return (
-      <pre className="code-only">
-        <code>{text ?? "This file cannot be rendered as text."}</code>
-      </pre>
-    );
-  }
-  if (!patch) return <div className="diff-placeholder">Loading pinned diff…</div>;
-  if (patch.patch.trim() === "") {
-    return <div className="diff-placeholder">No textual diff is available for this file.</div>;
-  }
   return (
-    <PatchDiff
-      patch={patch.patch}
-      options={{
-        diffStyle: mode === "split" ? "split" : "unified",
-        theme: { dark: "github-dark-default", light: "github-light-default" },
-        overflow: "scroll",
-        diffIndicators: "bars",
-      }}
-      disableWorkerPool
-    />
+    <div className="display-controls" aria-label="Code display">
+      <button
+        className={mode !== "just-the-code" ? "active" : ""}
+        onClick={() => onChange("inline")}
+      >
+        Diff
+      </button>
+      <button
+        className={mode === "just-the-code" ? "active" : ""}
+        onClick={() => onChange("just-the-code")}
+      >
+        Code
+      </button>
+    </div>
   );
 }
 
-export function JourneyScreen() {
-  const params = journeyRoute.useParams();
-  const pr = {
-    owner: params.owner,
-    repo: params.repo,
-    number: Number(params.number),
+function ReadingControls({
+  journey,
+  cluster,
+  paths,
+  readState,
+  focus,
+  onFocus,
+  onMark,
+}: {
+  readonly journey: Journey;
+  readonly cluster: Cluster;
+  readonly paths: ReadonlyArray<string>;
+  readonly readState: ReadState;
+  readonly focus: CodeFocus | null;
+  readonly onFocus: (focus: CodeFocus) => void;
+  readonly onMark: (path: string) => void;
+}) {
+  const changes = useMemo(
+    () =>
+      journey.hunks
+        .filter((hunk) => paths.includes(hunk.path))
+        .toSorted(
+          (left, right) =>
+            paths.indexOf(left.path) - paths.indexOf(right.path) ||
+            left.newStart - right.newStart ||
+            left.oldStart - right.oldStart,
+        ),
+    [journey.hunks, paths],
+  );
+  const focusedFileIndex = Math.max(
+    0,
+    focus === null ? 0 : paths.findIndex((path) => path === focus.path),
+  );
+  const focusedChangeIndex =
+    focus === null
+      ? -1
+      : changes.findIndex(
+          (hunk) =>
+            hunk.path === focus.path &&
+            (focus.lineNumber === undefined || hunk.newStart === focus.lineNumber),
+        );
+  const goToChange = useCallback(
+    (index: number) => {
+      const hunk = changes[index];
+      if (hunk === undefined) return;
+      onFocus({
+        path: hunk.path,
+        lineNumber: Math.max(1, hunk.newStart),
+        side: "additions",
+      });
+    },
+    [changes, onFocus],
+  );
+  const goToFile = (index: number) => {
+    const path = paths[index];
+    if (path !== undefined) onFocus({ path });
   };
-  const [journeyResult, loadJourney] = useAtom(productAtoms.loadJourney);
-  const [readResult, loadReadState] = useAtom(productAtoms.loadReadState);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        (target instanceof HTMLElement &&
+          (target.isContentEditable ||
+            ["BUTTON", "INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)))
+      ) {
+        return;
+      }
+      if (event.key === "r") {
+        const path =
+          (focus !== null && paths.includes(focus.path) ? focus.path : undefined) ??
+          paths.find(
+            (candidate) =>
+              !readState.readFiles.some(
+                (entry) => entry.clusterId === cluster.id && entry.path === candidate,
+              ),
+          ) ??
+          paths[0];
+        if (path !== undefined) {
+          event.preventDefault();
+          onMark(path);
+        }
+      } else if (event.key === "[") {
+        event.preventDefault();
+        goToChange(focusedChangeIndex <= 0 ? 0 : focusedChangeIndex - 1);
+      } else if (event.key === "]") {
+        event.preventDefault();
+        goToChange(
+          focusedChangeIndex < 0 ? 0 : Math.min(changes.length - 1, focusedChangeIndex + 1),
+        );
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    changes,
+    cluster.id,
+    focus,
+    focusedChangeIndex,
+    goToChange,
+    onMark,
+    paths,
+    readState.readFiles,
+  ]);
+
+  return (
+    <nav className="change-navigation" aria-label="Reading position">
+      <button disabled={focusedFileIndex <= 0} onClick={() => goToFile(focusedFileIndex - 1)}>
+        ← Previous file
+      </button>
+      <div>
+        <button
+          title="Previous changed region ([)"
+          disabled={changes.length === 0 || focusedChangeIndex === 0}
+          onClick={() => goToChange(focusedChangeIndex <= 0 ? 0 : focusedChangeIndex - 1)}
+        >
+          ← Change
+        </button>
+        <span>
+          Region {focusedChangeIndex < 0 ? "—" : focusedChangeIndex + 1} of {changes.length}
+        </span>
+        <button
+          title="Next changed region (])"
+          disabled={changes.length === 0 || focusedChangeIndex === changes.length - 1}
+          onClick={() =>
+            goToChange(
+              focusedChangeIndex < 0 ? 0 : Math.min(changes.length - 1, focusedChangeIndex + 1),
+            )
+          }
+        >
+          Change →
+        </button>
+      </div>
+      <button
+        disabled={focusedFileIndex >= paths.length - 1}
+        onClick={() => goToFile(focusedFileIndex + 1)}
+      >
+        Next file →
+      </button>
+    </nav>
+  );
+}
+
+function LoadedJourney({
+  journey,
+  location,
+}: {
+  readonly journey: Journey;
+  readonly location: JourneyScreenLocation;
+}) {
+  const navigate = useNavigate();
+  const pullRequests = useAtomValue(productAtoms.pullRequests);
+  const readResult = useAtomValue(productAtoms.readState(journey.id));
   const [treeResult, loadTree] = useAtom(productAtoms.loadTree);
-  const [patchResult, loadPatch] = useAtom(productAtoms.loadFilePatch);
-  const [contentResult, loadContent] = useAtom(productAtoms.loadFileContent);
-  const markFile = useAtomSet(productAtoms.markFile);
-  const setDisplayMode = useAtomSet(productAtoms.setDisplayMode);
-  const setReviewed = useAtomSet(productAtoms.reviewed);
-  const hide = useAtomSet(productAtoms.hide);
-  const [section, setSection] = useState<JourneySection>("overview");
-  const [clusterIndex, setClusterIndex] = useState(0);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [filesResult, loadFiles] = useAtom(productAtoms.loadFiles);
+  const [markResult, markFile] = useAtom(productAtoms.markFile);
+  const [displayResult, setDisplayMode] = useAtom(productAtoms.setDisplayMode);
+  const updatePrState = useAtomSet(productAtoms.updatePrState);
+  const startIngestion = useAtomSet(productAtoms.startIngestion);
   const [optimisticReadState, setOptimisticReadState] = useState<ReadState | null>(null);
+  const [focus, setFocus] = useState<CodeFocus | null>(null);
+  const [narrativeOpen, setNarrativeOpen] = useState(true);
+  const [guidanceOpen, setGuidanceOpen] = useState(true);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadJourney(pr);
-  }, [params.owner, params.repo, params.number]);
-
-  const journey = resultValue(journeyResult);
-  useEffect(() => {
-    if (!journey) return;
-    loadReadState(journey.id);
-    loadTree(journey.id);
-  }, [journey?.id]);
+  const params = {
+    owner: journey.pr.owner,
+    repo: journey.pr.repo,
+    number: String(journey.pr.number),
+  };
+  const onOverview = () =>
+    navigate({
+      to: "/pr/$owner/$repo/$number",
+      params,
+    });
+  const onCluster = (clusterId: ClusterId) =>
+    navigate({
+      to: "/pr/$owner/$repo/$number/cluster/$clusterId",
+      params: { ...params, clusterId },
+    });
+  const onFile = (path: string) =>
+    navigate({
+      to: "/pr/$owner/$repo/$number/file/$",
+      params: { ...params, _splat: path },
+    });
 
   const loadedReadState = resultValue(readResult);
   useEffect(() => {
-    if (loadedReadState) setOptimisticReadState(loadedReadState);
+    if (loadedReadState !== null) setOptimisticReadState(loadedReadState);
   }, [loadedReadState]);
-
-  const selectedCluster = journey?.clusters[clusterIndex] ?? null;
   useEffect(() => {
-    if (section !== "cluster" || !selectedCluster || selectedPath) return;
-    setSelectedPath(selectedCluster.fileOrder[0] ?? null);
-  }, [section, selectedCluster?.id]);
+    loadTree(journey.id);
+  }, [journey.id, loadTree]);
 
+  const view = location.view;
+  const clusterId = view.type === "cluster" ? view.clusterId : null;
+  const filePath = view.type === "file" ? view.path : null;
+  const selectedCluster =
+    clusterId !== null
+      ? (journey.clusters.find((cluster) => cluster.id === clusterId) ?? null)
+      : filePath !== null
+        ? (journey.clusters.find((cluster) => cluster.fileOrder.includes(filePath)) ??
+          journey.clusters[0] ??
+          null)
+        : null;
+  const desiredPaths = useMemo(
+    () =>
+      view.type === "cluster"
+        ? (selectedCluster?.fileOrder ?? [])
+        : filePath !== null
+          ? [filePath]
+          : [],
+    [filePath, selectedCluster?.fileOrder, view.type],
+  );
   useEffect(() => {
-    if (!journey || !selectedPath) return;
-    loadPatch({ journeyId: journey.id, path: selectedPath });
-    loadContent({ journeyId: journey.id, path: selectedPath });
-  }, [journey?.id, selectedPath]);
+    if (desiredPaths.length > 0) {
+      loadFiles({ journeyId: journey.id, paths: desiredPaths });
+    }
+  }, [desiredPaths, journey.id, loadFiles]);
 
   const tree = resultValue(treeResult);
-  const treePaths = useMemo(
-    () =>
-      tree?.entries.filter((entry) => entry.kind !== "directory").map((entry) => entry.path) ?? [],
-    [tree],
-  );
-  const { model: fileTree } = useFileTree({
-    paths: treePaths,
-    initialExpansion: 2,
-    search: true,
-    initialSelectedPaths: selectedPath ? [selectedPath] : [],
-    onSelectionChange: (paths) => {
-      const path = paths.at(-1);
-      if (path) setSelectedPath(path);
-    },
-  });
+  const filesCandidate = resultValue(filesResult);
+  const files: JourneyFiles | null =
+    filesCandidate !== null &&
+    filesCandidate.journeyId === journey.id &&
+    desiredPaths.every((path) => filesCandidate.patches.some((patch) => patch.path === path))
+      ? filesCandidate
+      : null;
+  const readState = optimisticReadState;
+  const stale =
+    pullRequests.pullRequests.find(
+      (pr) =>
+        pr.ref.owner === journey.pr.owner &&
+        pr.ref.repo === journey.pr.repo &&
+        pr.ref.number === journey.pr.number,
+    )?.journey.stale ?? false;
 
-  if (!journey) {
-    return (
-      <main className="journey-loading">
-        <ErrorPanel result={journeyResult} />
-        {!AsyncResult.isFailure(journeyResult) && <span>Opening the journey…</span>}
-      </main>
-    );
+  useEffect(() => {
+    if (AsyncResult.isFailure(markResult) || AsyncResult.isFailure(displayResult)) {
+      setOptimisticReadState(loadedReadState);
+      setActionError(
+        "That reading-state change could not be saved. Your last saved state is restored.",
+      );
+    }
+  }, [displayResult, loadedReadState, markResult]);
+
+  if (readState === null || tree === null) {
+    return <main className="journey-loading">Restoring your reading position…</main>;
   }
 
-  const readState = optimisticReadState;
-  const displayMode = readState?.displayMode ?? "inline";
-  const progress = journeyProgress(journey.hunks, readState ?? { readFiles: [] });
-  const selectedIsRead =
-    selectedCluster !== null &&
-    selectedPath !== null &&
-    (readState?.readFiles.some(
-      (entry) => entry.clusterId === selectedCluster.id && entry.path === selectedPath,
-    ) ??
-      false);
-  const patch = resultValue(patchResult);
-  const content = resultValue(contentResult);
-
-  const openEvidence = (path: string) => {
-    setSelectedPath(path);
-    setSection("cluster");
-  };
-  const markSelected = () => {
-    if (!readState || !selectedCluster || !selectedPath) return;
-    const without = readState.readFiles.filter(
-      (entry) => !(entry.clusterId === selectedCluster.id && entry.path === selectedPath),
+  const progress = journeyProgress(journey.hunks, readState);
+  const mark = (cluster: Cluster, path: string) => {
+    const read = readState.readFiles.some(
+      (entry) => entry.clusterId === cluster.id && entry.path === path,
     );
-    const next: ReadState = {
+    const remaining = readState.readFiles.filter(
+      (entry) => !(entry.clusterId === cluster.id && entry.path === path),
+    );
+    setActionError(null);
+    setOptimisticReadState({
       ...readState,
-      readFiles: selectedIsRead
-        ? without
-        : [...without, { clusterId: selectedCluster.id, path: selectedPath }],
-    };
-    setOptimisticReadState(next);
-    markFile({
-      journeyId: journey.id,
-      clusterId: selectedCluster.id,
-      path: selectedPath,
-      read: !selectedIsRead,
+      readFiles: read ? remaining : [...remaining, { clusterId: cluster.id, path }],
     });
+    markFile({ journeyId: journey.id, clusterId: cluster.id, path, read: !read });
   };
+  const changeMode = (mode: DisplayMode) => {
+    setActionError(null);
+    setOptimisticReadState({ ...readState, displayMode: mode });
+    setDisplayMode({ journeyId: journey.id, displayMode: mode });
+  };
+  const openEvidence = (nextFocus: CodeFocus, clusterId?: ClusterId) => {
+    const targetCluster =
+      clusterId === undefined
+        ? journey.clusters.find((cluster) => cluster.fileOrder.includes(nextFocus.path))
+        : journey.clusters.find((cluster) => cluster.id === clusterId);
+    if (targetCluster === undefined) {
+      onFile(nextFocus.path);
+      return;
+    }
+    setFocus(nextFocus);
+    onCluster(targetCluster.id);
+  };
+  const firstUnread =
+    journey.clusters.find((cluster) => {
+      const item = clusterProgress(cluster.id, journey.hunks, readState.readFiles);
+      return item.read < item.total;
+    }) ?? journey.clusters[0];
 
   return (
     <main className="journey-page">
@@ -280,10 +504,22 @@ export function JourneyScreen() {
           <h1>{journey.prMetadata.title}</h1>
         </div>
         <div className="journey-header-actions">
-          <button onClick={() => setReviewed({ pr: journey.pr, value: true })}>
+          {stale && (
+            <button className="stale-action" onClick={() => startIngestion({ pr: journey.pr })}>
+              Rebuild for latest head
+            </button>
+          )}
+          <button onClick={() => updatePrState({ kind: "reviewed", pr: journey.pr, value: true })}>
             Mark reviewed
           </button>
-          <button onClick={() => hide({ pr: journey.pr, value: true })}>Hide</button>
+          <button
+            onClick={() => {
+              updatePrState({ kind: "hidden", pr: journey.pr, value: true });
+              navigate({ to: "/" });
+            }}
+          >
+            Hide
+          </button>
           <a href={journey.prMetadata.url} target="_blank" rel="noreferrer">
             Open on GitHub ↗
           </a>
@@ -294,167 +530,196 @@ export function JourneyScreen() {
         </div>
       </header>
 
-      {section === "overview" ? (
+      {actionError && <div className="state-error">{actionError}</div>}
+      {location.view.type === "overview" ? (
         <JourneyOverview
           journey={journey}
           readState={readState}
+          onCluster={onCluster}
+          onEvidence={openEvidence}
           onBegin={() => {
-            setSection("cluster");
-            setClusterIndex(
-              Math.max(
-                0,
-                journey.clusters.findIndex((cluster) => {
-                  const item = clusterProgress(
-                    cluster.id,
-                    journey.hunks,
-                    readState?.readFiles ?? [],
-                  );
-                  return item.read < item.total;
-                }),
-              ),
-            );
+            if (firstUnread) onCluster(firstUnread.id);
           }}
         />
       ) : (
-        <div className="reading-workspace">
-          <aside className="cluster-rail">
-            <button className="rail-overview" onClick={() => setSection("overview")}>
-              ← Overview
-            </button>
-            <ol>
-              {journey.clusters.map((cluster, index) => {
-                const item = clusterProgress(cluster.id, journey.hunks, readState?.readFiles ?? []);
-                return (
-                  <li key={cluster.id}>
+        <div className={guidanceOpen ? "reading-workspace" : "reading-workspace guidance-closed"}>
+          <JourneyNavigation
+            journey={journey}
+            readState={readState}
+            view={location.view}
+            treePaths={tree.entries
+              .filter((entry) => entry.kind !== "directory")
+              .map((entry) => entry.path)}
+            stale={stale}
+            onOverview={onOverview}
+            onCluster={onCluster}
+            onFile={onFile}
+          />
+
+          <section className="reading-stage">
+            {selectedCluster === null ? (
+              <div className="error-panel">
+                <h2>This journey location no longer exists.</h2>
+                <button onClick={onOverview}>Return to the overview</button>
+              </div>
+            ) : (
+              <>
+                {view.type === "cluster" ? (
+                  <header className="cluster-story">
+                    <div>
+                      <p className="eyebrow">
+                        Cluster {selectedCluster.position} · {selectedCluster.weight}
+                      </p>
+                      <h2>{selectedCluster.title}</h2>
+                    </div>
+                    <div>
+                      <DisplayControls mode={readState.displayMode} onChange={changeMode} />
+                      <button
+                        className="narrative-toggle"
+                        onClick={() => setNarrativeOpen((value) => !value)}
+                      >
+                        {narrativeOpen ? "Collapse narrative" : "Open narrative"}
+                      </button>
+                    </div>
+                    {narrativeOpen && (
+                      <div className="cluster-narrative">
+                        <Narrative
+                          markdown={selectedCluster.narrative.markdown}
+                          journey={journey}
+                          onEvidence={openEvidence}
+                        />
+                      </div>
+                    )}
+                  </header>
+                ) : (
+                  <header className="free-file-header">
+                    <div>
+                      <p className="eyebrow">Free reading</p>
+                      <h2>{filePath}</h2>
+                    </div>
+                    <DisplayControls mode={readState.displayMode} onChange={changeMode} />
+                    <div className="file-home-actions">
+                      {journey.clusters
+                        .filter(
+                          (cluster) => filePath !== null && cluster.fileOrder.includes(filePath),
+                        )
+                        .map((cluster) => {
+                          const read = readState.readFiles.some(
+                            (entry) => entry.clusterId === cluster.id && entry.path === filePath,
+                          );
+                          return (
+                            <button
+                              key={cluster.id}
+                              onClick={() => {
+                                if (filePath !== null) mark(cluster, filePath);
+                              }}
+                            >
+                              {read ? "Read" : "Mark read"} · {cluster.title}
+                            </button>
+                          );
+                        })}
+                    </div>
+                  </header>
+                )}
+                {files === null ? (
+                  <div className="diff-placeholder">Loading pinned files…</div>
+                ) : (
+                  <>
+                    <CodeSurface
+                      journey={journey}
+                      cluster={selectedCluster}
+                      files={files}
+                      paths={desiredPaths}
+                      mode={readState.displayMode}
+                      readState={readState}
+                      focus={focus}
+                      onMarkFile={(path) => mark(selectedCluster, path)}
+                      onModeChange={changeMode}
+                      onOpenCluster={onCluster}
+                    />
+                    <ReadingControls
+                      journey={journey}
+                      cluster={selectedCluster}
+                      paths={desiredPaths}
+                      readState={readState}
+                      focus={focus}
+                      onFocus={setFocus}
+                      onMark={(path) => mark(selectedCluster, path)}
+                    />
+                  </>
+                )}
+                {view.type === "cluster" && (
+                  <footer className="reading-navigation">
                     <button
-                      className={section === "cluster" && clusterIndex === index ? "active" : ""}
+                      disabled={selectedCluster.position <= 1}
                       onClick={() => {
-                        setSection("cluster");
-                        setClusterIndex(index);
-                        setSelectedPath(cluster.fileOrder[0] ?? null);
+                        const previous = journey.clusters[selectedCluster.position - 2];
+                        if (previous) onCluster(previous.id);
                       }}
                     >
-                      <span>{String(cluster.position).padStart(2, "0")}</span>
-                      <strong>{cluster.title}</strong>
-                      <small>
-                        {item.read}/{item.total}
-                      </small>
+                      ← Previous cluster
                     </button>
-                  </li>
-                );
-              })}
-            </ol>
-            <button
-              className={`rail-files ${section === "files" ? "active" : ""}`}
-              onClick={() => setSection("files")}
-            >
-              Files <span>{journey.files.length}</span>
-            </button>
-          </aside>
+                    <button
+                      disabled={selectedCluster.position >= journey.clusters.length}
+                      onClick={() => {
+                        const next = journey.clusters[selectedCluster.position];
+                        if (next) onCluster(next.id);
+                      }}
+                    >
+                      Next cluster →
+                    </button>
+                  </footer>
+                )}
+              </>
+            )}
+          </section>
 
-          {section === "files" ? (
-            <section className="files-workspace">
-              <div className="tree-panel">
-                <FileTree model={fileTree} header={<strong>Repository</strong>} />
+          {guidanceOpen ? (
+            <aside className="guidance-rail">
+              <div>
+                <p className="eyebrow">Guidance</p>
+                <button aria-label="Collapse guidance" onClick={() => setGuidanceOpen(false)}>
+                  ×
+                </button>
               </div>
-              <div className="file-stage">
-                <header>
-                  <h2>{selectedPath ?? "Select a file"}</h2>
-                  <DisplayControls
-                    mode={displayMode}
-                    onChange={(mode) => {
-                      setOptimisticReadState(
-                        readState ? { ...readState, displayMode: mode } : readState,
-                      );
-                      setDisplayMode({ journeyId: journey.id, displayMode: mode });
-                    }}
-                  />
-                </header>
-                {selectedPath && <DiffViewer patch={patch} content={content} mode={displayMode} />}
-              </div>
-            </section>
-          ) : (
-            <section className="cluster-stage">
-              <div className="cluster-content">
-                <p className="eyebrow">
-                  Cluster {selectedCluster?.position} · {selectedCluster?.weight}
+              {selectedCluster === null ||
+              journey.hints.filter((hint) => hint.clusterId === selectedCluster.id).length === 0 ? (
+                <p className="guidance-empty">
+                  No extra guidance here. The cluster narrative and code are complete on their own.
                 </p>
-                <h2>{selectedCluster?.title}</h2>
-                {selectedCluster && (
-                  <div className="cluster-narrative">
-                    <Narrative
-                      markdown={selectedCluster.narrative.markdown}
-                      journey={journey}
-                      onEvidence={openEvidence}
-                    />
-                  </div>
-                )}
-                <div className="cluster-files">
-                  {selectedCluster?.fileOrder.map((path) => {
-                    const read =
-                      readState?.readFiles.some(
-                        (entry) => entry.clusterId === selectedCluster.id && entry.path === path,
-                      ) ?? false;
-                    return (
-                      <button
-                        key={path}
-                        className={selectedPath === path ? "active" : ""}
-                        onClick={() => setSelectedPath(path)}
-                      >
-                        <span className={read ? "read-dot read" : "read-dot"} />
-                        {path}
-                      </button>
-                    );
-                  })}
-                </div>
-                {selectedPath && (
-                  <div className="diff-card">
-                    <header>
-                      <code>{selectedPath}</code>
-                      <DisplayControls
-                        mode={displayMode}
-                        onChange={(mode) => {
-                          setOptimisticReadState(
-                            readState ? { ...readState, displayMode: mode } : readState,
-                          );
-                          setDisplayMode({ journeyId: journey.id, displayMode: mode });
-                        }}
-                      />
-                    </header>
-                    <DiffViewer patch={patch} content={content} mode={displayMode} />
-                    <footer>
-                      <button className="secondary-button" onClick={markSelected}>
-                        {selectedIsRead ? "Mark unread" : "Mark file read"}
-                      </button>
-                    </footer>
-                  </div>
-                )}
-              </div>
-              <aside className="map-rail">
-                <p>Journey map</p>
-                <ol>
-                  {journey.clusters.map((cluster, index) => (
-                    <li key={cluster.id} className={clusterIndex === index ? "active" : ""}>
-                      <span />
-                      {cluster.title}
-                    </li>
-                  ))}
-                </ol>
-                {selectedCluster && (
-                  <button
-                    className="primary-button"
-                    disabled={clusterIndex >= journey.clusters.length - 1}
-                    onClick={() => {
-                      const next = Math.min(clusterIndex + 1, journey.clusters.length - 1);
-                      setClusterIndex(next);
-                      setSelectedPath(journey.clusters[next]?.fileOrder[0] ?? null);
-                    }}
-                  >
-                    Next cluster →
-                  </button>
-                )}
-              </aside>
-            </section>
+              ) : (
+                journey.hints
+                  .filter(
+                    (hint) =>
+                      hint.clusterId === selectedCluster.id &&
+                      (filePath === null || hint.anchor.path === filePath) &&
+                      !(readState.displayMode === "just-the-code" && hint.anchor.side === "old"),
+                  )
+                  .map((hint) => (
+                    <button
+                      key={hint.id}
+                      className="guidance-hint"
+                      onClick={() =>
+                        setFocus({
+                          path: hint.anchor.path,
+                          lineNumber: hint.anchor.startLine,
+                          side: hint.anchor.side === "old" ? "deletions" : "additions",
+                        })
+                      }
+                    >
+                      <span>{hint.kind.replace("-", " ")}</span>
+                      <ReactMarkdown>{hint.body.markdown}</ReactMarkdown>
+                      <code>
+                        {hint.anchor.path}:{hint.anchor.startLine}
+                      </code>
+                    </button>
+                  ))
+              )}
+            </aside>
+          ) : (
+            <button className="guidance-reopen" onClick={() => setGuidanceOpen(true)}>
+              Guidance
+            </button>
           )}
         </div>
       )}
@@ -462,30 +727,26 @@ export function JourneyScreen() {
   );
 }
 
-function DisplayControls({
-  mode,
-  onChange,
-}: {
-  readonly mode: DisplayMode;
-  readonly onChange: (mode: DisplayMode) => void;
-}) {
-  return (
-    <div className="display-controls" aria-label="Diff display">
-      {(
-        [
-          ["inline", "Inline"],
-          ["just-the-code", "Code"],
-          ["split", "Split"],
-        ] as const
-      ).map(([value, label]) => (
-        <button
-          key={value}
-          className={mode === value ? "active" : ""}
-          onClick={() => onChange(value)}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
-  );
+export function JourneyScreen({ location }: { readonly location: JourneyScreenLocation }) {
+  const [journeyResult, loadJourney] = useAtom(productAtoms.loadJourney);
+  const { number, owner, repo } = location.pr;
+  useEffect(() => {
+    loadJourney({ number, owner, repo });
+  }, [loadJourney, number, owner, repo]);
+
+  const journey = resultValue(journeyResult);
+  const belongsToRoute =
+    journey !== null &&
+    journey.pr.owner === location.pr.owner &&
+    journey.pr.repo === location.pr.repo &&
+    journey.pr.number === location.pr.number;
+  if (!belongsToRoute) {
+    return (
+      <main className="journey-loading">
+        <ErrorPanel result={journeyResult} />
+        {!AsyncResult.isFailure(journeyResult) && <span>Opening the journey…</span>}
+      </main>
+    );
+  }
+  return <LoadedJourney key={journey.id} journey={journey} location={location} />;
 }

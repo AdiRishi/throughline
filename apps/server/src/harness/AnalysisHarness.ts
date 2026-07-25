@@ -24,6 +24,7 @@ export interface HarnessResponse {
   readonly output: unknown;
   readonly usage?: HarnessUsage;
   readonly model?: string;
+  readonly transcript: string;
 }
 
 export class AnalysisHarness extends Context.Service<
@@ -49,23 +50,38 @@ function runCodex(request: HarnessRequest): Effect.Effect<HarnessResponse, Harne
   return Effect.tryPromise({
     try: async () => {
       const { Codex } = await import("@openai/codex-sdk");
-      const thread = new Codex().startThread({
+      const thread = new Codex({ config: { mcp_servers: {} } }).startThread({
         workingDirectory: request.cwd,
         sandboxMode: "read-only",
         approvalPolicy: "never",
         networkAccessEnabled: false,
         skipGitRepoCheck: false,
       });
-      const result = await thread.run(request.prompt, { outputSchema: request.outputSchema });
+      const { events } = await thread.runStreamed(request.prompt, {
+        outputSchema: request.outputSchema,
+      });
+      const transcript: Array<string> = [];
+      let response = "";
+      let usage: HarnessUsage | undefined;
+      for await (const event of events) {
+        transcript.push(JSON.stringify(event));
+        if (event.type === "item.completed" && event.item.type === "agent_message") {
+          response = event.item.text;
+        }
+        if (event.type === "turn.completed") {
+          usage = {
+            inputTokens: event.usage.input_tokens,
+            outputTokens: event.usage.output_tokens,
+          };
+        }
+        if (event.type === "turn.failed") throw new Error(event.error.message);
+        if (event.type === "error") throw new Error(event.message);
+      }
+      if (response === "") throw new Error("Codex ended without a structured response.");
       return {
-        response: result.finalResponse,
-        usage:
-          result.usage === null
-            ? undefined
-            : {
-                inputTokens: result.usage.input_tokens,
-                outputTokens: result.usage.output_tokens,
-              },
+        response,
+        transcript: `${transcript.join("\n")}\n`,
+        usage,
       };
     },
     catch: (cause) =>
@@ -74,10 +90,11 @@ function runCodex(request: HarnessRequest): Effect.Effect<HarnessResponse, Harne
         detail: `Codex could not analyze the pull request: ${String(cause)}`,
       }),
   }).pipe(
-    Effect.flatMap(({ response, usage }) =>
+    Effect.flatMap(({ response, transcript, usage }) =>
       parseJson("codex", response).pipe(
         Effect.map((output) => ({
           output,
+          transcript,
           ...(usage === undefined ? {} : { usage }),
         })),
       ),
@@ -103,7 +120,9 @@ function runClaude(request: HarnessRequest): Effect.Effect<HarnessResponse, Harn
           settingSources: [],
         },
       });
+      const transcript: Array<string> = [];
       for await (const message of conversation) {
+        transcript.push(JSON.stringify(message));
         if (message.type !== "result") continue;
         if (message.subtype !== "success") {
           throw new Error(message.errors.join("; "));
@@ -117,6 +136,7 @@ function runClaude(request: HarnessRequest): Effect.Effect<HarnessResponse, Harn
             inputTokens: message.usage.input_tokens,
             outputTokens: message.usage.output_tokens,
           },
+          transcript: `${transcript.join("\n")}\n`,
           ...(model === undefined ? {} : { model }),
         };
       }

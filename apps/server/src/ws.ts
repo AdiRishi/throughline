@@ -154,6 +154,31 @@ const makeWsRpcLayer = () =>
           journeys
             .getById(input.journeyId)
             .pipe(Effect.flatMap((stored) => workspaces.fileContent(stored, input.path))),
+        [WS_METHODS.journeyFiles]: (input) =>
+          journeys.getById(input.journeyId).pipe(
+            Effect.flatMap((stored) =>
+              Effect.all(
+                {
+                  patches: Effect.forEach(
+                    input.paths,
+                    (requestedPath) => workspaces.filePatch(stored, requestedPath),
+                    { concurrency: "unbounded" },
+                  ),
+                  contents: Effect.forEach(
+                    input.paths,
+                    (requestedPath) => workspaces.fileContent(stored, requestedPath),
+                    { concurrency: "unbounded" },
+                  ),
+                },
+                { concurrency: 2 },
+              ),
+            ),
+            Effect.map(({ patches, contents }) => ({
+              journeyId: input.journeyId,
+              patches,
+              contents,
+            })),
+          ),
         [WS_METHODS.journeyTree]: (input) =>
           journeys
             .getById(input.journeyId)

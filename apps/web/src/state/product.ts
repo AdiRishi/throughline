@@ -99,9 +99,16 @@ const ingestion = Atom.make(
     Option.getOrElse(AsyncResult.value(get(ingestionResult)), () => INITIAL_INGESTION),
 );
 
+const readState = Atom.family((journeyId: JourneyId) =>
+  connectionRuntime.atom(
+    rpcSubscribe("readState.subscribe", { journeyId }).pipe(Stream.map((event) => event.state)),
+  ),
+);
+
 export const productAtoms = {
   pullRequests,
   ingestion,
+  readState,
   viewer: connectionRuntime.atom(requestForEachSession(rpcRequest("github.viewer", {}))),
   prState: connectionRuntime.atom(requestForEachSession(rpcRequest("prState.get", {}))),
   harnesses: connectionRuntime.atom(requestForEachSession(rpcRequest("harness.status", {}))),
@@ -121,6 +128,10 @@ export const productAtoms = {
   loadFileContent: connectionRuntime.fn(
     (input: { readonly journeyId: JourneyId; readonly path: string }) =>
       rpcRequest("journey.fileContent", input),
+  ),
+  loadFiles: connectionRuntime.fn(
+    (input: { readonly journeyId: JourneyId; readonly paths: ReadonlyArray<string> }) =>
+      rpcRequest("journey.files", input),
   ),
   loadTree: connectionRuntime.fn((journeyId: JourneyId) =>
     rpcRequest("journey.tree", { journeyId }),
@@ -145,14 +156,22 @@ export const productAtoms = {
       readonly displayMode: "inline" | "just-the-code" | "split";
     }) => rpcRequest("readState.setDisplayMode", input),
   ),
-  reviewed: connectionRuntime.fn((input: { readonly pr: PrRef; readonly value: boolean }) =>
-    rpcRequest("prState.reviewed", input),
-  ),
-  hide: connectionRuntime.fn((input: { readonly pr: PrRef; readonly value: boolean }) =>
-    rpcRequest("prState.hide", input),
-  ),
-  dismissMerged: connectionRuntime.fn((input: { readonly pr: PrRef; readonly value: boolean }) =>
-    rpcRequest("prState.dismissMerged", input),
+  updatePrState: connectionRuntime.fn(
+    (input: {
+      readonly kind: "reviewed" | "hidden" | "dismissedMerged";
+      readonly pr: PrRef;
+      readonly value: boolean;
+    }) => {
+      const action = { pr: input.pr, value: input.value };
+      switch (input.kind) {
+        case "reviewed":
+          return rpcRequest("prState.reviewed", action);
+        case "hidden":
+          return rpcRequest("prState.hide", action);
+        case "dismissedMerged":
+          return rpcRequest("prState.dismissMerged", action);
+      }
+    },
   ),
   updateSettings: connectionRuntime.fn((input: { readonly harness?: "codex" | "claude" }) =>
     rpcRequest("settings.update", input),

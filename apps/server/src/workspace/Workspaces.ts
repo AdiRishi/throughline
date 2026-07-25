@@ -77,6 +77,7 @@ export interface PreparedWorkspace {
   readonly files: ReadonlyArray<FileChange>;
   readonly seeds: ReadonlyArray<SeedHunk>;
   readonly tree: JourneyTree;
+  readonly textContents: ReadonlyMap<string, string>;
   readonly cleanup: Effect.Effect<void>;
 }
 
@@ -175,13 +176,20 @@ export const make = Effect.gen(function* () {
     side: "old" | "new",
   ): Effect.Effect<Option.Option<Uint8Array>, JourneyFileNotFoundError> =>
     Effect.gen(function* () {
+      const change = stored.journey.files.find((file) => file.path === requestedPath);
+      if (
+        (side === "new" && change?.kind === "deleted") ||
+        (side === "old" && change?.kind === "added")
+      ) {
+        return Option.none();
+      }
       const key = artifactKey(requestedPath);
       const materializedPath = path.join(stored.runDir, "content", `${key}.${side}`);
       const materialized = yield* fileSystem.readFile(materializedPath).pipe(Effect.option);
       if (Option.isSome(materialized)) return materialized;
 
       const tree = yield* readTree(stored.runDir, stored.journey.id);
-      if (!tree.entries.some((entry) => entry.path === requestedPath)) {
+      if (change === undefined && !tree.entries.some((entry) => entry.path === requestedPath)) {
         return yield* new JourneyFileNotFoundError({
           journeyId: stored.journey.id,
           path: requestedPath,
@@ -189,7 +197,9 @@ export const make = Effect.gen(function* () {
       }
       const repository = repositoryPath(path, config.dataDir, stored.journey.pr);
       const sha = side === "new" ? stored.journey.pinned.headSha : stored.journey.pinned.baseSha;
-      return yield* runGit(["--git-dir", repository, "show", `${sha}:${requestedPath}`]).pipe(
+      const revisionPath =
+        side === "old" && change?.oldPath !== undefined ? change.oldPath : requestedPath;
+      return yield* runGit(["--git-dir", repository, "show", `${sha}:${revisionPath}`]).pipe(
         Effect.option,
         Effect.mapError(
           () =>
@@ -284,9 +294,9 @@ export const make = Effect.gen(function* () {
           "--unified=0",
           diffArgs.at(-1) as string,
         ]);
-        const fullPatch = UTF8.decode(fullPatchBytes);
         const zeroPatch = UTF8.decode(zeroPatchBytes);
         const derived = deriveSeedHunks(zeroPatch);
+        const textContents = new Map<string, string>();
 
         yield* fileSystem.writeFile(path.join(diffDir, "full.patch"), fullPatchBytes);
         yield* fileSystem.writeFile(path.join(diffDir, "zero.patch"), zeroPatchBytes);
@@ -305,6 +315,8 @@ export const make = Effect.gen(function* () {
           ]).pipe(Effect.option);
           if (Option.isSome(oldContent)) {
             yield* fileSystem.writeFile(path.join(contentDir, `${key}.old`), oldContent.value);
+            const decoded = textOrBase64(oldContent.value);
+            if (decoded.encoding === "text") textContents.set(file.path, decoded.content);
           }
           const newContent = yield* runGit([
             "--git-dir",
@@ -314,6 +326,8 @@ export const make = Effect.gen(function* () {
           ]).pipe(Effect.option);
           if (Option.isSome(newContent)) {
             yield* fileSystem.writeFile(path.join(contentDir, `${key}.new`), newContent.value);
+            const decoded = textOrBase64(newContent.value);
+            if (decoded.encoding === "text") textContents.set(file.path, decoded.content);
           }
         }
 
@@ -365,6 +379,7 @@ export const make = Effect.gen(function* () {
           files: derived.files,
           seeds: derived.hunks,
           tree,
+          textContents,
           cleanup: runGit([
             "--git-dir",
             repository,
@@ -386,34 +401,27 @@ export const make = Effect.gen(function* () {
         Effect.withSpan("workspace.prepare"),
       ),
     filePatch: (stored, requestedPath) =>
-      readTree(stored.runDir, stored.journey.id).pipe(
-        Effect.flatMap((tree) =>
-          tree.entries.some((entry) => entry.path === requestedPath)
-            ? fileSystem
-                .readFileString(
-                  path.join(
-                    stored.runDir,
-                    "diff",
-                    "by-file",
-                    `${artifactKey(requestedPath)}.patch`,
-                  ),
-                )
-                .pipe(
-                  Effect.orElseSucceed(() => ""),
-                  Effect.map(
-                    (patch): FilePatch => ({
-                      journeyId: stored.journey.id,
-                      path: requestedPath,
-                      patch,
-                    }),
-                  ),
-                )
-            : new JourneyFileNotFoundError({
-                journeyId: stored.journey.id,
-                path: requestedPath,
-              }),
-        ),
-      ),
+      Effect.gen(function* () {
+        if (!stored.journey.files.some((file) => file.path === requestedPath)) {
+          const tree = yield* readTree(stored.runDir, stored.journey.id);
+          if (!tree.entries.some((entry) => entry.path === requestedPath)) {
+            return yield* new JourneyFileNotFoundError({
+              journeyId: stored.journey.id,
+              path: requestedPath,
+            });
+          }
+        }
+        const patch = yield* fileSystem
+          .readFileString(
+            path.join(stored.runDir, "diff", "by-file", `${artifactKey(requestedPath)}.patch`),
+          )
+          .pipe(Effect.orElseSucceed(() => ""));
+        return {
+          journeyId: stored.journey.id,
+          path: requestedPath,
+          patch,
+        } satisfies FilePatch;
+      }),
     fileContent: (stored, requestedPath) =>
       Effect.gen(function* () {
         const oldBytes = yield* readRevision(stored, requestedPath, "old");

@@ -1,16 +1,19 @@
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import {
   type Cluster,
   type ClusterId,
-  type FileChange,
   type HarnessKind,
   type Hint,
+  type HintId,
   type Hunk,
+  type HunkId,
   type Journey,
   type JourneyId,
   type PullRequestDetail,
@@ -33,34 +36,91 @@ const PLANNING_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["title", "weight", "seedIds"],
+        required: ["key", "title", "weight", "buildsOn", "fileOrder", "hunks"],
         properties: {
+          key: { type: "string", minLength: 1 },
           title: { type: "string", minLength: 1 },
           weight: { enum: ["core", "supporting", "mechanical"] },
-          seedIds: { type: "array", items: { type: "string" } },
+          buildsOn: { type: "array", items: { type: "string" } },
+          fileOrder: { type: "array", items: { type: "string" } },
+          hunks: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["id", "seedId", "oldStart", "oldLines", "newStart", "newLines"],
+              properties: {
+                id: { type: "string", minLength: 1 },
+                seedId: { type: "string", minLength: 1 },
+                oldStart: { type: "integer", minimum: 0 },
+                oldLines: { type: "integer", minimum: 0 },
+                newStart: { type: "integer", minimum: 0 },
+                newLines: { type: "integer", minimum: 0 },
+              },
+            },
+          },
         },
       },
     },
   },
 } as const;
 
-const NARRATION_SCHEMA = {
+const OVERVIEW_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["brief", "whereToBegin", "clusters"],
+  required: ["brief", "whereToBegin", "mapEntries"],
   properties: {
     brief: { type: "string" },
     whereToBegin: { type: "string" },
-    clusters: {
+    mapEntries: {
       type: "array",
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["title", "narrative", "mapEntry"],
+        required: ["title", "mapEntry"],
         properties: {
           title: { type: "string" },
-          narrative: { type: "string" },
           mapEntry: { type: "string" },
+        },
+      },
+    },
+  },
+} as const;
+
+const CLUSTER_NARRATION_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "narrative", "hints", "resurfaced"],
+  properties: {
+    title: { type: "string" },
+    narrative: { type: "string" },
+    hints: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["kind", "path", "side", "startLine", "endLine", "body"],
+        properties: {
+          kind: {
+            enum: ["connection", "complexity", "ripple", "pattern-echo", "behavior", "resurfacing"],
+          },
+          path: { type: "string" },
+          side: { enum: ["old", "new"] },
+          startLine: { type: "integer", minimum: 1 },
+          endLine: { type: "integer", minimum: 1 },
+          body: { type: "string" },
+        },
+      },
+    },
+    resurfaced: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["hunkId", "note"],
+        properties: {
+          hunkId: { type: "string" },
+          note: { type: "string" },
         },
       },
     },
@@ -70,31 +130,71 @@ const NARRATION_SCHEMA = {
 const PlanningOutput = Schema.Struct({
   clusters: Schema.Array(
     Schema.Struct({
+      key: Schema.String,
       title: Schema.String,
       weight: Schema.Literals(["core", "supporting", "mechanical"]),
-      seedIds: Schema.Array(Schema.String),
+      buildsOn: Schema.Array(Schema.String),
+      fileOrder: Schema.Array(Schema.String),
+      hunks: Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          seedId: Schema.String,
+          oldStart: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+          oldLines: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+          newStart: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+          newLines: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+        }),
+      ),
     }),
   ),
 });
-const NarrationOutput = Schema.Struct({
+const OverviewOutput = Schema.Struct({
   brief: Schema.String,
   whereToBegin: Schema.String,
-  clusters: Schema.Array(
+  mapEntries: Schema.Array(
     Schema.Struct({
       title: Schema.String,
-      narrative: Schema.String,
       mapEntry: Schema.String,
     }),
   ),
 });
+const ClusterNarrationOutput = Schema.Struct({
+  title: Schema.String,
+  narrative: Schema.String,
+  hints: Schema.Array(
+    Schema.Struct({
+      kind: Schema.Literals([
+        "connection",
+        "complexity",
+        "ripple",
+        "pattern-echo",
+        "behavior",
+        "resurfacing",
+      ]),
+      path: Schema.String,
+      side: Schema.Literals(["old", "new"]),
+      startLine: Schema.Int,
+      endLine: Schema.Int,
+      body: Schema.String,
+    }),
+  ),
+  resurfaced: Schema.Array(
+    Schema.Struct({
+      hunkId: Schema.String,
+      note: Schema.String,
+    }),
+  ),
+});
 const decodePlanning = Schema.decodeUnknownEffect(PlanningOutput);
-const decodeNarration = Schema.decodeUnknownEffect(NarrationOutput);
+const decodeOverview = Schema.decodeUnknownEffect(OverviewOutput);
+const decodeClusterNarration = Schema.decodeUnknownEffect(ClusterNarrationOutput);
 
 export interface AnalyzeInput {
   readonly journeyId: JourneyId;
   readonly detail: PullRequestDetail;
   readonly workspace: PreparedWorkspace;
   readonly harness: HarnessKind;
+  readonly onStage: (stage: "narrating", recent: ReadonlyArray<string>) => Effect.Effect<void>;
 }
 
 export class JourneyAnalysis extends Context.Service<
@@ -120,13 +220,15 @@ PR: ${detail.title}
 Description:
 ${detail.body}
 
-Every seed hunk below must appear exactly once in seedIds. Group by reviewer intent and dependency, not merely by directory. Order clusters so foundations precede consumers. Prefer 3–8 clusters; use fewer for small changes. Titles must be concrete and concise.
+Group changed ranges by reviewer intent and dependency, not merely by directory. Order clusters so foundations precede consumers. Give every cluster a short unique key; buildsOn may reference only earlier keys. fileOrder must list every file owned by the cluster in the best reading order.
+
+Every seed hunk must be covered exactly once. Usually copy it into one output hunk with the same id and ranges. Split a seed only when separate contiguous subranges genuinely belong to distinct reviewer intents; split ranges must exactly tile both the old and new changed-line ranges without gaps, overlap, or invented lines. A file-level seed ending in binary, rename, mode, symlink, submodule, or empty may never be split. Output hunk ids must be unique. Prefer 3–8 clusters; use fewer for small changes. Titles must be concrete and concise.
 
 Seed hunks:
 ${conciseSeeds(seeds)}`;
 }
 
-function narrationPrompt(
+function overviewPrompt(
   detail: PullRequestDetail,
   clusters: ReadonlyArray<Cluster>,
   hunks: ReadonlyArray<Hunk>,
@@ -137,87 +239,150 @@ function narrationPrompt(
       return `${cluster.title}\n${owned.map((hunk) => `- ${hunk.id} ${hunk.path}`).join("\n")}`;
     })
     .join("\n\n");
-  return `Write the review journey for this pull request after exploring relevant code read-only.
+  return `Write the overview for this pull request after exploring relevant code read-only.
 
 PR: ${detail.title}
 Description:
 ${detail.body}
 
-Return one cluster narration for each title in exactly this order. Explain behavior, motivation, and review risks rather than restating diffs. Use markdown evidence links such as [changed code](tl:hunk/HUNK_ID) and [file](tl:file/path). Do not invent IDs, files, symbols, or behavior.
+Return one concise map entry for each title in exactly this order, plus a pull-request brief and where-to-begin recommendation. Explain reviewer intent and dependency order rather than restating file names. Every behavioral claim must use markdown evidence links such as [changed code](tl:hunk/HUNK_ID) and [file](tl:file/path). Do not invent IDs, files, symbols, line numbers, or behavior.
 
 Journey plan:
 ${plan}`;
 }
 
-function deterministicPlan(seeds: ReadonlyArray<SeedHunk>): ReadonlyArray<{
-  title: string;
-  weight: "core" | "supporting" | "mechanical";
-  seedIds: string[];
-}> {
-  const groups = new Map<string, Array<string>>();
+function clusterNarrationPrompt(
+  detail: PullRequestDetail,
+  cluster: Cluster,
+  hunks: ReadonlyArray<Hunk>,
+  earlierClusters: ReadonlyArray<Cluster>,
+): string {
+  const owned = hunks.filter((hunk) => hunk.home === cluster.id);
+  const earlier = hunks.filter((hunk) =>
+    earlierClusters.some((candidate) => candidate.id === hunk.home),
+  );
+  return `Write the narration for one frozen review-journey cluster after exploring relevant code read-only.
+
+PR: ${detail.title}
+Description:
+${detail.body}
+
+Cluster: ${cluster.title}
+Weight: ${cluster.weight}
+Owned hunks:
+${owned.map((hunk) => `- ${hunk.id} ${hunk.path} old:${hunk.oldStart}+${hunk.oldLines} new:${hunk.newStart}+${hunk.newLines}`).join("\n")}
+
+Earlier hunks eligible to resurface:
+${earlier.map((hunk) => `- ${hunk.id} ${hunk.path}`).join("\n") || "- none"}
+
+Explain the behavior, motivation, connections, and review risks as a coherent reading guide rather than restating the diff. Every behavioral claim must use markdown evidence links such as [changed code](tl:hunk/HUNK_ID) and [file](tl:file/path). Add only useful comprehension hints anchored to exact old or new line ranges in this cluster's files; zero hints is better than generic advice. Hints explain connections, behavior, complexity, ripples, repeated patterns, or resurfacing—never quality judgments. Resurface only an earlier hunk that is genuinely needed for comprehension, with a short note. Do not invent IDs, files, symbols, line numbers, or behavior. Return the exact cluster title.`;
+}
+
+type PlannedCluster = (typeof PlanningOutput.Type)["clusters"][number];
+
+function deterministicPlan(seeds: ReadonlyArray<SeedHunk>): ReadonlyArray<PlannedCluster> {
+  const groups = new Map<string, Array<SeedHunk>>();
   for (const seed of seeds) {
     const [top = seed.path] = seed.path.split("/");
     const current = groups.get(top) ?? [];
-    current.push(seed.id);
+    current.push(seed);
     groups.set(top, current);
   }
-  return [...groups].map(([scope, seedIds]) => ({
+  return [...groups].map(([scope, group], index) => ({
+    key: `group-${index + 1}`,
     title: scope.includes(".") ? `Update ${scope}` : `Update ${scope} area`,
-    weight: seeds
-      .filter((seed) => seedIds.includes(seed.id))
-      .every((seed) => seed.fileKind !== undefined)
-      ? "mechanical"
-      : "core",
-    seedIds,
+    weight: group.every((seed) => seed.fileKind !== undefined) ? "mechanical" : "core",
+    buildsOn: index === 0 ? [] : [`group-${index}`],
+    fileOrder: group
+      .map((seed) => seed.path)
+      .filter((path, pathIndex, paths) => paths.indexOf(path) === pathIndex),
+    hunks: group.map((seed) => ({
+      id: seed.id,
+      seedId: seed.id,
+      oldStart: seed.oldStart,
+      oldLines: seed.oldLines,
+      newStart: seed.newStart,
+      newLines: seed.newLines,
+    })),
   }));
+}
+
+function proposedPlan(
+  seeds: ReadonlyArray<SeedHunk>,
+  planned: ReadonlyArray<PlannedCluster>,
+): { readonly clusters: ReadonlyArray<Cluster>; readonly hunks: ReadonlyArray<Hunk> } {
+  const included = planned.filter((item) =>
+    item.hunks.some((hunk) => seeds.some((seed) => seed.id === hunk.seedId)),
+  );
+  const clusterIdByKey = new Map(
+    included.map((item, index) => [item.key, `c-${index + 1}` as ClusterId]),
+  );
+  const clusters = included.map((item, index): Cluster => {
+    const id = `c-${index + 1}` as ClusterId;
+    return {
+      id,
+      position: index + 1,
+      title: item.title.trim() || `Change group ${index + 1}`,
+      weight: item.weight,
+      narrative: { markdown: "" },
+      mapEntry: { markdown: "" },
+      buildsOn: item.buildsOn.flatMap((key) => {
+        const target = clusterIdByKey.get(key);
+        return target === undefined ? [] : [target];
+      }),
+      fileOrder: item.fileOrder,
+      resurfaced: [],
+    };
+  });
+  const hunks = included.flatMap((item, index) => {
+    const home = clusters[index]?.id;
+    if (home === undefined) return [];
+    return item.hunks.flatMap((proposed): ReadonlyArray<Hunk> => {
+      const seed = seeds.find((candidate) => candidate.id === proposed.seedId);
+      if (seed === undefined) return [];
+      return [
+        {
+          id: proposed.id as HunkId,
+          seedId: seed.id,
+          path: seed.path,
+          oldStart: proposed.oldStart,
+          oldLines: proposed.oldLines,
+          newStart: proposed.newStart,
+          newLines: proposed.newLines,
+          ...(seed.fileKind === undefined ? {} : { fileKind: seed.fileKind }),
+          home,
+        },
+      ];
+    });
+  });
+  return { clusters, hunks };
 }
 
 function materializePlan(
   seeds: ReadonlyArray<SeedHunk>,
-  planned: ReadonlyArray<{
-    readonly title: string;
-    readonly weight: "core" | "supporting" | "mechanical";
-    readonly seedIds: ReadonlyArray<string>;
-  }>,
+  planned: ReadonlyArray<PlannedCluster>,
 ): { readonly clusters: ReadonlyArray<Cluster>; readonly hunks: ReadonlyArray<Hunk> } {
-  const seen = new Set<string>();
-  const clusters = planned.flatMap((item, index): ReadonlyArray<Cluster> => {
-    const validSeeds = item.seedIds.filter(
-      (seedId) => seeds.some((seed) => seed.id === seedId) && !seen.has(seedId),
-    );
-    validSeeds.forEach((seedId) => seen.add(seedId));
-    if (validSeeds.length === 0) return [];
-    const id = `c-${index + 1}` as ClusterId;
-    const paths = seeds
-      .filter((seed) => validSeeds.includes(seed.id))
-      .map((seed) => seed.path)
-      .filter((path, pathIndex, all) => all.indexOf(path) === pathIndex);
-    return [
-      {
-        id,
-        position: index + 1,
-        title: item.title.trim() || `Change group ${index + 1}`,
-        weight: item.weight,
-        narrative: { markdown: "" },
-        mapEntry: { markdown: "" },
-        buildsOn: index === 0 ? [] : [`c-${index}` as ClusterId],
-        fileOrder: paths,
-        resurfaced: [],
-      },
-    ];
-  });
-  const proposed = seeds.flatMap((seed): ReadonlyArray<Hunk> => {
-    const cluster = clusters.find((_, index) => planned[index]?.seedIds.includes(seed.id));
-    return cluster === undefined ? [] : [{ ...seed, seedId: seed.id, home: cluster.id }];
-  });
-  return completePartition(seeds, clusters, proposed);
+  const proposed = proposedPlan(seeds, planned);
+  return completePartition(seeds, proposed.clusters, proposed.hunks);
+}
+
+interface MaterializedNarration {
+  readonly brief: string;
+  readonly whereToBegin: string;
+  readonly clusters: ReadonlyArray<{
+    readonly title: string;
+    readonly narrative: string;
+    readonly mapEntry: string;
+    readonly hints: ReadonlyArray<(typeof ClusterNarrationOutput.Type)["hints"][number]>;
+    readonly resurfaced: ReadonlyArray<{ readonly hunkId: string; readonly note: string }>;
+  }>;
 }
 
 function fallbackNarration(
   detail: PullRequestDetail,
   clusters: ReadonlyArray<Cluster>,
   hunks: ReadonlyArray<Hunk>,
-) {
+): MaterializedNarration {
   return {
     brief: `${detail.title} changes ${detail.changedFiles} files with ${detail.additions} additions and ${detail.deletions} deletions. The journey orders the changes by their role in the implementation.`,
     whereToBegin:
@@ -234,6 +399,8 @@ function fallbackNarration(
         title: cluster.title,
         narrative: `Review ${links || "the file-level changes"} as one cohesive part of the pull request.`,
         mapEntry: `Covers ${cluster.fileOrder.length} ${cluster.fileOrder.length === 1 ? "file" : "files"} in this part of the change.`,
+        hints: [],
+        resurfaced: [],
       };
     }),
   };
@@ -241,20 +408,35 @@ function fallbackNarration(
 
 function withNarration(
   clusters: ReadonlyArray<Cluster>,
-  narration: {
-    readonly clusters: ReadonlyArray<{
-      readonly title: string;
-      readonly narrative: string;
-      readonly mapEntry: string;
-    }>;
-  },
+  hunks: ReadonlyArray<Hunk>,
+  narration: MaterializedNarration,
 ): ReadonlyArray<Cluster> {
   return clusters.map((cluster, index) => {
     const text = narration.clusters[index];
+    const validResurfaced =
+      text?.resurfaced.flatMap((item) => {
+        const hunk = hunks.find((candidate) => candidate.id === item.hunkId);
+        const home =
+          hunk === undefined ? undefined : clusters.find((candidate) => candidate.id === hunk.home);
+        return hunk !== undefined &&
+          home !== undefined &&
+          home.position < cluster.position &&
+          item.note.trim() !== ""
+          ? [{ hunkId: hunk.id, note: { markdown: item.note } }]
+          : [];
+      }) ?? [];
     return {
       ...cluster,
       narrative: { markdown: text?.narrative.trim() || cluster.narrative.markdown },
       mapEntry: { markdown: text?.mapEntry.trim() || cluster.mapEntry.markdown },
+      resurfaced: validResurfaced,
+      fileOrder: [
+        ...cluster.fileOrder,
+        ...validResurfaced.flatMap((item) => {
+          const hunk = hunks.find((candidate) => candidate.id === item.hunkId);
+          return hunk === undefined ? [] : [hunk.path];
+        }),
+      ].filter((path, pathIndex, paths) => paths.indexOf(path) === pathIndex),
     };
   });
 }
@@ -271,81 +453,280 @@ function mergeUsage(responses: ReadonlyArray<HarnessResponse>) {
   return inputTokens === 0 && outputTokens === 0 ? undefined : { inputTokens, outputTokens };
 }
 
+function planningIssues(
+  seeds: ReadonlyArray<SeedHunk>,
+  planned: ReadonlyArray<PlannedCluster>,
+): ReadonlyArray<string> {
+  const expected = new Set(seeds.map((seed) => seed.id as string));
+  const clusterKeys = new Set<string>();
+  const hunkIds = new Set<string>();
+  const issues = planned.flatMap((cluster, index) => {
+    const local: Array<string> = [];
+    if (clusterKeys.has(cluster.key)) local.push(`duplicate cluster key ${cluster.key}`);
+    clusterKeys.add(cluster.key);
+    for (const target of cluster.buildsOn) {
+      if (!planned.slice(0, index).some((candidate) => candidate.key === target)) {
+        local.push(`cluster ${cluster.key} builds on unknown or later cluster ${target}`);
+      }
+    }
+    for (const hunk of cluster.hunks) {
+      if (!expected.has(hunk.seedId)) local.push(`unknown seed ${hunk.seedId}`);
+      if (hunkIds.has(hunk.id)) local.push(`duplicate output hunk ${hunk.id}`);
+      hunkIds.add(hunk.id);
+    }
+    return local;
+  });
+  const proposed = proposedPlan(seeds, planned);
+  return [
+    ...issues,
+    ...validateCoverage(seeds, proposed.hunks, proposed.clusters).map((issue) =>
+      JSON.stringify(issue),
+    ),
+  ];
+}
+
+function materializeHints(
+  journeyId: JourneyId,
+  clusters: ReadonlyArray<Cluster>,
+  narration: MaterializedNarration,
+  textContents: ReadonlyMap<string, string>,
+): ReadonlyArray<Hint> {
+  return clusters.flatMap((cluster, clusterIndex) => {
+    const narrated = narration.clusters[clusterIndex];
+    if (narrated === undefined) return [];
+    return narrated.hints.flatMap((hint, hintIndex): ReadonlyArray<Hint> => {
+      const lineCount = textContents.get(hint.path)?.split("\n").length;
+      if (
+        !cluster.fileOrder.includes(hint.path) ||
+        lineCount === undefined ||
+        hint.startLine < 1 ||
+        hint.endLine < hint.startLine ||
+        hint.endLine > lineCount ||
+        hint.body.trim() === ""
+      ) {
+        return [];
+      }
+      return [
+        {
+          id: `${journeyId}:hint:${clusterIndex + 1}:${hintIndex + 1}` as HintId,
+          clusterId: cluster.id,
+          kind: hint.kind,
+          anchor: {
+            path: hint.path,
+            side: hint.side,
+            startLine: hint.startLine,
+            endLine: hint.endLine,
+          },
+          body: { markdown: hint.body },
+        },
+      ];
+    });
+  });
+}
+
 export const make = Effect.gen(function* () {
   const harness = yield* AnalysisHarness;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   return JourneyAnalysis.of({
     analyze: (input) =>
       Effect.gen(function* () {
         const responses: Array<HarnessResponse> = [];
-        const planningResult = yield* harness
-          .run({
-            kind: input.harness,
-            cwd: input.workspace.worktree,
-            prompt: planningPrompt(input.detail, input.workspace.seeds),
-            outputSchema: PLANNING_SCHEMA,
-          })
-          .pipe(
-            Effect.flatMap((response) =>
-              decodePlanning(response.output).pipe(
-                Effect.map((output) => ({ output, response })),
-                Effect.mapError(
-                  () =>
-                    new HarnessError({
-                      kind: input.harness,
-                      detail: "The planning output did not match the required structure.",
-                    }),
+        const transcriptDir = path.join(input.workspace.runDir, "analysis");
+        yield* fileSystem.makeDirectory(transcriptDir, { recursive: true });
+        const persistTranscript = (name: string, response: HarnessResponse) =>
+          fileSystem.writeFileString(
+            path.join(transcriptDir, `${name}.jsonl`),
+            response.transcript,
+          );
+        const runPlanning = (prompt: string) =>
+          harness
+            .run({
+              kind: input.harness,
+              cwd: input.workspace.worktree,
+              prompt,
+              outputSchema: PLANNING_SCHEMA,
+            })
+            .pipe(
+              Effect.flatMap((response) =>
+                decodePlanning(response.output).pipe(
+                  Effect.map((output) => ({ output, response })),
+                  Effect.mapError(
+                    () =>
+                      new HarnessError({
+                        kind: input.harness,
+                        detail: "The planning output did not match the required structure.",
+                      }),
+                  ),
                 ),
               ),
-            ),
-            Effect.option,
+              Effect.option,
+            );
+
+        const basePlanningPrompt = planningPrompt(input.detail, input.workspace.seeds);
+        let planningResult = yield* runPlanning(basePlanningPrompt);
+        let issues =
+          planningResult._tag === "Some"
+            ? planningIssues(input.workspace.seeds, planningResult.value.output.clusters)
+            : ["planning output did not match the schema"];
+        if (planningResult._tag === "Some") {
+          responses.push(planningResult.value.response);
+          yield* persistTranscript("planning-1", planningResult.value.response);
+        }
+        for (let repair = 1; repair <= 2 && issues.length > 0; repair += 1) {
+          const repaired = yield* runPlanning(
+            `${basePlanningPrompt}
+
+Your previous plan failed deterministic validation:
+${issues.map((issue) => `- ${issue}`).join("\n")}
+
+Return the entire corrected plan. Do not explain the repair.`,
           );
+          if (repaired._tag === "Some") {
+            responses.push(repaired.value.response);
+            yield* persistTranscript(`planning-repair-${repair}`, repaired.value.response);
+            planningResult = repaired;
+            issues = planningIssues(input.workspace.seeds, repaired.value.output.clusters);
+          } else {
+            issues = ["repair output did not match the schema"];
+          }
+        }
 
         const planned =
-          planningResult._tag === "Some"
+          planningResult._tag === "Some" && issues.length === 0
             ? planningResult.value.output.clusters
             : deterministicPlan(input.workspace.seeds);
-        if (planningResult._tag === "Some") responses.push(planningResult.value.response);
-
         let partition = materializePlan(input.workspace.seeds, planned);
-        if (
-          validateCoverage(input.workspace.seeds, partition.hunks, partition.clusters).length > 0
-        ) {
+        const coverageIssues = validateCoverage(
+          input.workspace.seeds,
+          partition.hunks,
+          partition.clusters,
+        );
+        if (coverageIssues.length > 0) {
           partition = materializePlan(
             input.workspace.seeds,
             deterministicPlan(input.workspace.seeds),
           );
         }
 
-        const narrationResult = yield* harness
+        yield* input.onStage(
+          "narrating",
+          partition.clusters.slice(0, 5).map((cluster) => cluster.title),
+        );
+        const fallback = fallbackNarration(input.detail, partition.clusters, partition.hunks);
+        const runOverview = harness
           .run({
             kind: input.harness,
             cwd: input.workspace.worktree,
-            prompt: narrationPrompt(input.detail, partition.clusters, partition.hunks),
-            outputSchema: NARRATION_SCHEMA,
+            prompt: overviewPrompt(input.detail, partition.clusters, partition.hunks),
+            outputSchema: OVERVIEW_SCHEMA,
           })
           .pipe(
             Effect.flatMap((response) =>
-              decodeNarration(response.output).pipe(
+              decodeOverview(response.output).pipe(
                 Effect.map((output) => ({ output, response })),
                 Effect.mapError(
                   () =>
                     new HarnessError({
                       kind: input.harness,
-                      detail: "The narration output did not match the required structure.",
+                      detail: "The overview output did not match the required structure.",
                     }),
                 ),
               ),
             ),
             Effect.option,
           );
+        const overviewResult = yield* runOverview;
+        if (overviewResult._tag === "Some") {
+          responses.push(overviewResult.value.response);
+          yield* persistTranscript("overview", overviewResult.value.response);
+        }
 
-        const fallback = fallbackNarration(input.detail, partition.clusters, partition.hunks);
-        const narration =
-          narrationResult._tag === "Some" &&
-          narrationResult.value.output.clusters.length === partition.clusters.length
-            ? narrationResult.value.output
-            : fallback;
-        if (narrationResult._tag === "Some") responses.push(narrationResult.value.response);
+        const clusterResults = yield* Effect.forEach(
+          partition.clusters,
+          (cluster, index) =>
+            Effect.gen(function* () {
+              yield* input.onStage(
+                "narrating",
+                partition.clusters
+                  .slice(Math.max(0, index - 3), index + 1)
+                  .map((candidate) => candidate.title),
+              );
+              const prompt = clusterNarrationPrompt(
+                input.detail,
+                cluster,
+                partition.hunks,
+                partition.clusters.slice(0, index),
+              );
+              const runCluster = harness
+                .run({
+                  kind: input.harness,
+                  cwd: input.workspace.worktree,
+                  prompt,
+                  outputSchema: CLUSTER_NARRATION_SCHEMA,
+                })
+                .pipe(
+                  Effect.flatMap((response) =>
+                    decodeClusterNarration(response.output).pipe(
+                      Effect.map((output) => ({ output, response })),
+                      Effect.mapError(
+                        () =>
+                          new HarnessError({
+                            kind: input.harness,
+                            detail: `The narration for ${cluster.title} did not match the required structure.`,
+                          }),
+                      ),
+                    ),
+                  ),
+                  Effect.option,
+                );
+              const first = yield* runCluster;
+              const result = first._tag === "Some" ? first : yield* runCluster;
+              if (result._tag === "Some") {
+                responses.push(result.value.response);
+                yield* persistTranscript(
+                  `cluster-${String(index + 1).padStart(2, "0")}`,
+                  result.value.response,
+                );
+              }
+              return result;
+            }),
+          { concurrency: 1 },
+        );
+
+        const overview =
+          overviewResult._tag === "Some" &&
+          overviewResult.value.output.mapEntries.length === partition.clusters.length
+            ? overviewResult.value.output
+            : {
+                brief: fallback.brief,
+                whereToBegin: fallback.whereToBegin,
+                mapEntries: fallback.clusters.map((cluster) => ({
+                  title: cluster.title,
+                  mapEntry: cluster.mapEntry,
+                })),
+              };
+        const narration: MaterializedNarration = {
+          brief: overview.brief,
+          whereToBegin: overview.whereToBegin,
+          clusters: partition.clusters.map((cluster, index) => {
+            const fallbackCluster = fallback.clusters[index] as NonNullable<
+              (typeof fallback.clusters)[number]
+            >;
+            const result = clusterResults[index];
+            const narrated =
+              result?._tag === "Some" && result.value.output.title === cluster.title
+                ? result.value.output
+                : fallbackCluster;
+            return {
+              title: cluster.title,
+              narrative: narrated.narrative,
+              mapEntry: overview.mapEntries[index]?.mapEntry ?? fallbackCluster.mapEntry,
+              hints: narrated.hints,
+              resurfaced: narrated.resurfaced,
+            };
+          }),
+        };
 
         const analyzedAt = yield* DateTime.now;
         const usage = mergeUsage(responses);
@@ -376,14 +757,18 @@ export const make = Effect.gen(function* () {
             brief: { markdown: narration.brief },
             whereToBegin: { markdown: narration.whereToBegin },
           },
-          clusters: withNarration(partition.clusters, narration),
+          clusters: withNarration(partition.clusters, partition.hunks, narration),
           hunks: partition.hunks,
           files: input.workspace.files,
-          hints: [] as ReadonlyArray<Hint>,
+          hints: materializeHints(
+            input.journeyId,
+            partition.clusters,
+            narration,
+            input.workspace.textContents,
+          ),
         };
 
-        const changedContents = new Map<string, string>();
-        const invalid = new Set(validateEvidence(journey, changedContents));
+        const invalid = new Set(validateEvidence(journey, input.workspace.textContents));
         if (invalid.size === 0) return journey;
         const clean = (markdown: string) => downgradeInvalidEvidence(markdown, invalid);
         return {
@@ -396,6 +781,10 @@ export const make = Effect.gen(function* () {
             ...cluster,
             narrative: { markdown: clean(cluster.narrative.markdown) },
             mapEntry: { markdown: clean(cluster.mapEntry.markdown) },
+          })),
+          hints: journey.hints.map((hint) => ({
+            ...hint,
+            body: { markdown: clean(hint.body.markdown) },
           })),
         };
       }).pipe(
@@ -433,7 +822,7 @@ export const make = Effect.gen(function* () {
                   brief: { markdown: narration.brief },
                   whereToBegin: { markdown: narration.whereToBegin },
                 },
-                clusters: withNarration(partition.clusters, narration),
+                clusters: withNarration(partition.clusters, partition.hunks, narration),
                 hunks: partition.hunks,
                 files: input.workspace.files,
                 hints: [],

@@ -230,6 +230,13 @@ export const FileContent = Schema.Struct({
 });
 export type FileContent = typeof FileContent.Type;
 
+export const JourneyFiles = Schema.Struct({
+  journeyId: JourneyId,
+  patches: Schema.Array(FilePatch),
+  contents: Schema.Array(FileContent),
+});
+export type JourneyFiles = typeof JourneyFiles.Type;
+
 export const TreeEntryKind = Schema.Literals(["file", "directory", "symlink", "submodule"]);
 export type TreeEntryKind = typeof TreeEntryKind.Type;
 

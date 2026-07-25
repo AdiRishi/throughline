@@ -18,6 +18,7 @@ import {
   FilePatch,
   Journey,
   JourneyFileNotFoundError,
+  JourneyFiles,
   JourneyId,
   JourneyNotFoundError,
   JourneyTree,
@@ -49,6 +50,7 @@ export const WS_METHODS = {
   journeyGet: "journey.get",
   journeyFilePatch: "journey.filePatch",
   journeyFileContent: "journey.fileContent",
+  journeyFiles: "journey.files",
   journeyTree: "journey.tree",
   readStateGet: "readState.get",
   readStateMarkFile: "readState.markFile",
@@ -134,6 +136,12 @@ export const WsJourneyFilePatchRpc = Rpc.make(WS_METHODS.journeyFilePatch, {
 export const WsJourneyFileContentRpc = Rpc.make(WS_METHODS.journeyFileContent, {
   payload: Schema.Struct({ journeyId: JourneyId, path: Schema.String }),
   success: FileContent,
+  error: JourneyFileError,
+});
+
+export const WsJourneyFilesRpc = Rpc.make(WS_METHODS.journeyFiles, {
+  payload: Schema.Struct({ journeyId: JourneyId, paths: Schema.Array(Schema.String) }),
+  success: JourneyFiles,
   error: JourneyFileError,
 });
 
@@ -234,6 +242,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsJourneyGetRpc,
   WsJourneyFilePatchRpc,
   WsJourneyFileContentRpc,
+  WsJourneyFilesRpc,
   WsJourneyTreeRpc,
   WsReadStateGetRpc,
   WsReadStateMarkFileRpc,

@@ -133,17 +133,18 @@ export const make = Effect.gen(function* () {
           detail,
           workspace,
           harness: selectedHarness,
-        });
-        yield* update(id, {
-          type: "analyzing",
-          stage: "narrating",
-          detail: {
-            action: "Writing the journey narrative",
-            recent: journey.clusters.slice(0, 5).map((cluster) => cluster.title),
-            filesWalked: workspace.files.length,
-            symbolsTraced: 0,
-            callSitesFollowed: 0,
-          },
+          onStage: (_stage, recent) =>
+            update(id, {
+              type: "analyzing",
+              stage: "narrating",
+              detail: {
+                action: "Writing the journey narrative",
+                recent,
+                filesWalked: workspace.files.length,
+                symbolsTraced: 0,
+                callSitesFollowed: 0,
+              },
+            }).pipe(Effect.asVoid),
         });
         yield* update(id, { type: "validating" });
         yield* update(id, { type: "saving" });
