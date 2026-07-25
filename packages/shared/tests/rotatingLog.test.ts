@@ -1,11 +1,14 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 
 import {
+  makeBestEffortRotatingFileSink,
   makeRotatingFileLogger,
   makeRotatingFileLoggerControl,
   makeRotatingFileSink,
@@ -92,6 +95,59 @@ it.layer(NodeServices.layer)("rotatingLog", (it) => {
         const written = (yield* fileSystem.readFileString(filePath)).trim().split("\n").toSorted();
         assert.deepEqual(written, entries.map((entry) => entry.trim()).toSorted());
       }).pipe(Effect.scoped),
+    );
+
+    it.effect("reports the first runtime write failure and disables later file writes", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const errors: Array<ReadonlyArray<unknown>> = [];
+        let writeAttempts = 0;
+        const testConsole = Object.assign(Object.create(globalThis.console), {
+          error: (...values: ReadonlyArray<unknown>) => {
+            errors.push(values);
+          },
+        }) as Console.Console;
+        const fileSystem = FileSystem.makeNoop({
+          exists: () => Effect.succeed(false),
+          makeDirectory: () => Effect.void,
+          writeFile: (filePath) =>
+            Effect.sync(() => {
+              writeAttempts += 1;
+            }).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  PlatformError.systemError({
+                    _tag: "PermissionDenied",
+                    module: "FileSystem",
+                    method: "writeFile",
+                    description: "runtime diagnostics failure fixture",
+                    pathOrDescriptor: filePath,
+                  }),
+                ),
+              ),
+            ),
+        });
+        const filePath = path.join("/diagnostics", "throughline.log");
+        yield* Effect.gen(function* () {
+          const sink = yield* makeBestEffortRotatingFileSink({ filePath });
+          yield* sink.append("first\n");
+          yield* sink.append("second\n");
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Console.Console, testConsole),
+        );
+
+        assert.equal(writeAttempts, 1);
+        assert.lengthOf(errors, 1);
+        assert.equal(
+          errors[0]?.[0],
+          "Throughline could not write its diagnostic log. Further file writes are disabled; terminal diagnostics remain available.",
+        );
+        assert.deepEqual(errors[0]?.[1], {
+          filePath,
+          errorType: "PermissionDenied",
+        });
+      }),
     );
   });
 

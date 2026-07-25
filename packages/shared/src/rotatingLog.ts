@@ -6,6 +6,7 @@ import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 import * as Semaphore from "effect/Semaphore";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 
 export const DEFAULT_ROTATING_LOG_MAX_BYTES = 8 * 1024 * 1024;
 
@@ -39,7 +40,6 @@ interface ResolvedRotatingFileSinkOptions {
 }
 
 const textEncoder = new TextEncoder();
-const noOpLogger = Logger.make<unknown, void>(() => undefined);
 
 function resolveSinkOptions(
   options: RotatingFileSinkOptions,
@@ -65,6 +65,19 @@ function reportUnavailableDiagnosticFile(
 ) {
   return Console.error(
     "Throughline could not open its diagnostic log. Terminal diagnostics remain available.",
+    {
+      filePath: options.filePath,
+      errorType: error.reason._tag,
+    },
+  );
+}
+
+function reportFailedDiagnosticWrite(
+  options: RotatingFileSinkOptions,
+  error: PlatformError.PlatformError,
+) {
+  return Console.error(
+    "Throughline could not write its diagnostic log. Further file writes are disabled; terminal diagnostics remain available.",
     {
       filePath: options.filePath,
       errorType: error.reason._tag,
@@ -179,12 +192,82 @@ export const makeBestEffortRotatingFileSink = Effect.fn(
     append: () => Effect.void,
   };
 
-  return yield* makeRotatingFileSink(options).pipe(
+  const sink = yield* makeRotatingFileSink(options).pipe(
     Effect.catch((error) =>
       reportUnavailableDiagnosticFile(options, error).pipe(Effect.as(fallback)),
     ),
   );
+  if (sink === fallback) {
+    return fallback;
+  }
+
+  const enabledRef = yield* SynchronizedRef.make(true);
+  return {
+    ...sink,
+    append: (data) =>
+      SynchronizedRef.modifyEffect(enabledRef, (enabled) => {
+        if (!enabled) {
+          return Effect.succeed([undefined, false] as const);
+        }
+        return sink.append(data).pipe(
+          Effect.matchEffect({
+            onFailure: (error) =>
+              reportFailedDiagnosticWrite(options, error).pipe(
+                Effect.as([undefined, false] as const),
+              ),
+            onSuccess: () => Effect.succeed([undefined, true] as const),
+          }),
+        );
+      }),
+  } satisfies RotatingFileSink;
 });
+
+function makeRotatingFileLoggerControlWithSink(
+  options: RotatingFileLoggerOptions,
+  sink: RotatingFileSink,
+) {
+  return Effect.gen(function* () {
+    const formatter =
+      options.transform === undefined
+        ? Logger.formatJson
+        : Logger.map(Logger.formatJson, options.transform);
+    const flushMutex = yield* Semaphore.make(1);
+    let entries: Array<string> = [];
+    const flush = Effect.uninterruptible(
+      flushMutex.withPermits(1)(
+        Effect.suspend(() => {
+          if (entries.length === 0) {
+            return Effect.void;
+          }
+          const pending = entries;
+          entries = [];
+          return sink.append(`${pending.join("\n")}\n`).pipe(
+            Effect.catch((error) =>
+              Console.error("Throughline could not write its diagnostic log.", {
+                filePath: sink.filePath,
+                errorType: error._tag,
+              }),
+            ),
+          );
+        }),
+      ),
+    );
+
+    yield* Effect.sleep(options.batchWindow ?? Duration.seconds(1)).pipe(
+      Effect.andThen(flush),
+      Effect.forever,
+      Effect.forkScoped,
+    );
+    yield* Effect.addFinalizer(() => flush);
+
+    return {
+      logger: Logger.make((input) => {
+        entries.push(formatter.log(input));
+      }),
+      flush,
+    } satisfies RotatingFileLoggerControl;
+  });
+}
 
 /**
  * Creates a scoped Effect logger that writes batched NDJSON through a rotating
@@ -194,45 +277,7 @@ export const makeRotatingFileLoggerControl = Effect.fn(
   "shared.rotatingLog.makeRotatingFileLoggerControl",
 )(function* (options: RotatingFileLoggerOptions) {
   const sink = yield* makeRotatingFileSink(options);
-  const formatter =
-    options.transform === undefined
-      ? Logger.formatJson
-      : Logger.map(Logger.formatJson, options.transform);
-  const flushMutex = yield* Semaphore.make(1);
-  let entries: Array<string> = [];
-  const flush = Effect.uninterruptible(
-    flushMutex.withPermits(1)(
-      Effect.suspend(() => {
-        if (entries.length === 0) {
-          return Effect.void;
-        }
-        const pending = entries;
-        entries = [];
-        return sink.append(`${pending.join("\n")}\n`).pipe(
-          Effect.catch((error) =>
-            Console.error("Throughline could not write its diagnostic log.", {
-              filePath: sink.filePath,
-              errorType: error._tag,
-            }),
-          ),
-        );
-      }),
-    ),
-  );
-
-  yield* Effect.sleep(options.batchWindow ?? Duration.seconds(1)).pipe(
-    Effect.andThen(flush),
-    Effect.forever,
-    Effect.forkScoped,
-  );
-  yield* Effect.addFinalizer(() => flush);
-
-  return {
-    logger: Logger.make((input) => {
-      entries.push(formatter.log(input));
-    }),
-    flush,
-  } satisfies RotatingFileLoggerControl;
+  return yield* makeRotatingFileLoggerControlWithSink(options, sink);
 });
 
 /**
@@ -243,16 +288,8 @@ export const makeRotatingFileLoggerControl = Effect.fn(
 export const makeBestEffortRotatingFileLoggerControl = Effect.fn(
   "shared.rotatingLog.makeBestEffortRotatingFileLoggerControl",
 )(function* (options: RotatingFileLoggerOptions) {
-  const fallback: RotatingFileLoggerControl = {
-    logger: noOpLogger,
-    flush: Effect.void,
-  };
-
-  return yield* makeRotatingFileLoggerControl(options).pipe(
-    Effect.catch((error) =>
-      reportUnavailableDiagnosticFile(options, error).pipe(Effect.as(fallback)),
-    ),
-  );
+  const sink = yield* makeBestEffortRotatingFileSink(options);
+  return yield* makeRotatingFileLoggerControlWithSink(options, sink);
 });
 
 export const makeRotatingFileLogger = Effect.fn("shared.rotatingLog.makeRotatingFileLogger")(
