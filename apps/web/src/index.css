@@ -3,53 +3,189 @@
 /* Class-based dark mode: the pre-mount guard in index.html toggles `.dark`. */
 @custom-variant dark (&:is(.dark, .dark *));
 
+/*
+ * One accent color, and it carries exactly one meaning: emphasis of the current
+ * cluster's hunks. Everything else in the product is greyscale — there is no
+ * severity palette, because Throughline never expresses severity.
+ *
+ * The +/− figures beside a pull request are the one exception, and they are not
+ * a palette: they are the universal language of a diff, used only for counts.
+ */
 @theme {
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 
-  --color-background: #fafafa;
-  --color-foreground: #18181b;
-  --color-card: #ffffff;
-  --color-muted: #71717a;
-  --color-border: #e4e4e7;
-  /* Teal doubles as the liveness color: accent = "the bus is up". */
-  --color-accent: #0f766e;
+  --color-background: #fbfbfa;
+  --color-surface: #ffffff;
+  --color-raised: #f4f4f2;
+  --color-foreground: #17171a;
+  --color-muted: #6b6b75;
+  --color-faint: #9a9aa5;
+  --color-border: #e3e3e0;
+  --color-border-strong: #cfcfcb;
+  --color-accent: #b26a12;
+  --color-accent-soft: #f6e7d2;
   --color-accent-contrast: #ffffff;
+  --color-addition: #197a3d;
+  --color-deletion: #b02a2a;
+  --color-done: #6d5bd0;
 }
 
-/* Dark palette. Tailwind v4 reads these custom properties at usage sites. */
 .dark {
-  --color-background: #0b0b0c;
-  --color-foreground: #fafafa;
-  --color-card: #131316;
-  --color-muted: #a1a1aa;
-  --color-border: #27272a;
-  --color-accent: #2dd4bf;
-  --color-accent-contrast: #073731;
+  --color-background: #0c0c0e;
+  --color-surface: #141417;
+  --color-raised: #1b1b1f;
+  --color-foreground: #f2f2f4;
+  --color-muted: #8b8b96;
+  --color-faint: #62626d;
+  --color-border: #232327;
+  --color-border-strong: #33333a;
+  --color-accent: #e0a33e;
+  --color-accent-soft: #3a2c14;
+  --color-accent-contrast: #1a1206;
+  --color-addition: #4ec97a;
+  --color-deletion: #e0605f;
+  --color-done: #a08cf0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
 }
 
 body {
   background: var(--color-background);
   color: var(--color-foreground);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* Sync flash: a note row briefly tints when a change round-trips through the
-   server — remounted with a fresh key per revision (see NotesPanel). */
-@keyframes note-flash {
+/* The frame recedes when reading begins; scrollbars are part of the frame. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Prose written by the agent. Narrow measure, generous leading — it is meant
+   to be read, not skimmed. */
+.tl-prose {
+  line-height: 1.65;
+}
+.tl-prose p + p {
+  margin-top: 0.75em;
+}
+.tl-prose ul {
+  margin-top: 0.5em;
+  list-style: disc;
+  padding-left: 1.25em;
+}
+.tl-prose li + li {
+  margin-top: 0.25em;
+}
+.tl-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--color-raised);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+.tl-prose strong {
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+
+/*
+ * Evidence links are buttons because following one is navigation, not a URL —
+ * but they have to *read* as part of the sentence. `display: inline` plus
+ * inherited alignment is what keeps a link that spans a line break from
+ * becoming a block that pushes the prose around it.
+ */
+.tl-evidence {
+  display: inline;
+  text-align: inherit;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-bottom: 1px dotted color-mix(in oklab, var(--color-accent) 65%, transparent);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+.tl-evidence:hover {
+  border-bottom-style: solid;
+  background: var(--color-accent-soft);
+}
+.tl-evidence:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+@keyframes tl-fade-up {
   from {
-    background-color: color-mix(in oklab, var(--color-accent) 22%, transparent);
+    opacity: 0;
+    transform: translateY(4px);
   }
   to {
-    background-color: transparent;
+    opacity: 1;
+    transform: none;
   }
 }
+.tl-enter {
+  animation: tl-fade-up 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
 
-.note-flash {
-  animation: note-flash 0.9s ease-out;
+@keyframes tl-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(0.82);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.tl-pulse {
+  animation: tl-pulse 1.6s ease-in-out infinite;
+}
+
+/* The ingestion transition's stage rail: a line that fills as work completes. */
+@keyframes tl-trace {
+  from {
+    background-position: 0 -60px;
+  }
+  to {
+    background-position: 0 60px;
+  }
+}
+.tl-trace {
+  background-image: linear-gradient(to bottom, transparent, var(--color-accent) 45%, transparent);
+  background-size: 100% 60px;
+  background-repeat: repeat-y;
+  animation: tl-trace 2.2s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .note-flash {
+  .tl-enter,
+  .tl-pulse,
+  .tl-trace {
     animation: none;
   }
 }

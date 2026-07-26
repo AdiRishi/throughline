@@ -1,10 +1,12 @@
-import { App } from "./App.tsx";
-
 /**
- * Owns renderer-wide composition. A starter has no router or global providers,
- * so this just renders the single demo page — but it's the natural seam to add
- * context providers (theme, error boundary, a router) as the app grows.
+ * Renderer-wide composition: the router, and nothing else yet.
+ *
+ * @module AppRoot
  */
+import { RouterProvider } from "@tanstack/react-router";
+
+import { router } from "./router.tsx";
+
 export function AppRoot() {
-  return <App />;
+  return <RouterProvider router={router} />;
 }
