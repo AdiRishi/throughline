@@ -42,7 +42,7 @@ Logs are human-facing on stdout:
 
 To make a log message persist, emit it **inside an active span** with `Effect.log*`. `Logger.tracerLogger` is installed in all three processes, so it attaches as a span event and rides the span into the trace file. A log outside any span is stdout-only, by design.
 
-Level: `APP_LOG_LEVEL` (default `Info`) — applied to the server, the shell, and the renderer alike.
+Level: `APP_LOG_LEVEL` (default `Info`) — read at startup by the server (`apps/server/src/cli/config.ts`) and by the shell (`apps/desktop/src/app/DesktopEnvironment.ts`), each of which installs the parsed value as `References.MinimumLogLevel`. The renderer is the exception: it has no environment to read and is handed no resolved value, so it always runs at Effect's default `Info`. An `Effect.logDebug` in the web app stays invisible however the shell was launched.
 
 ### Traces
 
@@ -69,7 +69,9 @@ renderer OtlpTracer
         → server.trace.ndjson
 ```
 
-`apps/web/src/observability/clientTracing.ts` configures the exporter against the resolved connection target, so the identical web build works in a plain browser tab and inside the Electron renderer (ADR-0004). Renderer spans carry `resourceAttributes["service.name"] = "throughline-web"`, and share a `traceId` with the server spans they triggered.
+`apps/web/src/observability/clientTracing.ts` configures the exporter against the resolved connection target, so the identical web build works in a plain browser tab and inside the Electron renderer (ADR-0004). Renderer spans carry `resourceAttributes["service.name"] = "throughline-web"`.
+
+They do **not** share a `traceId` with the server work they triggered. The WS RPC server is registered with `disableTracing: true` (`apps/server/src/ws.ts`), and Effect's `RpcServer` reads the `traceId`/`spanId` a client sends with a request only when tracing is enabled — so the server neither opens a span per call nor adopts the renderer's span as a parent. The HTTP routes install no tracer middleware either, so nothing reads a `traceparent` header. Every span a handler opens is therefore the root of its own trace: renderer and server spans share the file, not the trace. To line a renderer interaction up against the server work behind it, match on `startTimeUnixNano` and on which side a record came from (`type`, or `resourceAttributes["service.name"]`) — not on `traceId`.
 
 Until the exporter finishes configuring, spans fall back to `NativeSpan` — they still nest correctly, they are just not exported. Tracing is never load-bearing.
 
@@ -123,7 +125,7 @@ Renderer spans only:
 jq -c 'select(.type == "otlp-span") | { name, durationMs, attributes }' "$TRACE_FILE"
 ```
 
-Follow one trace across the renderer and the server:
+Every span in one trace. A trace never crosses the renderer↔server boundary (see above), so this is one process's view of one operation — the way to read a server pipeline or a renderer interaction end to end, not a way to stitch the two together:
 
 ```bash
 jq -r 'select(.traceId == "TRACE_ID_HERE") | [
@@ -180,11 +182,13 @@ IDs, paths, and other detailed context belong in span annotations — not in met
 
 ### Use component loggers
 
-Each module takes a `makeComponentLogger("name")` so every record carries a `component` annotation:
+Each shell module takes a `makeComponentLogger("name")` (from `apps/desktop/src/app/DesktopObservability.ts`) so every record it writes carries a `component` annotation:
 
 ```ts
 const { logInfo, logWarning } = makeComponentLogger("desktop-backend");
 ```
+
+There is no server- or renderer-side equivalent. The shell is a handful of long-lived modules — `desktop-backend`, `desktop-window`, `desktop-updater`, `desktop-lifecycle` — and the module is the useful unit of attribution there. On the server and in the renderer what identifies a record is the span it hangs off, so naming the boundary well does the job the `component` annotation does in the shell: one more reason to prefer boundaries over bare logs.
 
 ## Runtime Wiring
 
@@ -219,5 +223,7 @@ If the OTLP URLs are unset, local tracing still works and metrics stay in-proces
 ## Current Constraints
 
 - logs emitted outside a span are not persisted
+- a `traceId` does not cross the renderer↔server boundary: the WS RPC server runs with tracing disabled, so the two sides share the trace file but never a trace
+- the renderer ignores `APP_LOG_LEVEL` and always runs at `Info`
 - metrics are not snapshotted locally; OTLP export is the only way to see them
 - `server-child.log` is raw child output, not structured application logs — the server's own records are in `server.trace.ndjson`

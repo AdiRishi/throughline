@@ -1,0 +1,11 @@
+# A Schema Guard Stands Between The Migrator And A Dead App
+
+Before the SQLite client opens `throughline.db`, `ensureReadableSchema` in `apps/server/src/journeys/schemaGuard.ts` probes the file's real tables and columns and compares them against `EXPECTED_SCHEMA` in `journeys/migrations.ts`. On a mismatch it renames the file — with its `-wal` and `-shm` sidecars — to `<file>.unreadable-<stamp>` so the migrator runs onto a clean database. It runs in `JourneyStore`'s `clientLayer`, before `SqliteClient.layer` is constructed, because that is the only moment at which the path is known and nothing holds the file open.
+
+The guard exists because a migrator answers one question: what is the highest id this file has run? `SqliteMigrator` reads `throughline_migrations`, sees `1`, and skips its work — correct only while a shipped id always produces the same schema. Edit `1_initial` in place instead of superseding it and the file reports itself migrated while every statement fails. That is not hypothetical: it happened in the packaged app as `no such column: pr_key` — total, silent (startup succeeded; the queries failed later), and surfaced to the reviewer as "Try again in a moment."
+
+Resetting is the right recovery for this product because nothing in this database is a source of truth. A journey is a derived artifact, rebuildable from the pull request and the harness; read progress is the one genuinely costly loss and is bounded by a single reanalysis, which already deletes a journey's read state when it replaces the row. The rejected alternative — refuse to open and ask the reviewer to intervene — trades that bounded, automatic loss for an app that opens and does nothing, with no route out that does not involve a terminal. The old bytes are renamed, never deleted.
+
+Two limits keep it conservative: extra tables and columns are not mismatches, so a downgrade cannot destroy a newer install's data, and a file without the migrations table is a new database, left alone.
+
+This imposes a rule on contributors. `EXPECTED_SCHEMA` is written by hand — a fingerprint derived from the migration source could only ever agree with itself — so it must be extended to match the schema after every new migration, and a shipped migration id must never be edited in place; supersede it with a new one.

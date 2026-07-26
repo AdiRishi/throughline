@@ -58,7 +58,7 @@ Read tracking is built in from v1 and is **local-only** — nothing is ever writ
 These bind every surface documented in `docs/product/`:
 
 - **An IDE, not a dashboard.** Reading a cluster should feel like sitting in your own editor — files on the left, code in the middle, quiet. The frame recedes when reading begins; the code has room to breathe.
-- **Calm by default.** One accent color. Color carries exactly one meaning: emphasis of the current cluster's hunks. No severity palettes, no chip rows.
+- **Calm by default.** One accent color, and it carries one meaning: **where the reviewer is, and how far they have come.** That is the current cluster's hunks, the current cluster's row in the rail, the progress a meter has filled, and the stage an analysis is on — one idea wearing one colour in every place it appears. What the accent is never spent on is alarm: no severity palettes, no chip rows, and a parked state or a failure says so in the calm voice, because a colour that means both "you are here" and "something is wrong" means neither.
 - **Chrome must earn its place.** The reading experience's interaction set is deliberately small: journey/files toggle, display mode (inline, just-the-code, or split), mark-read, expand-context, changed-files filter, and navigation. A control that doesn't serve reading the journey doesn't ship.
 - **Nothing essential behind a hover.** Hover may preview; it may never be the only home of information.
 - **Prose sits next to the code it explains.** Narrative is anchored, scroll-synced, and evidence-linked — never a detached wall of text.
