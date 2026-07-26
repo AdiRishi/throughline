@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
@@ -26,14 +27,20 @@ import {
 } from "@app/contracts";
 import type { TraceRecord } from "@app/shared/observability";
 
+import * as IngestionModule from "../src/analysis/Ingestion.ts";
 import * as Auth from "../src/auth.ts";
 import * as ServerConfig from "../src/config.ts";
+import * as GitHubModule from "../src/github/GitHub.ts";
+import * as HarnessLayer from "../src/harness/layer.ts";
 import { AUTH_BOOTSTRAP_PATH, HEALTH_PATH, OTLP_TRACES_PROXY_PATH } from "../src/http.ts";
+import * as JourneyStoreModule from "../src/journeys/JourneyStore.ts";
 import * as LifecycleEvents from "../src/lifecycleEvents.ts";
-import * as NotesStore from "../src/notes/NotesStore.ts";
 import * as BrowserTraceCollector from "../src/observability/BrowserTraceCollector.ts";
+import * as Database from "../src/persistence/Database.ts";
 import * as Readiness from "../src/readiness.ts";
 import { routesLayer } from "../src/server.ts";
+import * as PrListViewModule from "../src/welcome/PrListView.ts";
+import * as WorkspacesModule from "../src/workspace/Workspaces.ts";
 
 const BOOTSTRAP_TOKEN = "boot-secret";
 
@@ -72,8 +79,20 @@ const appLayer = (options: HarnessOptions = {}) =>
         options.lifecycleEvents === undefined
           ? LifecycleEvents.layer
           : Layer.mock(LifecycleEvents.ServerLifecycleEvents)(options.lifecycleEvents),
-        NotesStore.layer,
         Readiness.layer,
+      ),
+    ),
+    // The real domain stack. Constructing it is cheap and touches nothing
+    // external — every service here does its work lazily, on call — so the
+    // route tests exercise the same graph production runs.
+    Layer.provideMerge(
+      PrListViewModule.layer.pipe(
+        Layer.provideMerge(IngestionModule.layer),
+        Layer.provideMerge(
+          Layer.mergeAll(WorkspacesModule.layer, HarnessLayer.layer, JourneyStoreModule.layer),
+        ),
+        Layer.provideMerge(GitHubModule.layer),
+        Layer.provideMerge(Database.layer),
       ),
     ),
     Layer.provideMerge(
@@ -109,7 +128,9 @@ const appLayer = (options: HarnessOptions = {}) =>
       ),
     ),
     // NodeServices provides Crypto in production; layerTest does not.
-    Layer.provideMerge(Layer.mergeAll(NodeHttpServer.layerTest, NodeCrypto.layer)),
+    Layer.provideMerge(
+      Layer.mergeAll(NodeHttpServer.layerTest, NodeCrypto.layer, NodeServices.layer),
+    ),
   );
 
 const decodeBearerSession = Schema.decodeUnknownSync(BearerSessionJson);
