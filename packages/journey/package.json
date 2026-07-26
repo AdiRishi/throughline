@@ -1,0 +1,41 @@
+{
+  "name": "@app/journey",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./hunks": {
+      "types": "./src/hunks.ts",
+      "import": "./src/hunks.ts"
+    },
+    "./coverage": {
+      "types": "./src/coverage.ts",
+      "import": "./src/coverage.ts"
+    },
+    "./progress": {
+      "types": "./src/progress.ts",
+      "import": "./src/progress.ts"
+    },
+    "./evidence": {
+      "types": "./src/evidence.ts",
+      "import": "./src/evidence.ts"
+    },
+    "./plan": {
+      "types": "./src/plan.ts",
+      "import": "./src/plan.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@app/contracts": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

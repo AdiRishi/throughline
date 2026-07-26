@@ -83,6 +83,39 @@ export const request = Effect.fn("clientRuntime.rpc.request")(function* <TTag ex
 });
 
 /**
+ * Wait for a live session, then issue the request.
+ *
+ * `request` fails fast while disconnected so callers can decide, and for a
+ * user-initiated action that is right — a click that cannot reach the server
+ * should say so. But a surface that fetches on mount has a different need: on a
+ * cold page load the socket is still opening, and failing there would make a hard
+ * reload of a deep URL show an error for a journey that is perfectly readable a
+ * moment later.
+ *
+ * This is not a retry, and so does not contend with ADR-0003's rule that exactly
+ * one component reconnects. It waits for the supervisor's session ref to hold a
+ * session and then asks once. `SubscriptionRef.changes` replays the current value,
+ * so an already-connected caller proceeds immediately.
+ */
+export const requestWhenConnected = <TTag extends UnaryRpcTag>(
+  tag: TTag,
+  input: RpcInput<TTag>,
+): Effect.Effect<RpcSuccess<TTag>, RpcFailure<TTag> | RpcUnavailableError, ConnectionSupervisor> =>
+  Effect.gen(function* () {
+    const supervisor = yield* ConnectionSupervisor;
+    yield* SubscriptionRef.changes(supervisor.session).pipe(
+      Stream.filter(Option.isSome),
+      Stream.take(1),
+      Stream.runDrain,
+    );
+    return yield* request(tag, input);
+  }).pipe(
+    Effect.withSpan("clientRuntime.rpc.requestWhenConnected", {
+      attributes: { "rpc.method": tag },
+    }),
+  );
+
+/**
  * Subscribe to a streaming RPC. The returned stream watches the supervisor's
  * `session` ref and, on every reconnect, tears down the old subscription and
  * re-attaches to the fresh session — so a consumer subscribes once and keeps

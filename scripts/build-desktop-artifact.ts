@@ -81,6 +81,33 @@ function readWorkspaceAllowBuilds(): Record<string, boolean> {
   return allowBuilds;
 }
 
+/** Packages the server bundle externalizes and the packaged app must install. */
+const HARNESS_PACKAGES: ReadonlyArray<string> = [
+  "@openai/codex-sdk",
+  "@anthropic-ai/claude-agent-sdk",
+];
+
+/** Resolves `catalog:` versions from the workspace catalog. */
+function readWorkspaceCatalog(): Record<string, string> {
+  const raw = NodeFS.readFileSync(NodePath.join(REPO_ROOT, "pnpm-workspace.yaml"), "utf8");
+  const catalog: Record<string, string> = {};
+  let inBlock = false;
+  for (const line of raw.split("\n")) {
+    if (/^catalog:\s*$/.test(line)) {
+      inBlock = true;
+      continue;
+    }
+    if (!inBlock) continue;
+    const entry = /^ {2}"?([^"\s:]+)"?:\s*(.+?)\s*$/.exec(line);
+    if (entry) {
+      catalog[entry[1] as string] = (entry[2] as string).replace(/^["']|["']$/g, "");
+      continue;
+    }
+    if (line.trim().length > 0 && !line.startsWith(" ")) inBlock = false;
+  }
+  return catalog;
+}
+
 function main(): void {
   // 1. Build all three packages (order matters: the server serves the web build).
   run("pnpm", ["--filter", "@app/web", "build"]);
@@ -108,6 +135,33 @@ function main(): void {
   ) as {
     readonly dependencies: { readonly "electron-updater": string };
   };
+  /**
+   * The harness SDKs are the one thing the server bundle deliberately does NOT
+   * inline (see apps/server/vite.config.ts): each resolves and spawns its own
+   * vendored platform binary from its own package directory, so it has to exist
+   * as a real installed package next to the bundle. Their versions come from the
+   * server's manifest so the packaged app runs the versions the repo pins.
+   */
+  const serverPackageJson = JSON.parse(
+    NodeFS.readFileSync(NodePath.join(REPO_ROOT, "apps/server/package.json"), "utf8"),
+  ) as { readonly dependencies: Record<string, string> };
+  const catalog = readWorkspaceCatalog();
+  const harnessDependencies = Object.fromEntries(
+    HARNESS_PACKAGES.map((name) => {
+      const declared = serverPackageJson.dependencies[name];
+      if (declared === undefined) {
+        throw new Error(
+          `[desktop-artifact] apps/server does not depend on ${name}, but the server bundle ` +
+            "externalizes it. Add the dependency or stop externalizing it.",
+        );
+      }
+      const resolved = declared === "catalog:" ? catalog[name] : declared;
+      if (resolved === undefined) {
+        throw new Error(`[desktop-artifact] ${name} is 'catalog:' but has no catalog entry.`);
+      }
+      return [name, resolved];
+    }),
+  );
   const electronPackageJson = JSON.parse(
     NodeFS.readFileSync(
       NodePath.join(REPO_ROOT, "apps/desktop/node_modules/electron/package.json"),
@@ -124,6 +178,7 @@ function main(): void {
         main: "apps/desktop/dist-electron/main.cjs",
         dependencies: {
           "electron-updater": desktopPackageJson.dependencies["electron-updater"],
+          ...harnessDependencies,
         },
         devDependencies: {
           electron: electronPackageJson.version,
@@ -154,7 +209,10 @@ function main(): void {
     productName: PRODUCT_NAME,
     directories: { output: NodePath.join(REPO_ROOT, "release/dist") },
     files: ["**/*"],
-    asarUnpack: ["apps/server/**"],
+    // A binary inside an asar archive cannot be exec'd, and both harness SDKs
+    // spawn a vendored platform binary — so their whole trees ship unpacked
+    // alongside the server bundle.
+    asarUnpack: ["apps/server/**", "node_modules/@openai/**", "node_modules/@anthropic-ai/**"],
     mac: { target: [target], category: "public.app-category.developer-tools" },
     win: { target: [target] },
     linux: { target: [target], category: "Development" },

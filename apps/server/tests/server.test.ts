@@ -26,12 +26,17 @@ import {
 } from "@app/contracts";
 import type { TraceRecord } from "@app/shared/observability";
 
+import { Ingestion } from "../src/analysis/Ingestion.ts";
 import * as Auth from "../src/auth.ts";
 import * as ServerConfig from "../src/config.ts";
+import { GitHub } from "../src/github/GitHub.ts";
+import { AnalysisHarness } from "../src/harness/AnalysisHarness.ts";
 import { AUTH_BOOTSTRAP_PATH, HEALTH_PATH, OTLP_TRACES_PROXY_PATH } from "../src/http.ts";
+import { JourneyReader } from "../src/journeys/JourneyReader.ts";
+import { JourneyStore } from "../src/journeys/JourneyStore.ts";
 import * as LifecycleEvents from "../src/lifecycleEvents.ts";
-import * as NotesStore from "../src/notes/NotesStore.ts";
 import * as BrowserTraceCollector from "../src/observability/BrowserTraceCollector.ts";
+import { PrList } from "../src/prs/PrList.ts";
 import * as Readiness from "../src/readiness.ts";
 import { routesLayer } from "../src/server.ts";
 
@@ -72,8 +77,17 @@ const appLayer = (options: HarnessOptions = {}) =>
         options.lifecycleEvents === undefined
           ? LifecycleEvents.layer
           : Layer.mock(LifecycleEvents.ServerLifecycleEvents)(options.lifecycleEvents),
-        NotesStore.layer,
         Readiness.layer,
+        // The domain services are mocked: these tests cover the HTTP surface and
+        // the websocket gate, and nothing they exercise reaches a journey, a
+        // clone, or a harness. Mocking keeps them hermetic and fast — a real
+        // stack here would open SQLite and shell out to two CLIs.
+        Layer.mock(GitHub)({}),
+        Layer.mock(PrList)({}),
+        Layer.mock(Ingestion)({}),
+        Layer.mock(JourneyStore)({}),
+        Layer.mock(JourneyReader)({}),
+        Layer.mock(AnalysisHarness)({}),
       ),
     ),
     Layer.provideMerge(

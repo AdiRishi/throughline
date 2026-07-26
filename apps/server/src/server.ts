@@ -20,8 +20,11 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
 
+import * as Ingestion from "./analysis/Ingestion.ts";
 import * as Auth from "./auth.ts";
 import * as ServerConfig from "./config.ts";
+import * as GitHub from "./github/GitHub.ts";
+import * as AnalysisHarness from "./harness/AnalysisHarness.ts";
 import {
   authBootstrapRouteLayer,
   corsLayer,
@@ -29,10 +32,13 @@ import {
   otlpTracesRouteLayer,
   staticAndDevRouteLayer,
 } from "./http.ts";
+import * as JourneyReader from "./journeys/JourneyReader.ts";
+import * as JourneyStore from "./journeys/JourneyStore.ts";
 import * as LifecycleEvents from "./lifecycleEvents.ts";
-import * as NotesStore from "./notes/NotesStore.ts";
 import { ObservabilityLive } from "./observability/Layers/Observability.ts";
+import * as PrList from "./prs/PrList.ts";
 import * as Readiness from "./readiness.ts";
+import * as Workspaces from "./workspace/Workspaces.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 
 // Effect's default preemptive shutdown waits 20s before finalizing request scopes.
@@ -53,12 +59,29 @@ export const routesLayer = Layer.mergeAll(
   staticAndDevRouteLayer,
 ).pipe(Layer.provide(corsLayer));
 
-/** Application services shared across routes and lifecycle. */
+/**
+ * Application services shared across routes and lifecycle.
+ *
+ * The layering below is the dependency order of the five seams. `Ingestion` sits
+ * on top because it is the only module that needs all of the others; `PrList` is
+ * beside it because it folds their state into one view. Everything under them —
+ * `GitHub`, `Workspaces`, `AnalysisHarness`, `JourneyStore` — is independent, and
+ * `provideMerge` keeps each one visible to the RPC handlers as well.
+ */
+const DomainServicesLive = PrList.layer.pipe(
+  // `mergeAll` does NOT let siblings see each other, so `PrList` (which folds
+  // ingestion state into its view) has to sit *above* `Ingestion`, not beside it.
+  Layer.provideMerge(Layer.mergeAll(Ingestion.layer, JourneyReader.layer)),
+  Layer.provideMerge(
+    Layer.mergeAll(GitHub.layer, Workspaces.layer, AnalysisHarness.layer, JourneyStore.layer),
+  ),
+);
+
 const RuntimeServicesLive = Layer.mergeAll(
   Auth.layer,
   LifecycleEvents.layer,
-  NotesStore.layer,
   Readiness.layer,
+  DomainServicesLive,
 );
 
 export const makeServerLayer = Layer.unwrap(

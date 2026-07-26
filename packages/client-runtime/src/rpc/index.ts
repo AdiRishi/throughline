@@ -10,6 +10,7 @@ export {
   type StreamRpcTag,
   type UnaryRpcTag,
   request,
+  requestWhenConnected,
   subscribe,
 } from "./client.ts";
 export { makeWsRpcProtocolClient, type WsRpcProtocolClient } from "./protocol.ts";
