@@ -34,7 +34,7 @@ import { SegmentedControl } from "./JourneyTopBar.tsx";
  */
 
 export function JourneyRail() {
-  const { envelope, journey, progress, railMode, setRailMode, changedOnly, setChangedOnly } =
+  const { journey, progress, stale, railMode, setRailMode, changedOnly, setChangedOnly } =
     useJourney();
   const params = useParams({ from: "/pr/$owner/$repo/$number" });
   const clusterRoute = useParams({
@@ -102,7 +102,7 @@ export function JourneyRail() {
             {/* Staleness is flagged where the journey is navigated, because a stale
                 journey stays fully readable — it is a faithful map of an older head,
                 not a failure. */}
-            {envelope.stale && (
+            {stale && (
               <p className="mt-2 text-[11px] text-muted">
                 stale · pinned to{" "}
                 <span className="font-mono">{journey.pinned.headSha.slice(0, 7)}</span>; the pull

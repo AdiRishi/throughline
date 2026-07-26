@@ -10,6 +10,7 @@ import {
   jobForAtom,
   journeyAtom,
   journeyValueAtom,
+  prListAtom,
   readStateAtom,
   refKey,
 } from "../../state/journeyState.ts";
@@ -49,6 +50,17 @@ export interface JourneyContextValue {
   readonly journey: Journey;
   readonly readState: ReadState | null;
   readonly progress: JourneyProgress;
+  /**
+   * Whether the pinned head still matches the pull request's.
+   *
+   * Derived here rather than read off the envelope, because staleness is *never
+   * stored* — it is a comparison made at the moment of display. The envelope
+   * carries the answer as of the moment it was fetched, and the journey artifact
+   * is immutable and cached forever, so a journey opened before a push would
+   * otherwise keep claiming to be current. The live PR list is the freshest view
+   * the renderer has, so it wins whenever it knows this pull request.
+   */
+  readonly stale: boolean;
   readonly displayMode: DisplayMode;
   /** The right rail is collapsible, and reading with it closed is complete. */
   readonly guidanceOpen: boolean;
@@ -87,6 +99,7 @@ export function JourneyLayout() {
   const result = useAtomValue(journeyAtom(key));
   const envelope = useAtomValue(journeyValueAtom(key));
   const job = useAtomValue(jobForAtom(key));
+  const prList = useAtomValue(prListAtom);
 
   const journeyId = envelope?.journey.id ?? null;
   const readState = useAtomValue(readStateAtom(journeyId ?? "none"));
@@ -100,11 +113,22 @@ export function JourneyLayout() {
 
   const context = useMemo<JourneyContextValue | null>(() => {
     if (envelope === null) return null;
+    const liveHeadSha =
+      prList === null
+        ? null
+        : ([...prList.groups.flatMap((group) => group.entries), ...prList.merged].find(
+            (entry) =>
+              entry.pr.ref.owner === ref.owner &&
+              entry.pr.ref.repo === ref.repo &&
+              entry.pr.ref.number === ref.number,
+          )?.pr.headSha ?? null);
     return {
       envelope,
       journey: envelope.journey,
       readState,
       progress: computeJourneyProgress(envelope.journey, readState),
+      stale:
+        liveHeadSha === null ? envelope.stale : liveHeadSha !== envelope.journey.pinned.headSha,
       displayMode: readState?.displayMode ?? "inline",
       guidanceOpen,
       setGuidanceOpen,
@@ -113,7 +137,7 @@ export function JourneyLayout() {
       changedOnly,
       setChangedOnly,
     };
-  }, [envelope, readState, guidanceOpen, railMode, changedOnly]);
+  }, [envelope, readState, prList, ref, guidanceOpen, railMode, changedOnly]);
 
   // A live job always wins: even a readable journey should show its reanalysis
   // rather than pretend the old artifact is current.

@@ -52,7 +52,7 @@ import { ReadingPanels, useJourney } from "./JourneyLayout.tsx";
  */
 
 export function OverviewScreen() {
-  const { envelope, journey, progress } = useJourney();
+  const { envelope, journey, progress, stale } = useJourney();
   const params = useParams({ from: "/pr/$owner/$repo/$number" });
   const navigate = useNavigate();
 
@@ -131,9 +131,7 @@ export function OverviewScreen() {
       middle={
         <div id="overview" className="min-h-0 flex-1 overflow-y-auto">
           <article className="tl-fade mx-auto max-w-[72ch] px-8 pt-10 pb-24">
-            {envelope.stale && (
-              <StaleLine journey={journey} currentHeadSha={envelope.currentHeadSha} />
-            )}
+            {stale && <StaleLine journey={journey} currentHeadSha={envelope.currentHeadSha} />}
 
             <Section label="The change, in brief">
               {brief.length === 0 ? (
