@@ -83,11 +83,6 @@ function run(
     // oxlint-disable-next-line app/no-global-process-runtime -- Standalone Node script has no Effect runtime (see file header).
     shell: process.platform === "win32",
   });
-  child.on("exit", (code) => {
-    if (code !== null && code !== 0) {
-      process.stderr.write(`[dev-runner] ${filter} ${script} exited with ${code}\n`);
-    }
-  });
   return child;
 }
 
@@ -164,38 +159,47 @@ async function main(): Promise<void> {
       targetMessage,
   );
 
-  const children: NodeChildProcess.ChildProcess[] = [];
-  // `dev`/`dev:server` run the server standalone; in `dev:desktop` the Electron
-  // shell spawns its own server, so we don't start a second one here.
-  if (mode === "dev" || mode === "dev:server") {
-    children.push(run("@app/server", "dev", serverEnv));
-  }
-  if (mode === "dev" || mode === "dev:web" || mode === "dev:desktop") {
-    children.push(run("@app/web", "dev", webEnv));
-  }
   if (mode === "dev:desktop") {
-    // The shell loads the vite dev URL for HMR but spawns the built server
-    // bundle, so both it and the server must be built before launch.
     process.stdout.write("[dev-runner] building server + desktop for the shell...\n");
-    NodeChildProcess.execSync("pnpm --filter @app/server --filter @app/desktop build", {
-      cwd: REPO_ROOT,
-      stdio: "inherit",
-    });
-    children.push(run("@app/desktop", "start", desktopEnv));
+    NodeChildProcess.execFileSync(
+      "pnpm",
+      ["--filter", "@app/server", "--filter", "@app/desktop", "build"],
+      {
+        cwd: REPO_ROOT,
+        stdio: "inherit",
+        // oxlint-disable-next-line app/no-global-process-runtime -- Standalone Node script has no Effect runtime.
+        shell: process.platform === "win32",
+      },
+    );
   }
 
-  // SIGTERM everything, give children a short grace period to exit cleanly,
-  // then SIGKILL any survivor so nothing is orphaned when the runner exits.
+  const children: NodeChildProcess.ChildProcess[] = [];
   let shuttingDown = false;
-  const shutdown = () => {
+
+  const killDescendants = (child: NodeChildProcess.ChildProcess, signal: "TERM" | "KILL"): void => {
+    // oxlint-disable-next-line app/no-global-process-runtime -- Standalone Node script has no Effect runtime.
+    if (process.platform === "win32" || child.pid === undefined) {
+      return;
+    }
+    NodeChildProcess.spawnSync("pkill", [`-${signal}`, "-P", String(child.pid)], {
+      stdio: "ignore",
+    });
+  };
+
+  const shutdown = (exitCode: number) => {
     if (shuttingDown) return;
     shuttingDown = true;
     const alive = children.filter((child) => child.exitCode === null && child.signalCode === null);
-    if (alive.length === 0) process.exit(0);
+    if (alive.length === 0) {
+      process.exit(exitCode);
+    }
     let remaining = alive.length;
     const forceKillTimer = setTimeout(() => {
       for (const child of alive) {
-        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+          killDescendants(child, "KILL");
+        }
       }
     }, FORCE_KILL_AFTER_MS);
     for (const child of alive) {
@@ -203,14 +207,47 @@ async function main(): Promise<void> {
         remaining -= 1;
         if (remaining === 0) {
           clearTimeout(forceKillTimer);
-          process.exit(0);
+          process.exit(exitCode);
         }
       });
       child.kill("SIGTERM");
+      killDescendants(child, "TERM");
     }
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+
+  const startChild = (filter: string, script: string, env: NodeJS.ProcessEnv) => {
+    const child = run(filter, script, env);
+    children.push(child);
+    child.once("error", (error) => {
+      if (shuttingDown) return;
+      process.stderr.write(`[dev-runner] failed to start ${filter} ${script}: ${error.message}\n`);
+      shutdown(1);
+    });
+    child.once("exit", (code, signal) => {
+      if (shuttingDown) return;
+      const exitDescription = signal === null ? `code ${code ?? 1}` : `signal ${signal}`;
+      process.stderr.write(
+        `[dev-runner] ${filter} ${script} exited unexpectedly with ${exitDescription}\n`,
+      );
+      shutdown(code === null ? 1 : code);
+    });
+  };
+
+  // `dev`/`dev:server` run the server standalone; in `dev:desktop` the Electron
+  // shell spawns its own server, so we don't start a second one here.
+  if (mode === "dev" || mode === "dev:server") {
+    startChild("@app/server", "dev", serverEnv);
+  }
+  if (mode === "dev" || mode === "dev:web" || mode === "dev:desktop") {
+    startChild("@app/web", "dev", webEnv);
+  }
+  if (mode === "dev:desktop") {
+    startChild("@app/desktop", "start", desktopEnv);
+  }
+
+  process.once("SIGINT", () => shutdown(130));
+  process.once("SIGTERM", () => shutdown(143));
+  process.once("SIGHUP", () => shutdown(129));
 }
 
 main().catch((error: unknown) => {

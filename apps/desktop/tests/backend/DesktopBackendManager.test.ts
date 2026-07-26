@@ -188,6 +188,12 @@ describe("DesktopBackendManager", () => {
       yield* harness.awaitReady;
 
       assert.equal(yield* harness.spawnCount, 1);
+      const snapshot = yield* harness.manager.snapshot;
+      assert.isTrue(snapshot.desiredRunning);
+      assert.isTrue(snapshot.ready);
+      assert.equal(Option.getOrNull(snapshot.activePid), 4242);
+      assert.equal(snapshot.restartAttempt, 0);
+      assert.isFalse(snapshot.restartScheduled);
       const config = yield* harness.manager.currentConfig;
       assert.isTrue(Option.isSome(config));
       if (Option.isSome(config)) {
@@ -226,8 +232,13 @@ describe("DesktopBackendManager", () => {
       yield* harness.manager.start;
       yield* harness.awaitReady;
 
-      yield* harness.manager.stop;
+      yield* harness.manager.stop();
       assert.isTrue(yield* harness.currentKilled);
+      assert.equal(yield* harness.notReadyCount, 1);
+      const snapshot = yield* harness.manager.snapshot;
+      assert.isFalse(snapshot.desiredRunning);
+      assert.isFalse(snapshot.ready);
+      assert.isTrue(Option.isNone(snapshot.activePid));
 
       yield* TestClock.adjust("5 seconds");
       assert.equal(yield* harness.spawnCount, 1);
@@ -256,7 +267,7 @@ describe("DesktopBackendManager", () => {
         }
       });
 
-      yield* harness.manager.stop;
+      yield* harness.manager.stop();
       yield* TestClock.adjust("500 millis");
       assert.equal(yield* harness.spawnCount, 2);
     }).pipe(Effect.scoped),
@@ -277,7 +288,7 @@ describe("DesktopBackendManager", () => {
 
       // Stop during the backoff window cancels the pending restart; nothing
       // respawns once the delay elapses.
-      yield* harness.manager.stop;
+      yield* harness.manager.stop();
       yield* TestClock.adjust("5 seconds");
       assert.equal(yield* harness.spawnCount, 1);
     }).pipe(Effect.scoped),

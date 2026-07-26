@@ -12,10 +12,16 @@
   "dependencies": {
     "@app/client-runtime": "workspace:*",
     "@app/contracts": "workspace:*",
+    "@app/journey": "workspace:*",
     "@effect/atom-react": "catalog:",
+    "@phosphor-icons/react": "^2.1.10",
+    "@pierre/diffs": "catalog:",
+    "@pierre/trees": "catalog:",
+    "@tanstack/react-router": "catalog:",
     "effect": "catalog:",
     "react": "19.2.7",
-    "react-dom": "19.2.7"
+    "react-dom": "19.2.7",
+    "react-markdown": "catalog:"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.2",

@@ -5,6 +5,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import type * as Electron from "electron";
 
 import { ServerBootstrapEnvelope } from "@app/contracts";
@@ -15,6 +16,7 @@ import * as ElectronMenu from "../../src/electron/ElectronMenu.ts";
 import * as ElectronShell from "../../src/electron/ElectronShell.ts";
 import * as ElectronTheme from "../../src/electron/ElectronTheme.ts";
 import * as ElectronWindow from "../../src/electron/ElectronWindow.ts";
+import * as DesktopAppSettings from "../../src/settings/DesktopAppSettings.ts";
 import * as DesktopWindow from "../../src/window/DesktopWindow.ts";
 
 const decodeBootstrapEnvelope = Schema.decodeUnknownSync(ServerBootstrapEnvelope);
@@ -35,6 +37,7 @@ function makeFakeBrowserWindow() {
   const windowListeners = new Map<string, (...args: readonly unknown[]) => void>();
   const webContentsListeners = new Map<string, (...args: readonly unknown[]) => void>();
   const loadedUrls: string[] = [];
+  let bounds = { x: 0, y: 0, width: 1100, height: 780 };
 
   const webContents = {
     getURL: () => loadedUrls.at(-1) ?? "",
@@ -51,7 +54,12 @@ function makeFakeBrowserWindow() {
   };
 
   const window = {
+    getBounds: () => bounds,
+    getNormalBounds: () => bounds,
     isDestroyed: () => false,
+    isFullScreen: () => false,
+    isMaximized: () => false,
+    isMinimized: () => false,
     loadURL: (url: string) => {
       loadedUrls.push(url);
       return Promise.resolve();
@@ -67,6 +75,9 @@ function makeFakeBrowserWindow() {
   return {
     window: window as unknown as Electron.BrowserWindow,
     loadedUrls,
+    setBounds: (nextBounds: Electron.Rectangle) => {
+      bounds = nextBounds;
+    },
     webContentsListeners,
     windowListeners,
   };
@@ -114,6 +125,7 @@ function makeTestLayer(input: {
   readonly createCount: Ref.Ref<number>;
   readonly mainWindow: Ref.Ref<Option.Option<Electron.BrowserWindow>>;
   readonly openedExternalUrls?: unknown[];
+  readonly mainWindowBoundsUpdates?: DesktopAppSettings.DesktopWindowBounds[];
 }) {
   const electronWindowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
     create: () => Ref.update(input.createCount, (count) => count + 1).pipe(Effect.as(input.window)),
@@ -129,11 +141,38 @@ function makeTestLayer(input: {
     onClosed: () => Effect.void,
     setWindowOpenHandler: () => Effect.void,
   } satisfies ElectronWindow.ElectronWindow["Service"]);
+  const desktopAppSettingsLayer = Layer.succeed(DesktopAppSettings.DesktopAppSettings, {
+    get: Effect.succeed(DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS),
+    load: Effect.succeed(DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS),
+    setMainWindowBounds: (bounds, isMaximized) =>
+      Effect.sync(() => {
+        input.mainWindowBoundsUpdates?.push(bounds);
+        return {
+          changed: true,
+          settings: {
+            ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+            mainWindowBounds: bounds,
+            mainWindowMaximized: isMaximized,
+          },
+        };
+      }),
+    setTheme: () =>
+      Effect.succeed({
+        changed: false,
+        settings: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+      }),
+    setUpdateChannel: () =>
+      Effect.succeed({
+        changed: false,
+        settings: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+      }),
+  } satisfies DesktopAppSettings.DesktopAppSettings["Service"]);
 
   return DesktopWindow.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         desktopEnvironmentLayer,
+        desktopAppSettingsLayer,
         electronMenuLayer,
         Layer.succeed(ElectronShell.ElectronShell, {
           openExternal: (url) =>
@@ -150,6 +189,32 @@ function makeTestLayer(input: {
 }
 
 describe("DesktopWindow", () => {
+  it("versions packaged renderer navigations so an upgrade cannot reuse stale HTML", () => {
+    assert.equal(
+      DesktopWindow.resolvePackagedApplicationUrl(
+        new URL("http://127.0.0.1:13773"),
+        "1.4.2-beta.1",
+      ),
+      "http://127.0.0.1:13773/?throughline-app-version=1.4.2-beta.1",
+    );
+  });
+
+  it("restores only bounds that still fit on a connected display", () => {
+    const persisted = { x: 100, y: 80, width: 1100, height: 780 };
+    assert.strictEqual(
+      DesktopWindow.resolveInitialMainWindowBounds(persisted, [
+        { x: 0, y: 0, width: 1920, height: 1080 },
+      ]),
+      persisted,
+    );
+    assert.strictEqual(
+      DesktopWindow.resolveInitialMainWindowBounds(persisted, [
+        { x: 2000, y: 0, width: 1920, height: 1080 },
+      ]),
+      DesktopAppSettings.DEFAULT_MAIN_WINDOW_SIZE,
+    );
+  });
+
   it("recognizes only same-origin renderer navigations", () => {
     assert.isTrue(
       DesktopWindow.isSameOriginRendererNavigation({
@@ -232,6 +297,35 @@ describe("DesktopWindow", () => {
 
         assert.isTrue(prevented);
         assert.deepEqual(openedExternalUrls, ["https://accounts.microsoft.com/oauth"]);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("persists the latest normal bounds after move events settle", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const mainWindowBoundsUpdates: DesktopAppSettings.DesktopWindowBounds[] = [];
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        mainWindowBoundsUpdates,
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady(backendConfig);
+
+        fakeWindow.setBounds({ x: 120, y: 75, width: 1260, height: 840 });
+        fakeWindow.windowListeners.get("move")?.();
+        yield* TestClock.adjust("500 millis");
+        while (mainWindowBoundsUpdates.length === 0) {
+          yield* Effect.yieldNow;
+        }
+
+        assert.deepEqual(mainWindowBoundsUpdates, [{ x: 120, y: 75, width: 1260, height: 840 }]);
       }).pipe(Effect.provide(layer));
     }),
   );

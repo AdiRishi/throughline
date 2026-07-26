@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
@@ -30,7 +31,6 @@ import * as Auth from "../src/auth.ts";
 import * as ServerConfig from "../src/config.ts";
 import { AUTH_BOOTSTRAP_PATH, HEALTH_PATH, OTLP_TRACES_PROXY_PATH } from "../src/http.ts";
 import * as LifecycleEvents from "../src/lifecycleEvents.ts";
-import * as NotesStore from "../src/notes/NotesStore.ts";
 import * as BrowserTraceCollector from "../src/observability/BrowserTraceCollector.ts";
 import * as Readiness from "../src/readiness.ts";
 import { routesLayer } from "../src/server.ts";
@@ -72,7 +72,6 @@ const appLayer = (options: HarnessOptions = {}) =>
         options.lifecycleEvents === undefined
           ? LifecycleEvents.layer
           : Layer.mock(LifecycleEvents.ServerLifecycleEvents)(options.lifecycleEvents),
-        NotesStore.layer,
         Readiness.layer,
       ),
     ),
@@ -109,7 +108,9 @@ const appLayer = (options: HarnessOptions = {}) =>
       ),
     ),
     // NodeServices provides Crypto in production; layerTest does not.
-    Layer.provideMerge(Layer.mergeAll(NodeHttpServer.layerTest, NodeCrypto.layer)),
+    Layer.provideMerge(
+      Layer.mergeAll(NodeHttpServer.layerTest, NodeCrypto.layer, NodeServices.layer),
+    ),
   );
 
 const decodeBearerSession = Schema.decodeUnknownSync(BearerSessionJson);
@@ -301,10 +302,12 @@ describe("static serving", () => {
     Effect.gen(function* () {
       const index = yield* HttpClient.get("/");
       assert.equal(index.status, 200);
+      assert.equal(index.headers["cache-control"], "no-store");
       assert.include(yield* index.text, "INDEX_SENTINEL");
 
       const asset = yield* HttpClient.get("/assets/app.js");
       assert.equal(asset.status, 200);
+      assert.equal(asset.headers["cache-control"], "private, max-age=3600");
       assert.include(yield* asset.text, "APP_JS_SENTINEL");
     }).pipe(Effect.provide(appLayer({ staticDir: STATIC_ROOT }))),
   );
@@ -313,6 +316,7 @@ describe("static serving", () => {
     Effect.gen(function* () {
       const response = yield* HttpClient.get("/settings/updates");
       assert.equal(response.status, 200);
+      assert.equal(response.headers["cache-control"], "no-store");
       assert.include(yield* response.text, "INDEX_SENTINEL");
     }).pipe(Effect.provide(appLayer({ staticDir: STATIC_ROOT }))),
   );

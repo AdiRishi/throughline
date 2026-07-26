@@ -16,7 +16,8 @@ The core guarantee: Throughline never summarizes the diff — it **partitions** 
 
 ## The documents
 
-This project is being built documentation-first. The docs are the product right now:
+This project is documentation-first: the specifications define the product, and the implementation
+is kept aligned with them.
 
 | Document                                   | What it holds                                                                                          |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
@@ -33,11 +34,17 @@ Read them in that order; where they conflict, the vision wins.
 - **[`@pierre/diffs`](https://diffs.com) and [`@pierre/trees`](https://trees.software)** — the rendering foundations for every diff surface and file tree. Throughline's job is the journey, not reinventing diff viewers.
 - **GitHub CLI (`gh`)** — authentication and PR access ride on your existing login.
 
-> **Status:** early. The documentation leads; the app code is still the starter scaffold Throughline will be built into.
+> **Status:** implemented. The desktop and browser hosts share the complete local-server product:
+> GitHub discovery, repository ingestion, agent-authored journeys, exact hunk coverage, reading
+> progress, and the full diff/tree reading room.
 
 ## Development
 
 Requires Node 24 and pnpm 11.
+
+Before starting, authenticate the GitHub CLI (`gh auth login`) and at least one supported analysis
+harness (Codex or Claude Code). Throughline uses those existing local credentials and runs analysis
+read-only in an isolated, pinned worktree.
 
 ```bash
 pnpm install
@@ -45,4 +52,11 @@ pnpm dev            # server + web UI in your browser, with HMR
 pnpm dev:desktop    # the Electron shell
 pnpm check          # typecheck + lint + format
 pnpm test           # vitest across every package
+pnpm build          # production builds for server, web, and desktop
+pnpm dist:desktop -- --platform mac --arch arm64
 ```
+
+Desktop artifacts default to the host architecture and are unsigned unless `--signed` is supplied.
+Unsigned builds explicitly ignore signing credentials; signed builds use the platform credentials in
+the environment. The selected target architecture is also used while installing staged production
+dependencies, so native optional packages match the artifact rather than the build host.

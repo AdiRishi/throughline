@@ -1,13 +1,13 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
-import { ServerBootstrapEnvelope, TickEvent } from "../src/server.ts";
+import { ServerBootstrapEnvelope, ServerLifecycleStreamEvent } from "../src/server.ts";
 
 const decodeEnvelope = Schema.decodeUnknownSync(ServerBootstrapEnvelope);
 const encodeEnvelope = Schema.encodeSync(ServerBootstrapEnvelope);
-// TickEvent crosses the WS RPC layer, which wraps schemas in
-// `Schema.toCodecJson` — so its JSON form (ISO `at`) is the wire contract.
-const decodeTick = Schema.decodeUnknownSync(Schema.toCodecJson(TickEvent));
+const decodeLifecycleEvent = Schema.decodeUnknownSync(
+  Schema.toCodecJson(ServerLifecycleStreamEvent),
+);
 
 describe("ServerBootstrapEnvelope", () => {
   it("decodes without a port and keeps the key absent through a roundtrip", () => {
@@ -27,13 +27,26 @@ describe("ServerBootstrapEnvelope", () => {
   });
 });
 
-describe("TickEvent", () => {
+describe("ServerLifecycleStreamEvent", () => {
   it("decodes the wire shape", () => {
-    const decoded = decodeTick({ tick: 0, at: "2026-07-03T00:00:00.000Z" });
-    assert.strictEqual(decoded.tick, 0);
+    const decoded = decodeLifecycleEvent({
+      version: 1,
+      sequence: 0,
+      phase: "ready",
+      at: "2026-07-03T00:00:00.000Z",
+    });
+    assert.strictEqual(decoded.sequence, 0);
+    assert.strictEqual(decoded.phase, "ready");
   });
 
-  it("rejects a negative tick", () => {
-    assert.throws(() => decodeTick({ tick: -1, at: "2026-07-03T00:00:00.000Z" }));
+  it("rejects a negative sequence", () => {
+    assert.throws(() =>
+      decodeLifecycleEvent({
+        version: 1,
+        sequence: -1,
+        phase: "ready",
+        at: "2026-07-03T00:00:00.000Z",
+      }),
+    );
   });
 });

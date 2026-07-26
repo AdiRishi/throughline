@@ -7,3 +7,5 @@ Three facts about the Electron runtime dictate build decisions across _multiple_
 3. **The HTTP client is `FetchHttpClient` (global fetch), never the undici-based Node client** — in both the desktop main and the server. Bundling npm undici into the CJS main crashes Electron at load (`webidl.util.markAsUncloneable is not a function`), and the server child running on Electron's Node hits the same class of failure.
 
 Any change to these ("switch to ESM output", "bump the target, we're on Node 24", "use the real Node HttpClient") must be verified against a **packaged** app — dev mode exercises none of the three constraints.
+
+Packaging is architecture-explicit for the same reason: the staged production install declares the artifact OS and CPU before `pnpm install --prod`, and that architecture is passed to `electron-builder`. Unsigned local builds disable signing identity discovery and scrub signing credentials; release signing happens only when the packaging command is invoked with `--signed`.

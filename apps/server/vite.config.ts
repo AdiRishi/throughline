@@ -2,15 +2,19 @@ import * as NodeModule from "node:module";
 
 import { defineConfig } from "vite";
 
-// Bundle every non-Node dependency into the single-file CLI so the packaged
-// `dist/bin.mjs` has no runtime dependency on the monorepo layout.
+// The harness SDKs carry platform executables and must retain their package
+// layout. Everything else is bundled into the single-file server CLI.
 const nodeBuiltinIds = new Set([
   ...NodeModule.builtinModules,
   ...NodeModule.builtinModules.map((moduleName) => `node:${moduleName}`),
 ]);
+const externalPackages = ["@openai/codex-sdk", "@anthropic-ai/claude-agent-sdk"] as const;
 
 function isExternalCliDependency(id: string): boolean {
-  return nodeBuiltinIds.has(id);
+  return (
+    nodeBuiltinIds.has(id) ||
+    externalPackages.some((packageName) => id === packageName || id.startsWith(`${packageName}/`))
+  );
 }
 
 export default defineConfig({

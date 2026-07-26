@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { toHttpOrigin, toWsOrigin } from "../src/env.ts";
+import { toHttpEndpoint, toHttpOrigin, toWsOrigin } from "../src/env.ts";
 
 describe("connection target URL conversion", () => {
+  it("joins endpoint paths without duplicating origin separators", () => {
+    expect(toHttpEndpoint("http://127.0.0.1:13773/", "/api/observability/v1/traces")).toBe(
+      "http://127.0.0.1:13773/api/observability/v1/traces",
+    );
+  });
+
   it("maps ws(s) URLs to their http(s) origins", () => {
     expect(toHttpOrigin("ws://127.0.0.1:13773")).toBe("http://127.0.0.1:13773");
     expect(toHttpOrigin("wss://example.com/ws?token=x#y")).toBe("https://example.com");
