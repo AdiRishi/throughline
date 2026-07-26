@@ -16,7 +16,7 @@ The core guarantee: Throughline never summarizes the diff — it **partitions** 
 
 ## The documents
 
-This project is being built documentation-first. The docs are the product right now:
+This project is documentation-first, and the documents stay authoritative over the code:
 
 | Document                                   | What it holds                                                                                          |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
@@ -33,11 +33,15 @@ Read them in that order; where they conflict, the vision wins.
 - **[`@pierre/diffs`](https://diffs.com) and [`@pierre/trees`](https://trees.software)** — the rendering foundations for every diff surface and file tree. Throughline's job is the journey, not reinventing diff viewers.
 - **GitHub CLI (`gh`)** — authentication and PR access ride on your existing login.
 
-> **Status:** early. The documentation leads; the app code is still the starter scaffold Throughline will be built into.
+## What you need
+
+- **Node 24** and **pnpm 11**.
+- **[`gh`](https://cli.github.com), signed in** (`gh auth login`). What your login can see is what Throughline can see; there is no separate account.
+- **One agent harness, signed in** — [Codex](https://developers.openai.com/codex/cli) (`codex login`) or [Claude Code](https://claude.com/product/claude-code) (`claude`). Throughline ships no model: analysis runs on your harness, under your login, read-only.
+
+Nothing leaves your machine except what `gh` and your harness already send. There is no Throughline cloud, no telemetry, and nothing is ever written back to GitHub — read state, reviewed marks, and hidden PRs are all local.
 
 ## Development
-
-Requires Node 24 and pnpm 11.
 
 ```bash
 pnpm install
@@ -46,3 +50,5 @@ pnpm dev:desktop    # the Electron shell
 pnpm check          # typecheck + lint + format
 pnpm test           # vitest across every package
 ```
+
+`pnpm dev` prints the URL to open, plus where this checkout keeps its data (`.data/`) and its logs and traces (`.logs/`) — both per-checkout, so a dev run never touches an installed app's history. See [`docs/technical/06-observability.md`](./docs/technical/06-observability.md) for reading the trace files.

@@ -74,5 +74,10 @@ export function useTheme() {
     emit();
   }, []);
 
-  return { theme, setTheme } as const;
+  // The *effective* theme, not the stored preference. Anything that paints its
+  // own surface — the diff renderer's shadow DOM, for one — has to be told
+  // which one it is; it cannot see our `.dark` class.
+  const resolved: "light" | "dark" = theme === "system" ? (systemDark() ? "dark" : "light") : theme;
+
+  return { theme, resolved, setTheme } as const;
 }

@@ -8,6 +8,7 @@ import { RpcClientError } from "effect/unstable/rpc";
 
 import { ConnectionSupervisor } from "../connection/supervisor.ts";
 import type { WsRpcProtocolClient } from "./protocol.ts";
+import type { RpcSession } from "./session.ts";
 
 /** Raised when a request is issued while no socket is live. */
 export class RpcUnavailableError extends Schema.TaggedErrorClass<RpcUnavailableError>()(
@@ -83,6 +84,19 @@ export const request = Effect.fn("clientRuntime.rpc.request")(function* <TTag ex
 });
 
 /**
+ * The supervisor's session, current value first.
+ *
+ * `SubscriptionRef`'s pubsub is created with `replay: 1`, so a subscriber that
+ * attaches long after the connection was established still receives the live
+ * session immediately rather than waiting for a transition that already
+ * happened. That is what makes it safe for anything mounted at any time — not
+ * only at boot — to subscribe and expect an answer.
+ */
+export const sessionChanges = (
+  supervisor: typeof ConnectionSupervisor.Service,
+): Stream.Stream<Option.Option<RpcSession>> => SubscriptionRef.changes(supervisor.session);
+
+/**
  * Subscribe to a streaming RPC. The returned stream watches the supervisor's
  * `session` ref and, on every reconnect, tears down the old subscription and
  * re-attaches to the fresh session — so a consumer subscribes once and keeps
@@ -99,7 +113,7 @@ export const subscribe = <TTag extends StreamRpcTag>(
 ): Stream.Stream<RpcStreamValue<TTag>, RpcStreamFailure<TTag>, ConnectionSupervisor> =>
   Stream.unwrap(
     Effect.map(ConnectionSupervisor, (supervisor) =>
-      SubscriptionRef.changes(supervisor.session).pipe(
+      sessionChanges(supervisor).pipe(
         Stream.switchMap(
           Option.match({
             onNone: () => Stream.empty,

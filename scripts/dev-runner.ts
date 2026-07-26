@@ -124,12 +124,17 @@ async function main(): Promise<void> {
   // it keeps a dev run from polluting the installed app's history, and it means
   // "where are the logs" is answerable without knowing a per-OS path.
   const logDir = process.env["APP_LOG_DIR"] ?? NodePath.join(REPO_ROOT, ".logs");
+  // Dev data lives in the checkout too, for the same reason the logs do: a dev
+  // run must never share (or corrupt) the installed app's history, and "where
+  // is my data" should be answerable without knowing a per-OS path.
+  const dataDir = process.env["APP_DATA_DIR"] ?? NodePath.join(REPO_ROOT, ".data");
   const logLevel = process.env["APP_LOG_LEVEL"] ?? "Info";
 
   const serverEnv: NodeJS.ProcessEnv = {
     APP_SERVER_PORT: String(serverPort),
     APP_BOOTSTRAP_TOKEN: bootstrapToken,
     APP_DEV_WEB_URL: devWebUrl,
+    APP_DATA_DIR: dataDir,
     APP_LOG_DIR: logDir,
     APP_LOG_LEVEL: logLevel,
   };
@@ -142,6 +147,7 @@ async function main(): Promise<void> {
   const desktopEnv: NodeJS.ProcessEnv = {
     APP_SERVER_PORT: String(serverPort),
     APP_DEV_WEB_URL: devWebUrl,
+    APP_DATA_DIR: dataDir,
     // The shell forwards these to the server child it spawns, so every process
     // in a `dev:desktop` run writes to the same directory.
     APP_LOG_DIR: logDir,
@@ -158,6 +164,7 @@ async function main(): Promise<void> {
 
   process.stdout.write(
     `[dev-runner] mode=${mode} server=${serverPort} web=${webPort}\n` +
+      `[dev-runner] data: ${dataDir}\n` +
       `[dev-runner] logs: ${logDir} (server.trace.ndjson` +
       (mode === "dev:desktop" ? ", desktop.trace.ndjson, server-child.log" : "") +
       `)\n` +

@@ -20,7 +20,11 @@ import {
   INITIAL_CONNECTION_STATE,
   type PreparedConnection,
 } from "@app/client-runtime/connection";
-import { request as rpcRequest, subscribe as rpcSubscribe } from "@app/client-runtime/rpc";
+import {
+  request as rpcRequest,
+  sessionChanges,
+  subscribe as rpcSubscribe,
+} from "@app/client-runtime/rpc";
 import type { ServerConfig, ServerLifecyclePhase } from "@app/contracts";
 
 import { isElectron, resolveConnectionTarget } from "../env.ts";
@@ -151,7 +155,7 @@ export function createConnectionAtoms<R, E>(
     Stream.unwrap(
       ConnectionSupervisor.pipe(
         Effect.map((supervisor) =>
-          SubscriptionRef.changes(supervisor.session).pipe(
+          sessionChanges(supervisor).pipe(
             Stream.switchMap(
               Option.match({
                 onNone: () => Stream.succeed(null),

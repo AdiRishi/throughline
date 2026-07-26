@@ -20,8 +20,11 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
 
+import * as IngestionModule from "./analysis/Ingestion.ts";
 import * as Auth from "./auth.ts";
 import * as ServerConfig from "./config.ts";
+import * as GitHubModule from "./github/GitHub.ts";
+import * as HarnessLayer from "./harness/layer.ts";
 import {
   authBootstrapRouteLayer,
   corsLayer,
@@ -29,10 +32,13 @@ import {
   otlpTracesRouteLayer,
   staticAndDevRouteLayer,
 } from "./http.ts";
+import * as JourneyStoreModule from "./journeys/JourneyStore.ts";
 import * as LifecycleEvents from "./lifecycleEvents.ts";
-import * as NotesStore from "./notes/NotesStore.ts";
 import { ObservabilityLive } from "./observability/Layers/Observability.ts";
+import * as Database from "./persistence/Database.ts";
 import * as Readiness from "./readiness.ts";
+import * as PrListViewModule from "./welcome/PrListView.ts";
+import * as WorkspacesModule from "./workspace/Workspaces.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 
 // Effect's default preemptive shutdown waits 20s before finalizing request scopes.
@@ -53,12 +59,28 @@ export const routesLayer = Layer.mergeAll(
   staticAndDevRouteLayer,
 ).pipe(Layer.provide(corsLayer));
 
+/**
+ * The domain stack, in dependency order.
+ *
+ * `Ingestion` sits on all four modules below it, and `PrListView` sits on
+ * `Ingestion` — so the merges are layered rather than flat. Everything here is
+ * built once at startup and shared by every connection.
+ */
+const DomainServicesLive = PrListViewModule.layer.pipe(
+  Layer.provideMerge(IngestionModule.layer),
+  Layer.provideMerge(
+    Layer.mergeAll(WorkspacesModule.layer, HarnessLayer.layer, JourneyStoreModule.layer),
+  ),
+  Layer.provideMerge(GitHubModule.layer),
+  Layer.provideMerge(Database.layer),
+);
+
 /** Application services shared across routes and lifecycle. */
 const RuntimeServicesLive = Layer.mergeAll(
   Auth.layer,
   LifecycleEvents.layer,
-  NotesStore.layer,
   Readiness.layer,
+  DomainServicesLive,
 );
 
 export const makeServerLayer = Layer.unwrap(

@@ -27,6 +27,10 @@
     "./observability": {
       "types": "./src/observability.ts",
       "import": "./src/observability.ts"
+    },
+    "./prUrl": {
+      "types": "./src/prUrl.ts",
+      "import": "./src/prUrl.ts"
     }
   },
   "scripts": {

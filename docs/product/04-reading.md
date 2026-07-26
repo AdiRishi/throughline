@@ -73,6 +73,12 @@ One display mode at a time, per journey — switch it and it stays that way unti
 
 The mode changes how code renders, never what counts: read state, coverage, and emphasis semantics are identical in all three.
 
+### Changes with no text to show
+
+A binary edit, a pure rename, a mode change, an empty added file — each is one file-level hunk and behaves like any other: homed, emphasized, labelled with its home, counted toward coverage, and markable. Where a diff would be, the file carries a quiet placard naming the change.
+
+Rendering an image change _as images_ is the one part of this not yet built: it needs binary revision bytes on the wire, which nothing else in the product requires. Until it exists an image change reads as "Binary file changed — no text diff", which is honest and complete for coverage, but less than the reviewer deserves.
+
 ### Resurfacing
 
 A resurfaced hunk — shown here although its home is elsewhere, because this cluster's story needs it — is rendered like an emphasized hunk but **visibly marked as a revisit**, with its home cluster named and linked. The distinction the reviewer must never lose: emphasized-and-marked means "known code from a new angle," not "new code." Resurfaced hunks do not count toward this cluster's progress; coverage lives at home.

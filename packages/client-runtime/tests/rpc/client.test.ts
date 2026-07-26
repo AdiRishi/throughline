@@ -52,6 +52,38 @@ const makeHarness = Effect.gen(function* () {
 });
 
 describe("rpc client", () => {
+  it.effect("subscribe attaches to a session that was already live when it started", () =>
+    Effect.gen(function* () {
+      // The regression this pins: `SubscriptionRef.changes` emits future values
+      // only. A subscriber that starts *after* the connection is established
+      // has already missed the none → some transition, and without replaying
+      // the current session it would wait forever for a change that happened
+      // before it existed. Everything mounted by a route rather than at boot
+      // is in exactly that position.
+      const { activeSession, supervisor } = yield* makeHarness;
+      yield* SubscriptionRef.set(
+        activeSession,
+        Option.some(
+          session({
+            [WS_METHODS.serverSubscribeTicks]: () => Stream.make(tick(1), tick(2)),
+          } as unknown as WsRpcProtocolClient),
+        ),
+      );
+
+      const events = yield* subscribe(WS_METHODS.serverSubscribeTicks, {}).pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.provideService(ConnectionSupervisor, supervisor),
+        Effect.timeout("2 seconds"),
+      );
+
+      assert.deepStrictEqual(
+        events.map((event) => event.tick),
+        [1, 2],
+      );
+    }),
+  );
+
   it.effect("request fails fast with RpcUnavailableError while disconnected", () =>
     Effect.gen(function* () {
       const { supervisor } = yield* makeHarness;
