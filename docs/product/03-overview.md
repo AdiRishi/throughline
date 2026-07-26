@@ -21,7 +21,7 @@ The heart of the page: one entry per cluster, in journey order. Each entry carri
 - **Position and title** — matching the left rail exactly.
 - **Weight** — Core, Supporting, or Mechanical, as a quiet label.
 - **A two-to-three sentence account** of what the cluster does and why it sits at this point in the sequence. This is the same narrative the cluster page leads with, compressed — the map and the territory always agree.
-- **Its relationships** — which earlier clusters it builds on, stated plainly ("binds the auth module (1) to the login UI (2)").
+- **Its relationships** — which earlier clusters it builds on, stated plainly and always in the same words: "Builds on the auth module (1) and the login UI (2)." The verb never changes with how many clusters are named, because a cluster with two dependencies is not necessarily _binding_ them, and Throughline does not make a claim about the code it cannot back. If this step is the binding, the agent says so in the cluster's own account above.
 - **Its scale** — files touched and hunks homed, so the reviewer can budget attention before starting.
 
 Reading only the map should leave the reviewer able to articulate the architecture of the change — the vision's minutes-not-hours test.

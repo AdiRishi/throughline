@@ -31,13 +31,14 @@ Read them in that order; where they conflict, the vision wins.
 
 - **[Effect](https://effect.website) v4 + Electron + React 19** — the app shell: a supervised local Effect server, typed RPC/IPC contracts, one web build that runs in the shell and the browser.
 - **[`@pierre/diffs`](https://diffs.com) and [`@pierre/trees`](https://trees.software)** — the rendering foundations for every diff surface and file tree. Throughline's job is the journey, not reinventing diff viewers.
-- **GitHub CLI (`gh`)** — authentication and PR access ride on your existing login.
+- **GitHub CLI (`gh`)** — authentication and PR access ride on your existing login. No token is ever stored.
+- **A coding agent you already pay for** — [Codex](https://developers.openai.com/codex/sdk/) or [Claude Code](https://docs.claude.com/en/api/agent-sdk/overview), run read-only against a local clone. Throughline brings no key of its own.
 
-> **Status:** early. The documentation leads; the app code is still the starter scaffold Throughline will be built into.
+> **Status:** the product is built and works end to end — pull requests are read from `gh`, analyzed by a local harness, and presented as a journey you can walk to the end. Analysis quality depends on the harness you have configured; with none available the app is still honest about it and every other surface still works.
 
 ## Development
 
-Requires Node 24 and pnpm 11.
+Requires Node 24 and pnpm 11, plus `gh` on your `PATH` and at least one of `codex` or `claude` if you want real analyses.
 
 ```bash
 pnpm install
@@ -45,4 +46,11 @@ pnpm dev            # server + web UI in your browser, with HMR
 pnpm dev:desktop    # the Electron shell
 pnpm check          # typecheck + lint + format
 pnpm test           # vitest across every package
+pnpm dist:desktop   # a signed, packaged app in release/dist
 ```
+
+Everything the app writes — the SQLite database, cloned workspaces, materialized
+diffs, logs and traces — lives in one directory: `<repo>/.logs` and a sibling data
+dir in development (the dev runner prints both at startup), or
+`<app-data>/throughline` when packaged. Nothing leaves your machine except the
+`gh` and harness calls you would have made yourself.

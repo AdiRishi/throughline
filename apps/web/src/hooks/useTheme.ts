@@ -76,3 +76,16 @@ export function useTheme() {
 
   return { theme, setTheme } as const;
 }
+
+/**
+ * The resolved light/dark, for consumers that cannot read a CSS class — the code
+ * surfaces render inside shadow roots and need the theme as a *value*.
+ * `"system"` is resolved here rather than passed through, because Shiki's
+ * `themeType: "system"` would follow the OS even when the reviewer has chosen
+ * otherwise in the app.
+ */
+export function useThemeType(): "light" | "dark" {
+  const theme = useSyncExternalStore(subscribe, getSnapshot, () => DEFAULT_THEME);
+  if (theme === "system") return systemDark() ? "dark" : "light";
+  return theme;
+}

@@ -11,12 +11,14 @@ Journey {
   formatVersion: 1,               // the artifact blob's own version, independent of DB schema
   id: JourneyId,                  // unique per analysis run
   pr: { owner, repo, number },
+  prWords: PrWords,               // { title, body, author, url, createdAt } — the PR's own words, pinned
   pinned: {
     headSha, baseSha,             // baseSha = merge-base(base branch, head) at analysis time
+    baseRef,                      // the base branch that merge-base was taken against
     analyzedAt,
   },
-  provenance: { harnessKind, model?, usage? },   // which harness built it; honesty, not UI
-  overview: Overview,             // { brief, whereToBegin } — the map's entries derive from clusters' mapEntry
+  provenance: { harnessKind, model?, usage?, fallbacks },   // which harness built it, and every fallback it stood on; honesty, not UI
+  overview: Overview,             // { brief, whereToBegin, attention } — the map's entries derive from clusters' mapEntry
   clusters: Cluster[],            // in journey order
   hunks: Hunk[],                  // the complete partition, every changed line
   files: FileChange[],            // every changed file, with change kind & rename tracking
@@ -24,7 +26,9 @@ Journey {
 }
 ```
 
-The pin is load-bearing: every line range, anchor, and evidence link in the artifact is a claim about `baseSha..headSha`, which is why a stale journey stays fully readable — its referents cannot drift.
+The pin is load-bearing: every line range, anchor, and evidence link in the artifact is a claim about `baseSha..headSha`, which is why a stale journey stays fully readable — its referents cannot drift. `baseRef` is pinned beside the SHAs because a merge-base does not say which branch it was a merge-base _with_, and a journey has to be able to explain what it compared against long after that branch has moved. The PR's own words are copied in for the same reason rather than fetched when the Overview renders them: reference material shown beneath prose written against it must not drift out from under that prose.
+
+Two fields exist to keep the artifact honest about itself. `provenance.fallbacks` is one machine-written note per deterministic fallback the pipeline had to stand on, and empty is the good case — a journey that needed [04](./04-analysis.md)'s floor says so in the artifact, not only in its run directory's log. The Overview's `attention` is one `{ clusterId, phrase }` note per cluster, in journey order: the closing strip's "1 read closely → 4 walk quickly". The phrasing is the agent's, so it is stored rather than derived; but a cluster the agent skipped gets its phrase from its weight during assembly, so the strip is never partial and never disagrees with the clusters it labels.
 
 ## Hunks and the partition
 
@@ -36,7 +40,8 @@ The pin is load-bearing: every line range, anchor, and evidence link in the arti
 
 ```ts
 Hunk {
-  id: HunkId,                     // "h12" — dense, ordered by (path, position)
+  id: HunkId,                     // "h12" for a seed — dense, ordered by (path, position);
+                                  // a refinement's parts take their seed's id: "h12.1", "h12.2", …
   path,                           // new path (old path for pure deletions)
   oldStart, oldLines,             // removed-line run in the base revision (0-length allowed)
   newStart, newLines,             // added-line run in the head revision (0-length allowed)
@@ -46,7 +51,9 @@ Hunk {
 }
 ```
 
-**Coverage, formalized.** For each changed file, the changed-line set is (removed old-side line numbers) ∪ (added new-side line numbers). The journey is valid iff the hunks' ranges partition that set exactly — no line uncovered, no line covered twice — every changed file with no changed lines carries exactly one file-level hunk, and every hunk names exactly one existing home cluster. `@app/journey/coverage` implements this as a pure validator returning a precise violation list (used verbatim in the repair loop, [04](./04-analysis.md)); the server refuses to persist a journey that fails it. The guarantee is a checked invariant, not a prompt instruction.
+Only the seeds are a dense `h1…hN`; naming a split's parts after their seed is what keeps an id self-describing. `h12.2` says both which computed range it came from and that it is the second part of that range, so a run directory, an agent's answer, and an evidence link can all be traced back to the same seed even in a journey where no bare `h12` survives.
+
+**Coverage, formalized.** For each changed file, the changed-line set is (removed old-side line numbers) ∪ (added new-side line numbers). The journey is valid iff the hunks' ranges partition that set exactly — no line uncovered, no line covered twice — every changed file with no changed lines carries exactly one file-level hunk, and every hunk names exactly one existing home cluster. The split parts that make this exact are materialized rather than trusted: a plan declares only each part's line counts and `@app/journey/plan` walks a cursor from the seed's own start ([ADR 0012](../adr/0012-split-hunks-declare-line-counts-and-the-plan-materializes-starts.md)), which is what makes the partition contiguous by construction and the validator below a real check rather than a hope. `@app/journey/coverage` implements this as a pure validator returning a precise violation list (used verbatim in the repair loop, [04](./04-analysis.md)); the server refuses to persist a journey that fails it. The guarantee is a checked invariant, not a prompt instruction.
 
 ## Clusters
 
@@ -70,7 +77,7 @@ Resurfacing constraints, validated like coverage: a resurfaced hunk must exist, 
 
 ## Narrative and evidence
 
-Narrative is Markdown with one extension: evidence links, using `tl:` URIs — `tl:hunk/h12`, `tl:file/src/auth/token.ts`, `tl:symbol/src/auth/token.ts#issueToken`. The renderer resolves them to navigation (scroll to hunk, open file); the validator resolves them against the journey and the pinned tree. A `tl:symbol` link resolves iff the symbol string occurs textually in the referenced file at the pinned head — deliberately no language tooling, so the check stays cheap and unambiguous. Per the vision, prose that can't be checked doesn't ship: an unresolvable link is a validation failure that climbs [04](./04-analysis.md)'s ladder — repair, then regenerate the offending narration — before the absolute floor of downgrading the link to plain text with the loss logged. The floor exists so the pipeline terminates; the ladder exists so the floor is almost never stood on.
+Narrative is Markdown with one extension: evidence links, using `tl:` URIs — `tl:hunk/h12`, `tl:file/src/auth/token.ts`, `tl:symbol/src/auth/token.ts#issueToken`. The renderer resolves them to navigation (scroll to hunk, open file); the validator resolves them against the journey and the pinned tree. A `tl:symbol` link resolves iff the symbol string occurs textually in the referenced file at the pinned head — deliberately no language tooling, so the check stays cheap and unambiguous. Per the vision, prose that can't be checked doesn't ship — but an unresolvable link is not sent back to the harness. `assembleNarration` in `@app/journey/plan` resolves every link against the journey and the pinned tree and rewrites the ones that do not resolve to plain text, recording each in `provenance.fallbacks`. That is deliberate rather than a shortcut: the alternative is spending a correction turn on prose, and prose is the one output whose failure costs nothing structural — the plan is already frozen, so a downgraded link loses a convenience while coverage, homes, and the partition are all untouched. Correction turns are spent where they buy something ([04](./04-analysis.md)'s ladder, on the plan), and the downgrade is the floor that makes the pipeline terminate.
 
 ```ts
 Narrative { markdown }            // evidence is *in* the text; no parallel refs array to drift
@@ -87,7 +94,9 @@ Hint {
 }
 ```
 
-Anchors may cover unchanged lines (ripple context legitimately points at code the diff didn't touch) but must lie within the file at the pinned revision. Hints bind in every display mode; in just-the-code they attach to the changed-region margin markers ([05](./05-frontend.md)). One deliberate display-mode consequence: an anchor lying only on the old side has nothing to attach to in just-the-code — the head revision is on screen and the deleted lines are not — so such hints render in inline and split and are omitted there.
+Anchors may cover unchanged lines (ripple context legitimately points at code the diff didn't touch) but must lie within the file at the pinned revision. Hints bind in every display mode; in just-the-code they attach to the changed-region margin markers ([05](./05-frontend.md)). One deliberate display-mode consequence: an anchor lying only on the old side has nothing to attach to in just-the-code — the head revision is on screen and the deleted lines are not — so such hints render in inline and split and are omitted there, with the guidance rail saying how many are waiting on the diff rather than dropping them silently. A deleted file is the exception that follows from the same rule: it has no head revision to show, so it falls back to its deletion diff even in just-the-code, and its old-side hints bind against that.
+
+A database written by a build whose migrations differed is not readable by this one, and the migrator cannot tell: it records ids, not shapes. `ensureReadableSchema` in [`journeys/schemaGuard.ts`](../../apps/server/src/journeys/schemaGuard.ts) therefore probes the real tables and columns before the client opens the file and, on a mismatch, moves the database aside — never deletes it — so migrations run onto a clean one. That is the right recovery precisely because nothing here is a source of truth: a journey is rebuildable and read progress costs one reanalysis, while the alternative is an app that opens and does nothing ([ADR 0008](../adr/0008-a-schema-guard-stands-between-the-migrator-and-a-dead-app.md)).
 
 ## Read state
 
@@ -115,10 +124,12 @@ LocalPrState {
   dismissedMerged: PrRef[],       // merged PRs dismissed before their ~week expires
 }
 
-Settings {
-  harness?: "codex" | "claude",   // explicit harness override; absent = auto-select (see 04)
+AppSettings {
+  harness: "codex" | "claude" | null,   // explicit harness override; null = auto-select (see 04)
 }
 ```
+
+The override is nullable rather than optional because absence has to stay free to mean something else: `UpdateSettingsInput`, the patch `settings.update` takes, is the same field with the key made optional, so omitting it means _leave the override alone_ while sending `null` means _clear it_. The stored document has no such distinction to trade on — a missing row simply reads as `{ harness: null }`.
 
 ## Persistence
 
@@ -133,16 +144,18 @@ One SQLite database, owned by `JourneyStore`, under a server-owned data root (pa
 
 The split is **hybrid, blob-style**: the database holds state; bulk, non-queryable artifacts stay files.
 
-| Table        | Shape                                                                                                                                                                                       |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `journeys`   | One row per PR: indexed metadata columns (PR ref, `journeyId`, pinned SHAs, `analyzedAt`, provenance) + the `Journey` artifact as a JSON blob, decoded through its contract schema on read. |
-| `read_state` | One row per journey: `ReadState` as above.                                                                                                                                                  |
-| `pr_state`   | `LocalPrState` marks.                                                                                                                                                                       |
-| `settings`   | App settings.                                                                                                                                                                               |
+| Table        | Shape                                                                                                                                                                                                                                                                                                     |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `journeys`   | One row per PR, keyed `owner/repo#number`: indexed metadata columns (PR ref, `journeyId`, pinned SHAs, `analyzedAt`, harness kind, `formatVersion`) and the cluster/hunk/file counts the welcome screen lists, beside the `Journey` artifact as a JSON blob, decoded through its contract schema on read. |
+| `read_state` | One row per journey: `ReadState` as above.                                                                                                                                                                                                                                                                |
+| `pr_state`   | `LocalPrState` marks.                                                                                                                                                                                                                                                                                     |
+| `settings`   | App settings.                                                                                                                                                                                                                                                                                             |
 
 The journey stays a blob rather than relational rows because it is immutable and read whole — decomposing it into tables buys schema-migration surface without a query workload to justify it. What SQLite buys over flat files is what grows with the app: transactions (reanalysis = replace the journey row + delete its read state, atomically, in one statement batch), indexed listing for the welcome screen, and a single-writer store that won't degrade into a directory of many small files.
 
-**No ORM.** Data access is Effect's own SQL stack, in-tree at the pinned version: `SqliteClient`'s tagged-template statements (always parameter-bound), decoded through `SqlSchema` against the same contract schemas the wire speaks — the journey blob decodes through `Journey` on read. An external ORM would add a second schema language to drift against `packages/contracts` for a surface of four tables and a dozen statements, all owned by the one `JourneyStore` module.
+The three counts beside the blob are the schema's one denormalization, and a safe one: they let the welcome screen's list render without decoding a single artifact, and they cannot go stale, because one statement writes them and the blob together. `formatVersion` is lifted out of the blob for a related reason — the decision to ignore a future-versioned artifact has to be reachable without first decoding the artifact it is a decision about.
+
+**No ORM.** Data access is Effect's own SQL stack, in-tree at the pinned version: `SqliteClient`'s tagged-template statements (always parameter-bound), with rows decoded through `effect/Schema` codecs compiled once at module scope — a small row struct per table for the indexed columns, and the blob columns through the very contract schemas the wire speaks (`Journey`, `ReadState`, `LocalPrState`, `AppSettings`), so each shape has exactly one definition. An external ORM would add a second schema language to drift against `packages/contracts` for a surface of four tables and a dozen statements, all owned by the one `JourneyStore` module.
 
 Schema migrations run at server boot (`SqliteMigrator`). The artifact blob carries `formatVersion`; an undecodable or future-versioned blob is treated as absent — re-ingest, never crash.
 

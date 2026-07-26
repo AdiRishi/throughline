@@ -1,10 +1,10 @@
 # Guidance & Hints
 
-The right rail of the [reading experience](./04-reading.md): scroll-bound help. As the reviewer moves through the code, the rail attaches to their position and surfaces **hints** (see `CONTEXT.md`) anchored to the code in view — the things a thoughtful colleague would murmur while reading over your shoulder.
+The right rail of the [reading experience](./04-reading.md): scroll-bound help. It carries every **hint** (see `CONTEXT.md`) the page can bind — the open cluster's hints on a cluster page, every hint anchored in the open file on a file page, whichever cluster it rides — in the order their anchors appear in the code. Position is spent on prominence rather than on membership: the hints anchored to a file currently on screen float to the top of the rail and read at full strength, and the rest stay legible beneath them, because a hint that disappears the moment you scroll past its anchor is a hint the reviewer cannot get back to. These are the things a thoughtful colleague would murmur while reading over your shoulder.
 
 **Design:** the rail appears in both reading designs — [`designs/04-reading-cluster.png`](./designs/04-reading-cluster.png) and [`designs/04-reading-just-the-code.png`](./designs/04-reading-just-the-code.png).
 
-Hints bind in every display mode, including just-the-code: reading in silence still carries its guidance, anchored there to the subtle changed-region markers.
+Hints bind in every display mode, including just-the-code — reading in silence still carries its guidance, anchored there to the subtle changed-region markers — with one honest exception. A hint anchored to the **old** side has nothing to attach to in just-the-code, where the head revision is on screen and the deleted lines are not, so those hints are held back there rather than bound to whatever line now sits at that number. The rail says so at its foot: how many hints are waiting and that the diff is where to read them, because a hint that silently disappears is worse than one that explains its absence. A deleted file is the exception's exception — it has no head revision to show in silence, so it reads as its deletion diff even in just-the-code, and its old-side hints bind against that.
 
 ## What a hint can be
 
@@ -21,6 +21,6 @@ All hints are comprehension, never judgment — no "this looks wrong," no severi
 
 ## Rules that keep it a margin, not a dashboard
 
-- **It follows; it is never operated.** Position in the code drives it. No filters, no tabs, no controls in v1.
+- **It follows; it is never operated.** Position in the code drives it: no filters, no tabs, no sort, no kind selector. The collapse toggle below is the single control the rail carries, because a rail that cannot be closed is not quiet.
 - **Anchored, always.** Clicking a hint scrolls the code to its anchor; scrolling the code brings its hints alongside.
 - **Quiet.** The rail may be collapsed entirely, and reading with it closed must remain a complete experience — the cluster's narrative still leads the page.

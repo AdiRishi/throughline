@@ -6,7 +6,9 @@
 
 ## Project Snapshot
 
-Throughline is a PR comprehension system: a desktop app that turns a large pull request into an ordered journey of clusters a reviewer can walk to the end. The app code is currently the Effect v4 starter it is being built into: an Electron shell supervising a local Effect server (HTTP + WebSocket RPC), with one React web build that runs in the shell and in a plain browser.
+Throughline is a PR comprehension system: a desktop app that turns a large pull request into an ordered journey of clusters a reviewer can walk to the end. It is built and works end to end, on the shape the Effect v4 starter established: an Electron shell supervising a local Effect server (HTTP + WebSocket RPC), with one React web build that runs in the shell and in a plain browser.
+
+The product on top of that shape: pull requests are read through the `gh` CLI, cloned into a per-run worktree, decomposed by a local coding-agent harness (Codex or Claude Code, read-only), validated against a coverage guarantee, and persisted as an immutable journey artifact the reviewer walks cluster by cluster. Nothing is written to GitHub and no token is ever stored.
 
 ## Documentation — read before designing or building anything
 
@@ -40,12 +42,15 @@ Long term maintainability is a core priority. If you add new functionality, firs
 
 Unit tests live in each package's `tests/` directory, mirroring the source tree: the test for `src/state/connection.ts` is `tests/state/connection.test.ts`. Never colocate `.test.ts` files under `src/`. When adding a package, include `tests/**` in its `tsconfig.json` or the tests silently stop typechecking (see `docs/adr/0007`).
 
+Shared test scaffolding lives under `tests/support/`, which mirrors nothing because it is not a test — `apps/server/tests/support/config.ts` builds the wide `ServerConfig` record that every server test needs. Reach for it rather than assembling a config inline: a copy per file means each new config field breaks every test file, and copies drift until two tests disagree about what a server is.
+
 ## Package Roles
 
 - `apps/desktop`: Electron shell. Spawns and supervises the local server, owns windows/menus/updates, and exposes a schema-validated IPC bridge to the renderer.
 - `apps/server`: Effect HTTP + WebSocket RPC server. Serves the built web app, handles the bearer-auth exchange, and publishes lifecycle events.
 - `apps/web`: React/Vite UI. Connects to the server over WebSocket RPC; the same build runs in the shell and in a plain browser.
 - `packages/contracts`: effect/Schema contracts for the WS RPC surface, the IPC bridge, and the auth/bootstrap types. Keep this package schema-only — no runtime logic.
+- `packages/journey`: The domain, as pure functions over the contracts — diff parsing and hunk derivation, the coverage and partition validators, read progress, evidence-link extraction, and the plan-to-hunks materializer. No Effect services, no I/O, no React: it is the part of Throughline that can be reasoned about and tested without a server, and the coverage guarantee lives here rather than in the pipeline that calls it. Subpath exports only (`@app/journey/hunks`, `/coverage`, `/progress`, `/evidence`, `/plan`).
 - `packages/shared`: Runtime utilities consumed by multiple apps. Explicit subpath exports (e.g. `@app/shared/Net`) — no barrel index.
 - `packages/client-runtime`: Client transport: the connection supervisor and typed RPC client. Subpath exports only (`/connection`, `/rpc`, `/authorization`).
 - `scripts`: Repo tooling — dev runner, desktop packaging, reference-repo sync.

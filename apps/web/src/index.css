@@ -3,53 +3,219 @@
 /* Class-based dark mode: the pre-mount guard in index.html toggles `.dark`. */
 @custom-variant dark (&:is(.dark, .dark *));
 
+/*
+ * Calm by default, and **one accent colour**. Colour carries exactly one
+ * meaning in this product: emphasis of the current cluster's hunks. There is no
+ * severity palette, no risk scale, no chip rainbow — those words are banned from
+ * the product, so the tokens that would express them do not exist.
+ *
+ * The only other colours are the diff's own: additions and deletions come from
+ * `@pierre/diffs`' palette, because +/- is the language of a diff rather than a
+ * judgement Throughline is making.
+ */
 @theme {
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 
-  --color-background: #fafafa;
+  --color-background: #fbfbfa;
   --color-foreground: #18181b;
   --color-card: #ffffff;
+  --color-raised: #f4f4f3;
   --color-muted: #71717a;
+  --color-faint: #a1a1aa;
   --color-border: #e4e4e7;
-  /* Teal doubles as the liveness color: accent = "the bus is up". */
-  --color-accent: #0f766e;
+  --color-border-strong: #d4d4d8;
+
+  /* The accent: a warm amber. Emphasis, and nothing else. */
+  --color-accent: #b4740c;
+  --color-accent-soft: #f7e6c8;
   --color-accent-contrast: #ffffff;
+
+  /* Diff-native only. Never used to grade anything. */
+  --color-added: #2f7d4f;
+  --color-removed: #b4423a;
 }
 
-/* Dark palette. Tailwind v4 reads these custom properties at usage sites. */
 .dark {
   --color-background: #0b0b0c;
-  --color-foreground: #fafafa;
+  --color-foreground: #f4f4f5;
   --color-card: #131316;
-  --color-muted: #a1a1aa;
+  --color-raised: #1a1a1e;
+  --color-muted: #8b8b93;
+  --color-faint: #6b6b73;
   --color-border: #27272a;
-  --color-accent: #2dd4bf;
-  --color-accent-contrast: #073731;
+  --color-border-strong: #35353a;
+
+  --color-accent: #e8a33d;
+  --color-accent-soft: #3a2c14;
+  --color-accent-contrast: #1a1206;
+
+  --color-added: #6cc48b;
+  --color-removed: #e88b83;
+}
+
+/*
+ * `journey/emphasis.ts` styles code rows *inside* each file's shadow root, where
+ * no class and no global rule can reach — it can only read custom properties,
+ * which inherit across the shadow boundary. These two are that seam: the accent
+ * for the open cluster's hunks, a neutral edge for hunks homed elsewhere. They
+ * live here beside the theme tokens because every reading surface needs them and
+ * because `--tl-accent` must stay a rename of the one accent, never a second one.
+ */
+:root {
+  --tl-accent: var(--color-accent);
+  --tl-foreign: var(--color-border-strong);
+}
+
+html,
+body,
+#root {
+  height: 100%;
 }
 
 body {
   background: var(--color-background);
   color: var(--color-foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* Sync flash: a note row briefly tints when a change round-trips through the
-   server — remounted with a fresh key per revision (see NotesPanel). */
-@keyframes note-flash {
+/* Focus is always visible, and always the accent - it is emphasis too. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Scrollbars recede: the frame must not compete with the code. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/*
+ * The ingestion transition's motion. Beautiful, clean, and calm - this is the
+ * first thing a reviewer sees, and it sets the tone for the whole product. Every
+ * animation here is short, eased, and disabled under `prefers-reduced-motion`.
+ */
+@keyframes tl-rise {
   from {
-    background-color: color-mix(in oklab, var(--color-accent) 22%, transparent);
+    opacity: 0;
+    transform: translateY(6px);
   }
   to {
-    background-color: transparent;
+    opacity: 1;
+    transform: none;
   }
 }
 
-.note-flash {
-  animation: note-flash 0.9s ease-out;
+@keyframes tl-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes tl-sweep {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(400%);
+  }
+}
+
+@keyframes tl-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.tl-rise {
+  animation: tl-rise 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.tl-fade {
+  animation: tl-fade 0.3s ease-out both;
+}
+
+/* The active ingestion stage's dot. */
+.tl-breathe {
+  animation: tl-breathe 1.8s ease-in-out infinite;
+}
+
+/* A slow light travelling down the active stage's connector line. */
+.tl-sweep::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: 40%;
+  background: linear-gradient(to bottom, transparent, var(--color-accent), transparent);
+  animation: tl-sweep 2.4s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .note-flash {
+  .tl-rise,
+  .tl-fade,
+  .tl-breathe,
+  .tl-sweep::after {
     animation: none;
   }
+  .tl-rise,
+  .tl-fade {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/*
+ * Markdown inside a narrative. Deliberately small: narrative is prose beside
+ * code, not a document, so headings and images have no place in it.
+ */
+.tl-prose {
+  line-height: 1.65;
+}
+.tl-prose > * + * {
+  margin-top: 0.75em;
+}
+.tl-prose strong {
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+.tl-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+  background: var(--color-raised);
+}
+.tl-prose ul,
+.tl-prose ol {
+  padding-left: 1.25em;
+  list-style: revert;
+}
+.tl-prose li + li {
+  margin-top: 0.25em;
 }
