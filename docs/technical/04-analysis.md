@@ -67,7 +67,13 @@ The final rung is what makes "the agent always commits" an invariant of the _sys
 
 `Ingestion` (in `apps/server/src/analysis/`) orchestrates the whole flow as a supervised job — one active job per PR, a global cap of one running analysis at a time (harness runs are heavy; queued jobs say so honestly).
 
-Phases, published as a snapshot-then-live stream (the starter's push-bus pattern) and consumed directly by the transition UI — the narrated stages the product docs promise are these events, so the narration is honest by construction. `analyzing` events additionally carry a structured activity payload — the current action, a short trail of recent ones, and monotonic counters (files walked, symbols traced, call sites followed) — derived only from observed harness events, never invented; this is what the transition's live feed and counters render (design `02-ingestion`):
+Phases, published as a snapshot-then-live stream (the starter's push-bus pattern) and consumed directly by the transition UI — the narrated stages the product docs promise are these events, so the narration is honest by construction. `analyzing` events additionally carry a structured activity payload — the current action, a short trail of recent ones, and monotonic counters — derived only from observed harness events, never invented; this is what the transition's live feed and counters render (design `02-ingestion`). The three counters are defined by what a harness actually reports:
+
+- **files walked** — distinct _changed_ files the harness opened, out of the number the pull request changed. Files it opens around the change are real and appear in the trail, but they are not counted here: this number answers "how much of the change has it looked at", and a denominator it can exceed answers nothing.
+- **symbols traced** — distinct _identifier-shaped_ search patterns it issued. A regex or a phrase is a search, not a symbol, and is not counted as one.
+- **call sites followed** — file opens that landed on a path a previous search surfaced: a symbol traced from its search to a use.
+
+Under a read-only sandbox Codex does all of this through the shell, so those actions are recovered from the command line by a parser whose accepted shapes are pinned by tests (`harness/codex.ts`); anything it cannot read confidently stays a plain "run" rather than becoming an invented detail. One reported command is routinely a whole script — `/bin/zsh -lc "…"` with several commands joined inside it — so the wrapper is peeled off and each command reported separately; leaving it on is what makes a feed of identical, uninformative "run" lines and counters that never move.
 
 ```
 resolving → cloning → diffing → analyzing(stage, detail) → validating → saving → complete

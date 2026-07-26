@@ -6,7 +6,7 @@
 
 ## Project Snapshot
 
-Throughline is a PR comprehension system: a desktop app that turns a large pull request into an ordered journey of clusters a reviewer can walk to the end. The app code is currently the Effect v4 starter it is being built into: an Electron shell supervising a local Effect server (HTTP + WebSocket RPC), with one React web build that runs in the shell and in a plain browser.
+Throughline is a PR comprehension system: a desktop app that turns a large pull request into an ordered journey of clusters a reviewer can walk to the end. An Electron shell supervises a local Effect server (HTTP + WebSocket RPC); one React web build runs in the shell and in a plain browser.
 
 ## Documentation — read before designing or building anything
 
@@ -19,6 +19,12 @@ This project is documentation-first; the docs are authoritative over any assumpt
 5. [`docs/adr/`](./docs/adr/AGENTS.md) — why the hard-to-reverse decisions were made.
 
 Any change that contradicts these documents is wrong until the documents are changed first.
+
+## Running it
+
+`pnpm dev` starts the server and the web UI and prints the URL, the data root (`<repo>/.data`), and the log directory (`<repo>/.logs`) — both per-checkout, so a dev run never collides with an installed app's history.
+
+Real use needs two logins that are the reviewer's own, not the app's: `gh auth login`, and one agent harness (`codex login` or `claude`). Without them the app is not broken — it shows a parked state with instructions, which is a behaviour worth checking rather than working around.
 
 ## Debugging a running app
 
@@ -49,6 +55,7 @@ Unit tests live in each package's `tests/` directory, mirroring the source tree:
 - `packages/shared`: Runtime utilities consumed by multiple apps. Explicit subpath exports (e.g. `@app/shared/Net`) — no barrel index.
 - `packages/client-runtime`: Client transport: the connection supervisor and typed RPC client. Subpath exports only (`/connection`, `/rpc`, `/authorization`).
 - `scripts`: Repo tooling — dev runner, desktop packaging, reference-repo sync.
+- `packages/journey`: Pure domain logic over the contract types — seed-hunk derivation from patch text, coverage/partition validation, evidence-link resolution, progress arithmetic, and the deterministic plan floor. No I/O, no Effect services; the most heavily tested code in the repo. Subpath exports only.
 - `oxlint-plugin-app`: Custom oxlint rules (Node namespace imports, HostProcess injection, hoisted Schema compilers, @effect/vitest in tests). Wired via `jsPlugins` in `.oxlintrc.json`.
 
 ## Vendored Repositories

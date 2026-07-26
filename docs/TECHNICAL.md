@@ -24,6 +24,7 @@ This file is the map. Each area has its own document in [`docs/technical/`](./te
 
 Named here so they are spiked early, not discovered late:
 
-- **Emphasis/dimming inside Pierre diffs** — the cluster boundary's visual carrier rides `@pierre/diffs`' CSS/annotation seams; mechanism must be proven against a real `CodeView` first ([05](./technical/05-frontend.md)).
+- ~~**Emphasis/dimming inside Pierre diffs**~~ — resolved. The mechanism is `options.onPostRender` (the only per-item, per-line seam) driving attributes that `options.unsafeCSS` styles, with the accent used as a margin marker rather than a line fill so the diff's own colours survive. See [ADR-0010](./adr/0010-emphasis-rides-pierres-post-render-hook.md).
 - **Packaged-app harness SDKs** — both SDKs spawn bundled platform binaries and must stay external to the server bundle under Electron's Node (ADR-0006 territory; verify packaged, [01](./technical/01-architecture.md)).
 - **Plan quality at 40k lines** — the pipeline's stage split and disk-materialized inputs are designed for it, but prompt and stage tuning against real large PRs is expected iteration, not a risk to the architecture ([04](./technical/04-analysis.md)).
+- **Latency at 40k lines** — narration is one harness turn per cluster, run in sequence ([ADR-0009](./adr/0009-one-harness-session-per-narration-run.md)), so wall-clock grows with cluster count. The seam is shaped for parallelism; taking it is the first optimization, not a redesign.
