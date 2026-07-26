@@ -79,8 +79,23 @@ export function WelcomeScreen() {
     [],
   );
 
+  /**
+   * A refresh the reviewer asked for says so when it fails. A refresh triggered by
+   * window focus never does.
+   *
+   * The distinction is not cosmetic. Focus arrives at moments the reviewer did not
+   * choose — including the instant the shell shows its window, while the socket is
+   * still opening — and an error attributed to nothing they did is worse than
+   * silence, especially when the very next thing to happen is the connection coming
+   * up with a fresh snapshot. Everything a silent failure could have reported is
+   * already on this screen anyway: a missing `gh`, an exhausted quota, and an
+   * unreachable server are all states of the snapshot, drawn by ParkedNotices.
+   */
   const refresh = useCallback(
-    () => void refreshPrs().then(report("Throughline could not refresh from GitHub")),
+    (explicit: boolean) =>
+      void refreshPrs().then((exit) => {
+        if (explicit) report("Throughline could not refresh from GitHub")(exit);
+      }),
     [refreshPrs, report],
   );
 
@@ -89,10 +104,14 @@ export function WelcomeScreen() {
    * triggers — nothing polls — so this listener is half the freshness model. The
    * server enforces its own minimum interval and refuses outright while parked,
    * which is why the renderer may ask on every focus without debouncing here.
+   *
+   * The wrapper matters: handing `refresh` to the listener directly would pass it
+   * the focus event, and every event object is truthy — every focus would report.
    */
   useEffect(() => {
-    window.addEventListener("focus", refresh);
-    return () => window.removeEventListener("focus", refresh);
+    const onFocus = () => refresh(false);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, [refresh]);
 
   const openJourney = useCallback(
@@ -112,7 +131,7 @@ export function WelcomeScreen() {
 
   if (snapshot === null) {
     return (
-      <Shell viewer={null} refreshing={false} onRefresh={refresh}>
+      <Shell viewer={null} refreshing={false} onRefresh={() => refresh(true)}>
         <p className="tl-fade text-[13px] text-muted">Reading your pull requests from gh…</p>
       </Shell>
     );
@@ -126,7 +145,11 @@ export function WelcomeScreen() {
   const groups = snapshot.groups.filter((group) => group.entries.length > 0);
 
   return (
-    <Shell viewer={snapshot.viewer} refreshing={snapshot.refreshing} onRefresh={refresh}>
+    <Shell
+      viewer={snapshot.viewer}
+      refreshing={snapshot.refreshing}
+      onRefresh={() => refresh(true)}
+    >
       <div className="tl-rise">
         <p className="text-[13px] text-muted">{summary.today}</p>
         <h1 className="mt-1 text-[22px] font-semibold tracking-tight">{summary.headline}</h1>

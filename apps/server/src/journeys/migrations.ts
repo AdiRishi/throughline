@@ -20,6 +20,42 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 export const MIGRATIONS_TABLE = "throughline_migrations";
 
+/**
+ * What the record below is supposed to have left on disk — the assertion that
+ * makes the "an id always produces the same schema" promise checkable.
+ *
+ * It is written out by hand, and that is the point rather than an oversight: a
+ * fingerprint derived from the migration source could only ever agree with
+ * itself. Stated independently, it can *disagree* with a file whose migrations
+ * ran under different definitions, which is precisely the case that otherwise
+ * reaches a query as `no such column`. See `schemaGuard.ts` for what happens on
+ * a disagreement.
+ *
+ * The rule when adding a migration: extend this to match the schema *after* it.
+ * Only columns the server's statements name need to appear here.
+ */
+export const EXPECTED_SCHEMA: Readonly<Record<string, ReadonlyArray<string>>> = {
+  journeys: [
+    "pr_key",
+    "owner",
+    "repo",
+    "number",
+    "journey_id",
+    "head_sha",
+    "base_sha",
+    "analyzed_at",
+    "harness_kind",
+    "cluster_count",
+    "hunk_count",
+    "file_count",
+    "format_version",
+    "artifact",
+  ],
+  read_state: ["journey_id", "document", "updated_at"],
+  pr_state: ["id", "document"],
+  settings: ["id", "document"],
+};
+
 export const migrations = SqliteMigrator.fromRecord({
   /**
    * The four tables the specification names. The journey stays a JSON blob

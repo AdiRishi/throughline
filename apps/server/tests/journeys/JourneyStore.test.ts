@@ -14,8 +14,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import type { Cluster, ClusterId, Hunk, HunkId, Journey, JourneyId } from "@app/contracts";
 
-import * as ServerConfig from "../../src/config.ts";
 import { JourneyStore, layer as journeyStoreLayer } from "../../src/journeys/JourneyStore.ts";
+import { configLayer, scratchDir } from "../support/config.ts";
 
 /**
  * The store's job is to make two documented guarantees true, and both are
@@ -30,40 +30,6 @@ import { JourneyStore, layer as journeyStoreLayer } from "../../src/journeys/Jou
  *   "not analyzed" instead of taking the app down.
  */
 
-const scratch = () => NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "tl-store-"));
-
-const configLayer = (dataDir: string) =>
-  Layer.unwrap(
-    Effect.gen(function* () {
-      const startedAt = yield* DateTime.now;
-      return ServerConfig.layer(
-        ServerConfig.make({
-          appName: "Throughline",
-          version: "0.0.0-test",
-          startedAt,
-          host: "127.0.0.1",
-          port: 0,
-          staticDir: undefined,
-          devWebUrl: undefined,
-          bootstrapToken: "test",
-          dataDir,
-          logDir: NodePath.join(dataDir, "logs"),
-          serverTracePath: NodePath.join(dataDir, "logs", "trace.ndjson"),
-          logLevel: "Error",
-          traceMinLevel: "Error",
-          traceTimingEnabled: false,
-          traceBatchWindowMs: 200,
-          traceMaxBytes: 1024,
-          traceMaxFiles: 1,
-          otlpTracesUrl: undefined,
-          otlpMetricsUrl: undefined,
-          otlpExportIntervalMs: 10_000,
-          otlpServiceName: "test",
-        }),
-      );
-    }),
-  );
-
 /**
  * A real store over a real SQLite file in a fresh temp directory. Nothing is
  * mocked: the transactional guarantees below are properties of the database, so
@@ -75,7 +41,7 @@ const configLayer = (dataDir: string) =>
  */
 const withStore = <A>(program: Effect.Effect<A, never, JourneyStore | SqlClient.SqlClient>) =>
   Effect.suspend(() => {
-    const dataDir = scratch();
+    const dataDir = scratchDir("tl-store-");
     return program.pipe(
       Effect.provide(
         journeyStoreLayer.pipe(

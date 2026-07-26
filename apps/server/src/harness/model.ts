@@ -42,11 +42,25 @@ export interface HarnessUsage {
   readonly cachedInputTokens?: number;
 }
 
-/** A harness refused to start: not installed, not authenticated, no such kind. */
+/**
+ * A harness refused to start: not installed, not authenticated, no such kind.
+ *
+ * Every error here overrides `message`, and it is not decoration. `Data.TaggedError`
+ * leaves `message` empty unless a field is named `message`, and *every* place a
+ * failure is rendered generically — a log line, a trace's `exit.cause`, a stack —
+ * reads `message`. Without the override, `detail` is faithfully carried and
+ * faithfully never shown: the trace records `HarnessRunFailedError:` followed by
+ * nothing, which is worse than no error at all, because it looks like the whole
+ * story.
+ */
 export class HarnessUnavailableError extends Data.TaggedError("HarnessUnavailableError")<{
   readonly kind: HarnessKind | null;
   readonly detail: string;
-}> {}
+}> {
+  override get message(): string {
+    return `${this.kind ?? "harness"} is unavailable: ${this.detail}`;
+  }
+}
 
 /**
  * The harness ran and failed *operationally* — it crashed, the login expired,
@@ -57,14 +71,23 @@ export class HarnessUnavailableError extends Data.TaggedError("HarnessUnavailabl
 export class HarnessRunFailedError extends Data.TaggedError("HarnessRunFailedError")<{
   readonly kind: HarnessKind;
   readonly detail: string;
-}> {}
+}> {
+  override get message(): string {
+    return `${this.kind} failed to run: ${this.detail}`;
+  }
+}
 
 /** The harness returned something that was not the JSON the schema demanded. */
 export class HarnessOutputError extends Data.TaggedError("HarnessOutputError")<{
   readonly kind: HarnessKind;
   readonly detail: string;
+  /** Kept out of `message`: a whole model answer does not belong in a log line. */
   readonly raw: string;
-}> {}
+}> {
+  override get message(): string {
+    return `${this.kind} returned unusable output: ${this.detail}`;
+  }
+}
 
 export type HarnessError = HarnessUnavailableError | HarnessRunFailedError | HarnessOutputError;
 

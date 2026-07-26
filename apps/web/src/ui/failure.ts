@@ -17,8 +17,20 @@ import * as Cause from "effect/Cause";
  * @module ui/failure
  */
 
-/** What to say when the failure carries no message of its own. */
-export const INCOMPLETE_MESSAGE = "The request did not complete. Try again in a moment.";
+/**
+ * What to say when a failure carries no message of its own.
+ *
+ * This deliberately does not say "try again in a moment". A failure with nothing
+ * to say is, in practice, a *defect* — the process broke in a way its own contract
+ * did not describe — and a defect is not a blip: a schema the server cannot query
+ * or a bug on a code path fails identically on the next click. Inviting the
+ * reviewer to keep pressing a button is how a five-second diagnosis becomes a
+ * five-minute one. What is true, and useful, is that it was unexpected and that it
+ * was written down, so that is what this says. Retrying is still one click away
+ * for anyone who wants it.
+ */
+export const UNEXPECTED_MESSAGE =
+  "Something went wrong that Throughline did not expect. It is in the log.";
 
 /**
  * The failure's own message, or the calm fallback — never `String(cause)`. An
@@ -28,8 +40,8 @@ export const INCOMPLETE_MESSAGE = "The request did not complete. Try again in a 
 export function failureDetail(cause: Cause.Cause<unknown>): string {
   const error: unknown = Cause.squash(cause);
   if (error instanceof Error) {
-    return error.message.length > 0 ? error.message : INCOMPLETE_MESSAGE;
+    return error.message.length > 0 ? error.message : UNEXPECTED_MESSAGE;
   }
   if (typeof error === "string" && error.length > 0) return error;
-  return INCOMPLETE_MESSAGE;
+  return UNEXPECTED_MESSAGE;
 }

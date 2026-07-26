@@ -46,6 +46,7 @@ import {
 
 import * as ServerConfig from "../config.ts";
 import { MIGRATIONS_TABLE, migrations } from "./migrations.ts";
+import { ensureReadableSchema } from "./schemaGuard.ts";
 
 // ── Row codecs, compiled once at module scope ───────────────────────────────
 
@@ -439,6 +440,11 @@ const make = Effect.gen(function* () {
  * no native module to rebuild — the property that lets the same bundle run under
  * Electron's Node. The parent directory is created first, because an unopenable
  * path fails as a *defect* rather than a typed error.
+ *
+ * The schema guard runs here, between creating the directory and opening the
+ * client, because that is the only moment at which the file is known and nothing
+ * holds it open — a file cannot be moved aside once the client has it. See
+ * `schemaGuard.ts` for why moving it aside is the right answer.
  */
 const clientLayer = Layer.unwrap(
   Effect.gen(function* () {
@@ -447,6 +453,10 @@ const clientLayer = Layer.unwrap(
     const path = yield* Path.Path;
     const filename = path.join(config.dataDir, "throughline.db");
     yield* fs.makeDirectory(path.dirname(filename), { recursive: true }).pipe(Effect.orDie);
+    // A filesystem-safe instant: the displaced file's name has to survive on
+    // every platform, and `:` does not.
+    const stamp = DateTime.formatIso(yield* DateTime.now).replaceAll(/[:.]/g, "-");
+    yield* ensureReadableSchema(filename, stamp);
     return SqliteClient.layer({ filename });
   }),
 );

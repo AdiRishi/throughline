@@ -3,6 +3,8 @@ import * as Option from "effect/Option";
 
 import type { PrListEntry, PrListSnapshot, PrRef } from "@app/contracts";
 
+import { UNEXPECTED_MESSAGE } from "../../ui/failure.ts";
+
 /**
  * The words the welcome screen says about the list, derived and nothing else.
  *
@@ -188,17 +190,22 @@ export interface DoorFailure {
   readonly detail?: string | undefined;
 }
 
-const INCOMPLETE = "The request did not complete. Try again in a moment.";
-
 /**
  * A door rejection's `detail` is written for the reviewer — the one place in the
  * product where an error message is authored copy — so it is shown verbatim and
  * never wrapped in a diagnosis of our own. Anything else falls back to its own
  * message rather than to an invented explanation of what went wrong.
+ *
+ * The last fallback is `ui/failure`'s, not one of this module's own. A door that
+ * failed for no stated reason and a parked harness that failed for no stated
+ * reason are the same event to the reviewer, and saying it in two voices is how a
+ * calm product starts to feel unreliable.
  */
 export function doorDetail(cause: Cause.Cause<DoorFailure>): string {
   const error = Option.getOrUndefined(Cause.findErrorOption(cause));
-  if (error === undefined) return INCOMPLETE;
+  if (error === undefined) return UNEXPECTED_MESSAGE;
   if (error._tag === "DoorRejection" && error.detail !== undefined) return error.detail;
-  return error.message !== undefined && error.message.length > 0 ? error.message : INCOMPLETE;
+  return error.message !== undefined && error.message.length > 0
+    ? error.message
+    : UNEXPECTED_MESSAGE;
 }

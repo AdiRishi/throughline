@@ -6,9 +6,9 @@
 // bundle the dev flow does; the shell spawns `apps/server/dist/bin.mjs` and
 // the server serves the web build from its `dist/client`.
 //
-// This is the one piece the starter ships as a *skeleton*: signing, icons,
-// notarization, and per-OS targets always need project-specific values. It is
-// intentionally small and honest rather than a 1000-line clone. Run:
+// Signing, notarization, and publishing still need project-specific values and
+// are deliberately left to the environment; the icon and identity come from
+// `docs/brand/`. Run:
 //   pnpm dist:desktop -- --platform mac --target dmg
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
@@ -19,6 +19,8 @@ const REPO_ROOT = NodePath.dirname(NodePath.dirname(NodeURL.fileURLToPath(import
 
 const APP_ID = "com.arsoftware.throughline";
 const PRODUCT_NAME = "Throughline";
+/** The 1024px brand mark every platform icon is derived from. */
+const BRAND_ICON = "docs/brand/favicon/throughline-icon-1024.png";
 
 function arg(name: string, fallback: string): string {
   const index = process.argv.indexOf(`--${name}`);
@@ -130,6 +132,16 @@ function main(): void {
   copy("apps/web/dist", "apps/server/dist/client");
   validateBundledClientAssets(NodePath.join(stage, "apps/server/dist/client"));
 
+  /**
+   * `build/` is electron-builder's default `buildResources` directory, and an
+   * `icon.png` of at least 512px there is what it converts into the `.icns` and
+   * `.ico` each platform wants. Staging the 1024px master rather than committing a
+   * generated `.icns` keeps one source of truth for the mark: `docs/brand/` holds
+   * the artwork, and the packaging derives every size from it.
+   */
+  NodeFS.mkdirSync(NodePath.join(stage, "build"), { recursive: true });
+  copy(BRAND_ICON, "build/icon.png");
+
   const desktopPackageJson = JSON.parse(
     NodeFS.readFileSync(NodePath.join(REPO_ROOT, "apps/desktop/package.json"), "utf8"),
   ) as {
@@ -175,6 +187,11 @@ function main(): void {
       {
         name: "throughline",
         version: "0.0.0",
+        // Both land in the bundle's Info.plist, and electron-builder warns when
+        // either is absent. The description is the one-line answer to "what is
+        // this?" that the OS shows before the app has ever been opened.
+        description: "Turn a large pull request into a journey you can finish.",
+        author: "Throughline",
         main: "apps/desktop/dist-electron/main.cjs",
         dependencies: {
           "electron-updater": desktopPackageJson.dependencies["electron-updater"],
