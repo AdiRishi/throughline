@@ -12,7 +12,12 @@
   "dependencies": {
     "@app/client-runtime": "workspace:*",
     "@app/contracts": "workspace:*",
+    "@app/journey": "workspace:*",
+    "@app/shared": "workspace:*",
     "@effect/atom-react": "catalog:",
+    "@pierre/diffs": "catalog:",
+    "@pierre/trees": "catalog:",
+    "@tanstack/react-router": "catalog:",
     "effect": "catalog:",
     "react": "19.2.7",
     "react-dom": "19.2.7"

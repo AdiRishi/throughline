@@ -16,9 +16,13 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "catalog:",
     "@app/contracts": "workspace:*",
+    "@app/journey": "workspace:*",
     "@app/shared": "workspace:*",
     "@effect/platform-node": "catalog:",
+    "@effect/sql-sqlite-node": "catalog:",
+    "@openai/codex-sdk": "catalog:",
     "effect": "catalog:"
   },
   "devDependencies": {
