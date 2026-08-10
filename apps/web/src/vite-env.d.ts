@@ -1,7 +1,11 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  /** WebSocket base URL of the server, e.g. `ws://127.0.0.1:13773`. */
+  /**
+   * Optional override for the server's WebSocket base URL, e.g.
+   * `ws://127.0.0.1:13773`. Empty in a normal build — the client then derives
+   * the target from the page origin (see `src/env.ts`).
+   */
   readonly VITE_WS_URL: string;
   /** Bootstrap credential exchanged for a `/ws` bearer session in the browser. */
   readonly VITE_BOOTSTRAP_TOKEN: string;

@@ -28,7 +28,7 @@ import * as Tracer from "effect/Tracer";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { OtlpExporter, OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 
-import { isElectron, resolveConnectionTarget } from "../env.ts";
+import { isElectron, resolveConnectionTargetResult } from "../env.ts";
 
 export const OTLP_TRACES_PATH = "/api/observability/v1/traces";
 
@@ -60,6 +60,13 @@ let pendingConfiguration = Promise.resolve();
 
 export interface ClientTracingConfig {
   readonly exportIntervalMs?: number;
+  /**
+   * Bearer presented to the trace-ingest route, which is gated exactly like the
+   * `/ws` upgrade. Sent as a header rather than a query param on purpose: the
+   * server records `url.query` as a span attribute, so a credential in the URL
+   * would be written into the very trace files this exporter feeds.
+   */
+  readonly bearerToken?: string;
 }
 
 export const ClientTracingLive = Layer.succeed(
@@ -77,7 +84,11 @@ export const ClientTracingLive = Layer.succeed(
  * is a no-op rather than a teardown/rebuild.
  */
 export function configureClientTracing(config: ClientTracingConfig = {}): Promise<void> {
-  if (config.exportIntervalMs === undefined && activeConfigKey !== null) {
+  if (
+    config.exportIntervalMs === undefined &&
+    config.bearerToken === undefined &&
+    activeConfigKey !== null
+  ) {
     return pendingConfiguration;
   }
   pendingConfiguration = pendingConfiguration.finally(() => applyClientTracingConfig(config));
@@ -85,9 +96,21 @@ export function configureClientTracing(config: ClientTracingConfig = {}): Promis
 }
 
 async function applyClientTracingConfig(config: ClientTracingConfig): Promise<void> {
-  const otlpTracesUrl = `${resolveConnectionTarget().httpBaseUrl}${OTLP_TRACES_PATH}`;
+  // This promise is awaited by `Effect.promise` when the observability layer is
+  // built, so a rejection here is a DEFECT that takes the whole client runtime
+  // down. Tracing is not load-bearing: a target we cannot parse is reported and
+  // skipped, leaving spans local-only (`NativeSpan`), and the next call retries.
+  const targetRead = resolveConnectionTargetResult();
+  if (targetRead._tag === "Failure") {
+    console.warn("Failed to resolve the connection target for client tracing", targetRead.cause);
+    return;
+  }
+
+  const otlpTracesUrl = `${targetRead.target.httpBaseUrl}${OTLP_TRACES_PATH}`;
   const exportIntervalMs = Math.max(10, config.exportIntervalMs ?? DEFAULT_EXPORT_INTERVAL_MS);
-  const nextConfigKey = `${otlpTracesUrl}|${exportIntervalMs}`;
+  // The token is part of the key so a rotated credential rebuilds the exporter
+  // instead of silently exporting with a bearer the server no longer accepts.
+  const nextConfigKey = `${otlpTracesUrl}|${exportIntervalMs}|${config.bearerToken ?? ""}`;
 
   if (activeConfigKey === nextConfigKey && activeDelegate !== null) {
     return;
@@ -116,6 +139,9 @@ async function applyClientTracingConfig(config: ClientTracingConfig): Promise<vo
         url: otlpTracesUrl,
         exportInterval: `${exportIntervalMs} millis`,
         resource: CLIENT_TRACING_RESOURCE,
+        ...(config.bearerToken === undefined
+          ? {}
+          : { headers: { authorization: `Bearer ${config.bearerToken}` } }),
       }),
     ),
   );

@@ -26,6 +26,7 @@ import {
   authBootstrapRouteLayer,
   corsLayer,
   healthRouteLayer,
+  httpCompressionLayer,
   otlpTracesRouteLayer,
   staticAndDevRouteLayer,
 } from "./http.ts";
@@ -51,7 +52,7 @@ export const routesLayer = Layer.mergeAll(
   otlpTracesRouteLayer,
   websocketRpcRouteLayer,
   staticAndDevRouteLayer,
-).pipe(Layer.provide(corsLayer));
+).pipe(Layer.provide(corsLayer), Layer.provide(httpCompressionLayer));
 
 /** Application services shared across routes and lifecycle. */
 const RuntimeServicesLive = Layer.mergeAll(
@@ -69,6 +70,13 @@ export const makeServerLayer = Layer.unwrap(
       host: config.host,
       port: config.port,
       gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
+      // Negotiate permessage-deflate with clients that offer it; clients
+      // that don't still get uncompressed frames on their connection.
+      // Context takeover stays enabled (ws default) so the compression
+      // window is shared across frames — that also makes small frames cheap
+      // to compress, so no size threshold is set (ws only honors
+      // `threshold` when context takeover is disabled).
+      websocket: { perMessageDeflate: true },
     });
 
     // Publish `starting` immediately as the runtime spins up.

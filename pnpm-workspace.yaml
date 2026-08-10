@@ -23,8 +23,10 @@ peerDependencyRules:
 
 catalog:
   "@effect/atom-react": 4.0.0-beta.106
+  "@effect/language-service": ^0.87.2
   "@effect/platform-node": 4.0.0-beta.106
   "@effect/platform-node-shared": 4.0.0-beta.106
+  "@effect/tsgo": ^0.36.2
   "@effect/vitest": 4.0.0-beta.106
   "@oxlint/plugins": ^1.77.0
   "@types/node": 24.12.4
@@ -34,3 +36,13 @@ catalog:
   typescript: ~7.0.2
   vite: ^8.2.1
   vitest: ^4.1.10
+
+minimumReleaseAgeExclude:
+  - "@effect/tsgo-darwin-arm64@0.36.2"
+  - "@effect/tsgo-darwin-x64@0.36.2"
+  - "@effect/tsgo-linux-arm64@0.36.2"
+  - "@effect/tsgo-linux-arm@0.36.2"
+  - "@effect/tsgo-linux-x64@0.36.2"
+  - "@effect/tsgo-win32-arm64@0.36.2"
+  - "@effect/tsgo-win32-x64@0.36.2"
+  - "@effect/tsgo@0.36.2"

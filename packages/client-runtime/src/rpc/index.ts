@@ -9,8 +9,10 @@ export {
   RpcUnavailableError,
   type StreamRpcTag,
   type UnaryRpcTag,
+  isRpcClientError,
   request,
   subscribe,
+  subscribeDynamic,
 } from "./client.ts";
 export { makeWsRpcProtocolClient, type WsRpcProtocolClient } from "./protocol.ts";
 export {

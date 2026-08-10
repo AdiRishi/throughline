@@ -1,8 +1,11 @@
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+
+import { formatSchemaError } from "@app/shared/schemaJson";
 
 // The IPC registration service + codec-validated method helpers. `handle`/
 // `handleSync` register a channel and, via `Effect.acquireRelease`, remove it
@@ -52,6 +55,48 @@ export class DesktopIpcUnregistrationError extends Schema.TaggedError<DesktopIpc
     return `Failed to unregister the ${this.handlerKind} IPC handler for ${this.channel}.`;
   }
 }
+
+/**
+ * A payload/result that failed schema validation, reduced to issue kinds and
+ * bounded paths. Schema's own formatter embeds the offending VALUES, and this
+ * error crosses the IPC boundary into the renderer (and from there into
+ * forwarded logs), so the raw error must never leave the main process.
+ */
+export class DesktopIpcSchemaError extends Schema.TaggedError<DesktopIpcSchemaError>()(
+  "DesktopIpcSchemaError",
+  {
+    channel: Schema.String,
+    diagnostic: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `IPC payload for ${this.channel} failed validation. ${this.diagnostic}`;
+  }
+}
+
+/**
+ * Replace any `Schema.SchemaError` in the failure with its redacted form,
+ * leaving every other failure (and all defects/interrupts) untouched.
+ */
+const redactSchemaFailure =
+  (channel: string) =>
+  <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, Exclude<E, Schema.SchemaError> | DesktopIpcSchemaError, R> =>
+    Effect.catchCause(
+      effect,
+      (
+        cause: Cause.Cause<E>,
+      ): Effect.Effect<never, Exclude<E, Schema.SchemaError> | DesktopIpcSchemaError> =>
+        cause.reasons.some((reason) => reason._tag === "Fail" && Schema.isSchemaError(reason.error))
+          ? Effect.fail(
+              new DesktopIpcSchemaError({
+                channel,
+                diagnostic: formatSchemaError(cause as Cause.Cause<Schema.SchemaError>),
+              }),
+            )
+          : Effect.failCause(cause as Cause.Cause<Exclude<E, Schema.SchemaError>>),
+    );
 
 export const DesktopIpcError = Schema.Union([
   DesktopIpcRegistrationError,
@@ -211,7 +256,7 @@ export const makeIpcMethod = <
     ResultEncodingServices
   >,
 ): DesktopIpcMethod<
-  E | Schema.SchemaError,
+  Exclude<E, Schema.SchemaError> | DesktopIpcSchemaError,
   R | PayloadDecodingServices | ResultEncodingServices
 > => {
   const decode = Schema.decodeUnknownEffect(method.payload);
@@ -223,6 +268,7 @@ export const makeIpcMethod = <
       decode(raw).pipe(
         Effect.flatMap(method.handler),
         Effect.flatMap(encode),
+        redactSchemaFailure(method.channel),
         Effect.withSpan("desktop.ipc.method", {
           attributes: { channel: method.channel },
         }),
@@ -244,7 +290,10 @@ export interface DesktopSyncIpcMethodRegistration<
 
 export const makeSyncIpcMethod = <Result, EncodedResult, E, R, ResultEncodingServices = never>(
   method: DesktopSyncIpcMethodRegistration<Result, EncodedResult, E, R, ResultEncodingServices>,
-): DesktopSyncIpcMethod<E | Schema.SchemaError, R | ResultEncodingServices> => {
+): DesktopSyncIpcMethod<
+  Exclude<E, Schema.SchemaError> | DesktopIpcSchemaError,
+  R | ResultEncodingServices
+> => {
   const encode = Schema.encodeUnknownEffect(method.result);
 
   return {
@@ -252,6 +301,7 @@ export const makeSyncIpcMethod = <Result, EncodedResult, E, R, ResultEncodingSer
     handler: () =>
       method.handler().pipe(
         Effect.flatMap(encode),
+        redactSchemaFailure(method.channel),
         Effect.withSpan("desktop.ipc.method", {
           attributes: { channel: method.channel },
         }),

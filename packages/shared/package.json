@@ -8,6 +8,14 @@
       "types": "./src/hostProcess.ts",
       "import": "./src/hostProcess.ts"
     },
+    "./devProxy": {
+      "types": "./src/devProxy.ts",
+      "import": "./src/devProxy.ts"
+    },
+    "./schemaJson": {
+      "types": "./src/schemaJson.ts",
+      "import": "./src/schemaJson.ts"
+    },
     "./httpReadiness": {
       "types": "./src/httpReadiness.ts",
       "import": "./src/httpReadiness.ts"

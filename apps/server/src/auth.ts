@@ -4,7 +4,13 @@
  * A minimal in-memory auth boundary. A client first exchanges the server's
  * bootstrap token for an opaque bearer (`authenticateBootstrap`), then presents
  * that bearer on the `/ws` upgrade (`authenticateBearer`). Tokens are random
- * hex held in a `Set` for the process lifetime — no persistence, no expiry.
+ * hex held in memory — no persistence.
+ *
+ * Sessions carry an expiry and are evicted. The client reconnect supervisor
+ * mints a token at the top of EVERY connect attempt, so a reconnect storm would
+ * otherwise retain one process-lifetime credential per attempt, forever. Expiry
+ * is also what lets the client refresh ahead of time instead of discovering a
+ * dead credential mid-session.
  *
  * @module auth
  */
@@ -13,14 +19,20 @@ import * as NodeCrypto from "node:crypto";
 
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import { Headers, HttpServerRequest } from "effect/unstable/http";
 
 import * as ServerConfig from "./config.ts";
 
 const TOKEN_BYTES = 32;
+
+/** Matches T3's `DEFAULT_SESSION_TTL`. */
+const SESSION_TTL = Duration.days(30);
 
 const toHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -44,16 +56,36 @@ export class BearerSessionStore extends Context.Service<
      * Exchange a bootstrap credential for a fresh bearer token. Returns
      * `Option.none()` when the credential does not match the server's token.
      */
-    readonly authenticateBootstrap: (credential: string) => Effect.Effect<Option.Option<string>>;
-    /** Whether the given bearer token is a live session. */
+    readonly authenticateBootstrap: (
+      credential: string,
+    ) => Effect.Effect<Option.Option<MintedBearerSession>>;
+    /** Whether the given bearer token is a live, unexpired session. */
     readonly authenticateBearer: (token: string) => Effect.Effect<boolean>;
   }
 >()("@app/server/auth/BearerSessionStore") {}
 
+/** A freshly minted bearer plus the instant it stops being accepted. */
+export interface MintedBearerSession {
+  readonly token: string;
+  readonly expiresAt: DateTime.Utc;
+}
+
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const crypto = yield* Crypto.Crypto;
-  const sessions = yield* Ref.make<ReadonlySet<string>>(new Set());
+  // token -> expiry epoch millis.
+  const sessions = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
+
+  /** Drop every session that has already expired as of `nowMillis`. */
+  const evictExpired = (current: ReadonlyMap<string, number>, nowMillis: number) => {
+    let live: Map<string, number> | undefined;
+    for (const [token, expiresAtMillis] of current) {
+      if (expiresAtMillis > nowMillis) continue;
+      live ??= new Map(current);
+      live.delete(token);
+    }
+    return live ?? current;
+  };
 
   return {
     authenticateBootstrap: (credential) =>
@@ -63,12 +95,59 @@ const make = Effect.gen(function* () {
         }
         const bytes = yield* crypto.randomBytes(TOKEN_BYTES).pipe(Effect.orDie);
         const token = toHex(bytes);
-        yield* Ref.update(sessions, (current) => new Set(current).add(token));
-        return Option.some(token);
+        const issuedAt = yield* DateTime.now;
+        const expiresAt = DateTime.add(issuedAt, {
+          milliseconds: Duration.toMillis(SESSION_TTL),
+        });
+        // Sweep on mint so a reconnect storm cannot grow the map without bound.
+        yield* Ref.update(sessions, (current) => {
+          const live = new Map(evictExpired(current, DateTime.toEpochMillis(issuedAt)));
+          live.set(token, DateTime.toEpochMillis(expiresAt));
+          return live;
+        });
+        return Option.some({ token, expiresAt });
       }),
     authenticateBearer: (token) =>
-      Ref.get(sessions).pipe(Effect.map((current) => current.has(token))),
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const current = yield* Ref.get(sessions);
+        const expiresAtMillis = current.get(token);
+        if (expiresAtMillis === undefined) {
+          return false;
+        }
+        if (expiresAtMillis <= DateTime.toEpochMillis(now)) {
+          yield* Ref.update(sessions, (latest) =>
+            evictExpired(latest, DateTime.toEpochMillis(now)),
+          );
+          return false;
+        }
+        return true;
+      }),
   } satisfies BearerSessionStore["Service"];
 });
 
 export const layer = Layer.effect(BearerSessionStore, make);
+
+/**
+ * Extract a bearer token from a request: `Authorization: Bearer <t>` header, or
+ * `?access_token=<t>` query param (browsers cannot set headers on a WebSocket
+ * upgrade). Shared by the `/ws` upgrade and the OTLP ingest route so the two
+ * gates cannot drift apart.
+ */
+export function extractBearer(request: HttpServerRequest.HttpServerRequest): Option.Option<string> {
+  const header = Headers.get(request.headers, "authorization");
+  if (Option.isSome(header)) {
+    const match = /^Bearer\s+(.+)$/i.exec(header.value.trim());
+    if (match?.[1]) {
+      return Option.some(match[1].trim());
+    }
+  }
+  const url = HttpServerRequest.toURL(request);
+  if (Option.isSome(url)) {
+    const token = url.value.searchParams.get("access_token");
+    if (token) {
+      return Option.some(token);
+    }
+  }
+  return Option.none();
+}

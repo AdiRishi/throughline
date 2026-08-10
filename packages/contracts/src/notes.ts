@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { makeEntityId, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /**
  * The sample domain: synced notes. This file (plus the `notes.*` entries in
@@ -8,7 +8,7 @@ import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
  * the showcase app — delete those four places and the starter is domain-free.
  */
 
-export const NoteId = TrimmedNonEmptyString.pipe(Schema.brand("NoteId"));
+export const NoteId = makeEntityId("NoteId");
 export type NoteId = typeof NoteId.Type;
 
 export const Note = Schema.Struct({

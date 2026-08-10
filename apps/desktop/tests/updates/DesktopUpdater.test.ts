@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -91,11 +92,17 @@ const environmentLayer = (isPackaged: boolean) =>
     ),
   ).pipe(Layer.provide(Path.layer));
 
+// The updater reads `app-update.yml` to decide whether a release feed exists;
+// the fake reports one so `enabled` is driven purely by `isPackaged`.
+const fakeFileSystemLayer = (hasUpdateFeed: boolean) =>
+  FileSystem.layerNoop({ exists: () => Effect.succeed(hasUpdateFeed) });
+
 // `provideMerge` so the test can also reach DesktopAppSettings to assert on it.
 const testLayer = (
   isPackaged: boolean,
   pushes: Array<Push>,
   updaterOverrides?: Parameters<typeof fakeElectronUpdaterLayer>[0],
+  hasUpdateFeed = true,
 ) =>
   DesktopUpdater.layer.pipe(
     Layer.provideMerge(
@@ -104,6 +111,7 @@ const testLayer = (
         DesktopAppSettings.layerTest(),
         fakeElectronWindowLayer(pushes),
         fakeElectronUpdaterLayer(updaterOverrides),
+        fakeFileSystemLayer(hasUpdateFeed),
       ),
     ),
   );
@@ -122,6 +130,19 @@ describe("DesktopUpdater", () => {
       yield* updater.install;
       assert.equal((yield* updater.getState).status, "disabled");
     }).pipe(Effect.provide(testLayer(false, pushes)));
+  });
+
+  it.effect("stays disabled when packaged without an app-update.yml feed", () => {
+    const pushes: Array<Push> = [];
+    return Effect.gen(function* () {
+      const updater = yield* DesktopUpdater.DesktopUpdater;
+
+      // A build with no `publish` config ships no feed; driving electron-updater
+      // there would throw "Please define publish configuration".
+      assert.equal((yield* updater.getState).status, "disabled");
+      yield* updater.check;
+      assert.equal((yield* updater.getState).status, "disabled");
+    }).pipe(Effect.provide(testLayer(true, pushes, undefined, false)));
   });
 
   it.effect("setChannel persists the choice and pushes it to the renderer", () => {

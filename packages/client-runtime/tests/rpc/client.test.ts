@@ -8,17 +8,22 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 import { RpcClientError } from "effect/unstable/rpc";
 
 import { EnvironmentAuthorizationError, WS_METHODS, type TickEvent } from "@app/contracts";
 
 import { INITIAL_CONNECTION_STATE, type ConnectionState } from "../../src/connection/model.ts";
 import { ConnectionSupervisor } from "../../src/connection/supervisor.ts";
-import { RpcUnavailableError, request, subscribe } from "../../src/rpc/client.ts";
+import { RpcUnavailableError, request, subscribe, subscribeDynamic } from "../../src/rpc/client.ts";
 import type { WsRpcProtocolClient } from "../../src/rpc/protocol.ts";
 import type { RpcSession } from "../../src/rpc/session.ts";
+
+const isRpcUnavailableError = Schema.is(RpcUnavailableError);
+const isEnvironmentAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 
 const AT = DateTime.makeUnsafe(0);
 
@@ -43,12 +48,13 @@ const transportError = () =>
 const makeHarness = Effect.gen(function* () {
   const state = yield* SubscriptionRef.make<ConnectionState>(INITIAL_CONNECTION_STATE);
   const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession>>(Option.none());
+  const retryCount = yield* Ref.make(0);
   const supervisor = ConnectionSupervisor.of({
     state,
     session: activeSession,
-    retryNow: Effect.void,
+    retryNow: Ref.update(retryCount, (count) => count + 1),
   });
-  return { activeSession, supervisor };
+  return { activeSession, retryCount, supervisor };
 });
 
 describe("rpc client", () => {
@@ -64,7 +70,7 @@ describe("rpc client", () => {
       assert.isTrue(Exit.isFailure(exit));
       if (Exit.isFailure(exit)) {
         const unavailable = exit.cause.reasons.some(
-          (reason) => reason._tag === "Fail" && reason.error instanceof RpcUnavailableError,
+          (reason) => reason._tag === "Fail" && isRpcUnavailableError(reason.error),
         );
         assert.isTrue(unavailable, "expected RpcUnavailableError");
       }
@@ -137,6 +143,43 @@ describe("rpc client", () => {
     }),
   );
 
+  it.effect("subscribeDynamic recomputes its input for every session", () =>
+    Effect.gen(function* () {
+      const { activeSession, supervisor } = yield* makeHarness;
+      const observedSessions = yield* Ref.make<ReadonlyArray<RpcSession>>([]);
+      const makeClient = (ticks: Queue.Queue<TickEvent>) =>
+        ({
+          [WS_METHODS.serverSubscribeTicks]: () => Stream.fromQueue(ticks),
+        }) as unknown as WsRpcProtocolClient;
+      const firstTicks = yield* Queue.unbounded<TickEvent>();
+      const secondTicks = yield* Queue.unbounded<TickEvent>();
+      const firstSession = session(makeClient(firstTicks));
+      const secondSession = session(makeClient(secondTicks));
+
+      const consumer = yield* Effect.forkChild(
+        subscribeDynamic(WS_METHODS.serverSubscribeTicks, (current) =>
+          Ref.update(observedSessions, (all) => [...all, current]).pipe(Effect.as({})),
+        ).pipe(Stream.runDrain, Effect.provideService(ConnectionSupervisor, supervisor)),
+      );
+
+      yield* SubscriptionRef.set(activeSession, Option.some(firstSession));
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(observedSessions)).length >= 1) break;
+        yield* Effect.yieldNow;
+      }
+      yield* SubscriptionRef.set(activeSession, Option.some(secondSession));
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(observedSessions)).length >= 2) break;
+        yield* Effect.yieldNow;
+      }
+      yield* Fiber.interrupt(consumer);
+
+      // The input is derived from the session that is actually live — that is
+      // the seam a resume cursor rides on.
+      assert.deepEqual(yield* Ref.get(observedSessions), [firstSession, secondSession]);
+    }),
+  );
+
   it.effect("subscribe goes quiet on a transport failure and survives to re-attach", () =>
     Effect.gen(function* () {
       const { activeSession, supervisor } = yield* makeHarness;
@@ -175,25 +218,128 @@ describe("rpc client", () => {
     }),
   );
 
+  it.effect("keeps handled domain failures dormant until a replacement session arrives", () =>
+    Effect.gen(function* () {
+      const domainError = new EnvironmentAuthorizationError({ reason: "expired" });
+      const subscriptions: Array<string> = [];
+      const observedFailures: Array<unknown> = [];
+      const firstClient = {
+        [WS_METHODS.serverSubscribeTicks]: () => {
+          subscriptions.push("first");
+          return Stream.fail(domainError);
+        },
+      } as unknown as WsRpcProtocolClient;
+      const secondClient = {
+        [WS_METHODS.serverSubscribeTicks]: () => {
+          subscriptions.push("second");
+          return Stream.never;
+        },
+      } as unknown as WsRpcProtocolClient;
+      const { activeSession, retryCount, supervisor } = yield* makeHarness;
+
+      yield* SubscriptionRef.set(activeSession, Option.some(session(firstClient)));
+      const consumer = yield* Effect.forkChild(
+        subscribe(
+          WS_METHODS.serverSubscribeTicks,
+          {},
+          {
+            onExpectedFailure: (cause) =>
+              Effect.sync(() => {
+                observedFailures.push(Cause.squash(cause));
+              }),
+          },
+        ).pipe(Stream.runDrain, Effect.provideService(ConnectionSupervisor, supervisor)),
+      );
+      for (let attempt = 0; attempt < 100 && observedFailures.length < 1; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+
+      assert.deepEqual(subscriptions, ["first"]);
+      assert.deepEqual(observedFailures, [domainError]);
+
+      yield* SubscriptionRef.set(activeSession, Option.some(session(secondClient)));
+      for (let attempt = 0; attempt < 100 && subscriptions.length < 2; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      yield* Fiber.interrupt(consumer);
+
+      assert.deepEqual(subscriptions, ["first", "second"]);
+      assert.equal(yield* Ref.get(retryCount), 0);
+    }),
+  );
+
+  it.effect("retries handled domain failures within the same session when configured", () =>
+    Effect.gen(function* () {
+      const domainError = new EnvironmentAuthorizationError({ reason: "expired" });
+      const subscriptionCount = yield* Ref.make(0);
+      const expectedFailureCount = yield* Ref.make(0);
+      const client = {
+        [WS_METHODS.serverSubscribeTicks]: () =>
+          Stream.unwrap(
+            Ref.getAndUpdate(subscriptionCount, (count) => count + 1).pipe(
+              Effect.map((count) => (count === 0 ? Stream.fail(domainError) : Stream.never)),
+            ),
+          ),
+      } as unknown as WsRpcProtocolClient;
+      const { activeSession, supervisor } = yield* makeHarness;
+
+      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+      const consumer = yield* Effect.forkChild(
+        subscribe(
+          WS_METHODS.serverSubscribeTicks,
+          {},
+          {
+            onExpectedFailure: () => Ref.update(expectedFailureCount, (count) => count + 1),
+            retryExpectedFailureAfter: "100 millis",
+          },
+        ).pipe(Stream.runDrain, Effect.provideService(ConnectionSupervisor, supervisor)),
+      );
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(expectedFailureCount)) >= 1) break;
+        yield* Effect.yieldNow;
+      }
+
+      assert.equal(yield* Ref.get(subscriptionCount), 1);
+      assert.equal(yield* Ref.get(expectedFailureCount), 1);
+
+      yield* TestClock.adjust("100 millis");
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(subscriptionCount)) >= 2) break;
+        yield* Effect.yieldNow;
+      }
+      yield* Fiber.interrupt(consumer);
+
+      assert.equal(yield* Ref.get(subscriptionCount), 2);
+      assert.equal(yield* Ref.get(expectedFailureCount), 1);
+    }),
+  );
+
   it.effect("does not classify subscription defects as expected failures", () =>
     Effect.gen(function* () {
       const defect = new Error("subscription invariant failed");
+      let expectedFailureCount = 0;
       const client = {
         [WS_METHODS.serverSubscribeTicks]: () => Stream.die(defect),
       } as unknown as WsRpcProtocolClient;
       const { activeSession, supervisor } = yield* makeHarness;
 
       yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
-      const exit = yield* subscribe(WS_METHODS.serverSubscribeTicks, {}).pipe(
-        Stream.runDrain,
-        Effect.provideService(ConnectionSupervisor, supervisor),
-        Effect.exit,
-      );
+      const exit = yield* subscribe(
+        WS_METHODS.serverSubscribeTicks,
+        {},
+        {
+          onExpectedFailure: () =>
+            Effect.sync(() => {
+              expectedFailureCount += 1;
+            }),
+        },
+      ).pipe(Stream.runDrain, Effect.provideService(ConnectionSupervisor, supervisor), Effect.exit);
 
       assert.isTrue(Exit.isFailure(exit));
       if (Exit.isFailure(exit)) {
         assert.isTrue(Cause.hasDies(exit.cause));
       }
+      assert.equal(expectedFailureCount, 0);
     }),
   );
 
@@ -204,7 +350,10 @@ describe("rpc client", () => {
         [WS_METHODS.serverSubscribeTicks]: () =>
           Stream.fail(new EnvironmentAuthorizationError({ reason: "expired" })),
       } as unknown as WsRpcProtocolClient;
-      yield* SubscriptionRef.set(activeSession, Option.some(session(rejectingClient)));
+      yield* SubscriptionRef.set(
+        activeSession,
+        Option.some(rejectingClient).pipe(Option.map(session)),
+      );
 
       const exit = yield* subscribe(WS_METHODS.serverSubscribeTicks, {}).pipe(
         Stream.runCollect,
@@ -215,8 +364,7 @@ describe("rpc client", () => {
       assert.isTrue(Exit.isFailure(exit));
       if (Exit.isFailure(exit)) {
         const authFailure = exit.cause.reasons.some(
-          (reason) =>
-            reason._tag === "Fail" && reason.error instanceof EnvironmentAuthorizationError,
+          (reason) => reason._tag === "Fail" && isEnvironmentAuthorizationError(reason.error),
         );
         assert.isTrue(authFailure, "expected the authorization error to surface");
       }

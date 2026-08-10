@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -12,6 +13,9 @@ import { NoteId, NoteNotFoundError, type NotesStreamEvent } from "@app/contracts
 
 import * as ServerConfig from "../../src/config.ts";
 import * as NotesStore from "../../src/notes/NotesStore.ts";
+
+/** Hoisted: compiling a schema guard per call is the pattern `app/no-inline-schema-compile` forbids. */
+const isNoteNotFoundError = Schema.is(NoteNotFoundError);
 
 const decodeNoteId = Schema.decodeUnknownSync(NoteId);
 
@@ -47,8 +51,7 @@ const makeStore = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const dataDir = yield* fileSystem.makeTempDirectoryScoped();
   const store = yield* NotesStore.make.pipe(
-    Effect.provide(testConfig(dataDir)),
-    Effect.provide(NodeServices.layer),
+    Effect.provide(Layer.merge(testConfig(dataDir), NodeServices.layer)),
   );
   return { store, dataDir };
 });
@@ -88,7 +91,7 @@ it.layer(NodeServices.layer)("NotesStore", (it) => {
         const failsWithNotFound = (exit: Exit.Exit<unknown, unknown>) =>
           Exit.isFailure(exit) &&
           exit.cause.reasons.some(
-            (reason) => reason._tag === "Fail" && reason.error instanceof NoteNotFoundError,
+            (reason) => reason._tag === "Fail" && isNoteNotFoundError(reason.error),
           );
 
         const updateExit = yield* store.update({ id: missing, text: "x" }).pipe(Effect.exit);
@@ -133,8 +136,7 @@ it.layer(NodeServices.layer)("NotesStore", (it) => {
         yield* store.create({ text: "survives restarts" });
 
         const reopened = yield* NotesStore.make.pipe(
-          Effect.provide(testConfig(dataDir)),
-          Effect.provide(NodeServices.layer),
+          Effect.provide(Layer.merge(testConfig(dataDir), NodeServices.layer)),
         );
         const events = yield* reopened.changes.pipe(Stream.take(1), Stream.runCollect);
         const snapshot = events[0]!;
@@ -157,8 +159,7 @@ it.layer(NodeServices.layer)("NotesStore corrupt file", (it) => {
       yield* fileSystem.writeFileString(`${dataDir}/notes.json`, "not json {");
 
       const store = yield* NotesStore.make.pipe(
-        Effect.provide(testConfig(dataDir)),
-        Effect.provide(NodeServices.layer),
+        Effect.provide(Layer.merge(testConfig(dataDir), NodeServices.layer)),
       );
       const events = yield* store.changes.pipe(Stream.take(1), Stream.runCollect);
       assert.deepStrictEqual(eventSummary(events[0]!), [0, "snapshot", 0]);

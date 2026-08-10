@@ -8,6 +8,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import type { ServerBootstrapEnvelope } from "@app/contracts";
+import { HostProcessExecutablePath } from "@app/shared/hostProcess";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 
@@ -85,11 +86,13 @@ export const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const bootstrapToken = yield* getOrCreateBootstrapToken;
         const httpBaseUrl = new URL(`http://127.0.0.1:${input.port}`);
+        // In the Electron main process this is the Electron binary.
+        // `ELECTRON_RUN_AS_NODE=1` makes it behave as plain Node so the
+        // spawned server doesn't become a second GUI app instance. Injected
+        // rather than read off the `process` global so tests can override it.
+        const executablePath = yield* HostProcessExecutablePath;
         return {
-          // In the Electron main process `process.execPath` is the Electron
-          // binary. `ELECTRON_RUN_AS_NODE=1` makes it behave as plain Node so
-          // the spawned server doesn't become a second GUI app instance.
-          executablePath: process.execPath,
+          executablePath,
           args: [environment.backendEntryPath, "start", "--bootstrap-fd", "3"],
           entryPath: environment.backendEntryPath,
           cwd: environment.backendCwd,

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @effect-diagnostics nodeBuiltinImport:off - Standalone Node repo-sync script; no Effect runtime.
 // Vendors read-only reference repositories under `.repos/` as squashed git
 // subtrees, pinned to the version of the dependency this workspace installs.
 // The vendored copies are reference material only: never edit them, never
@@ -18,6 +19,7 @@ import * as NodeModule from "node:module";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
+import { ensureCleanWorkingTree } from "./lib/git.ts";
 import { REFERENCE_REPOS, type ReferenceRepo } from "./lib/reference-repos.ts";
 
 const REPO_ROOT = NodePath.dirname(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)));
@@ -74,24 +76,12 @@ function resolveRef(repo: ReferenceRepo, latest: boolean): string {
     : `${repo.versionTagPrefix}${installedVersion(repo.installedPackage)}`;
 }
 
-function ensureCleanWorkingTree(): void {
-  const status = NodeChildProcess.execSync("git status --porcelain", {
-    cwd: REPO_ROOT,
-    encoding: "utf8",
-  });
-  if (status.trim().length > 0) {
-    throw new Error(
-      "The working tree has uncommitted changes. `git subtree` needs a clean tree — commit or stash first.",
-    );
-  }
-}
-
 function main(): void {
   const options = parseCliOptions(process.argv.slice(2));
   const repos = selectRepos(options.repoId);
 
   if (!options.dryRun) {
-    ensureCleanWorkingTree();
+    ensureCleanWorkingTree({ repoRoot: REPO_ROOT, reason: "`git subtree` needs a clean tree" });
   }
 
   for (const repo of repos) {

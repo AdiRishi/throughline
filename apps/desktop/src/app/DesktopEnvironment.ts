@@ -84,6 +84,12 @@ export class DesktopEnvironment extends Context.Service<
     readonly otlpTracesUrl: Option.Option<string>;
     readonly otlpExportIntervalMs: number;
     readonly preloadPath: string;
+    /**
+     * Where electron-updater looks for the release feed. electron-builder only
+     * writes `app-update.yml` when the build had a `publish` config, so its
+     * absence is what tells the updater it has no feed to talk to.
+     */
+    readonly appUpdateYmlPath: string;
     /** Absolute path to the server entry to spawn. */
     readonly backendEntryPath: string;
     /** cwd for the spawned server child. */
@@ -128,6 +134,9 @@ export function makeWith(
   const logDir = Option.getOrElse(input.logDirOverride, () => path.join(baseDir, "logs"));
   const desktopSettingsPath = path.join(baseDir, "desktop-settings.json");
   const preloadPath = path.join(input.dirname, "preload.cjs");
+  const appUpdateYmlPath = input.isPackaged
+    ? path.join(input.resourcesPath, "app-update.yml")
+    : path.join(input.appPath, "dev-app-update.yml");
 
   // Resolve the server entry to spawn. Priority:
   //   1. APP_SERVER_ENTRY override (used by the dev runner).
@@ -170,6 +179,7 @@ export function makeWith(
       () => DEFAULT_OTLP_EXPORT_INTERVAL_MS,
     ),
     preloadPath,
+    appUpdateYmlPath,
     backendEntryPath,
     backendCwd,
     defaultBackendPort: DEFAULT_BACKEND_PORT,

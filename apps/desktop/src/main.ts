@@ -1,3 +1,12 @@
+// Keep this before the imports: a closed stdout/stderr pipe (the dev runner or
+// a shell `| head` going away) must not take the shell down with an unhandled
+// EPIPE. Every other write error still throws.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code !== "EPIPE") throw err;
+  });
+}
+
 import * as NodeOS from "node:os";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";

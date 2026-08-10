@@ -33,13 +33,12 @@ const makeRunId = Crypto.Crypto.pipe(
 
 const handleFatalStartupError = Effect.fn("desktop.startup.handleFatalStartupError")(function* (
   stage: string,
-  cause: Cause.Cause<unknown>,
+  message: string,
 ) {
   const shutdown = yield* DesktopShutdown.DesktopShutdown;
   const state = yield* DesktopState.DesktopState;
   const electronApp = yield* ElectronApp.ElectronApp;
   const electronDialog = yield* ElectronDialog.ElectronDialog;
-  const message = Cause.pretty(cause);
   yield* logStartupError("fatal startup error", { stage, message });
   const wasQuitting = yield* Ref.getAndSet(state.quitting, true);
   if (!wasQuitting) {
@@ -49,8 +48,10 @@ const handleFatalStartupError = Effect.fn("desktop.startup.handleFatalStartupErr
   yield* electronApp.quit;
 });
 
-const fatalStartupCause = (stage: string, cause: Cause.Cause<unknown>) =>
-  handleFatalStartupError(stage, cause).pipe(Effect.andThen(Effect.failCause(cause)));
+// Generic in `E` so the caller's error type survives into the failure channel;
+// pinning it to `unknown` erases every startup error into `unknown`.
+const fatalStartupCause = <E>(stage: string, cause: Cause.Cause<E>) =>
+  handleFatalStartupError(stage, Cause.pretty(cause)).pipe(Effect.andThen(Effect.failCause(cause)));
 
 const bootstrap = Effect.gen(function* () {
   const manager = yield* DesktopBackendManager.DesktopBackendManager;

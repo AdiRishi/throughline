@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off preferSchemaOverJson:off - Test builds raw HTTP fixtures and asserts on wire JSON.
 import * as NodeFS from "node:fs";
 import * as NodeHttp from "node:http";
 import * as NodeOS from "node:os";
@@ -10,6 +11,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -117,6 +119,22 @@ const decodeBearerSession = Schema.decodeUnknownSync(BearerSessionJson);
 const postJson = (path: string, body: string) =>
   HttpClient.post(path, { body: HttpBody.text(body, "application/json") });
 
+/**
+ * POST as an authenticated client: mint a bearer off the bootstrap token first,
+ * the way the renderer does, then present it. The OTLP ingest route is gated
+ * exactly like the `/ws` upgrade.
+ */
+const postJsonAuthenticated = (path: string, body: string) =>
+  Effect.gen(function* () {
+    const auth = yield* Auth.BearerSessionStore;
+    const minted = yield* auth.authenticateBootstrap(BOOTSTRAP_TOKEN);
+    const token = Option.getOrThrow(minted).token;
+    return yield* HttpClient.post(path, {
+      body: HttpBody.text(body, "application/json"),
+      headers: { authorization: `Bearer ${token}` },
+    });
+  });
+
 const wsRpcProtocolLayer = (wsUrl: string) =>
   RpcClient.layerProtocolSocket().pipe(
     Layer.provide(
@@ -208,12 +226,28 @@ describe("bearer bootstrap exchange", () => {
       // Exact wire shape: the codec decodes it, and nothing extra rides along.
       const session = decodeBearerSession(body);
       assert.match(session.access_token, /^[0-9a-f]{64}$/);
-      assert.isNull(session.expires_at);
+      // The session carries a real expiry, so the client can refresh ahead of
+      // it instead of discovering a dead credential mid-session.
+      assert.isNotNull(session.expires_at);
       assert.deepEqual(Object.keys(body as object).toSorted(), ["access_token", "expires_at"]);
 
       // The minted bearer is immediately valid for the WS gate.
       const auth = yield* Auth.BearerSessionStore;
       assert.isTrue(yield* auth.authenticateBearer(session.access_token));
+    }).pipe(Effect.provide(appLayer())),
+  );
+
+  it.effect("stops accepting a bearer once its session has expired", () =>
+    Effect.gen(function* () {
+      const auth = yield* Auth.BearerSessionStore;
+      const minted = yield* auth.authenticateBootstrap(BOOTSTRAP_TOKEN);
+      const token = Option.getOrThrow(minted).token;
+      assert.isTrue(yield* auth.authenticateBearer(token));
+
+      // Past the 30-day TTL the credential is refused and evicted, so a
+      // reconnect storm cannot retain one live token per attempt forever.
+      yield* TestClock.adjust("31 days");
+      assert.isFalse(yield* auth.authenticateBearer(token));
     }).pipe(Effect.provide(appLayer())),
   );
 
@@ -351,6 +385,18 @@ describe("dev redirect", () => {
       assert.equal(response.status, 503);
     }).pipe(Effect.provide(appLayer({ devWebUrl: new URL("http://127.0.0.1:5173") }))),
   );
+
+  it.effect("still redirects app routes that merely share a reserved prefix", () =>
+    Effect.gen(function* () {
+      // A bare `startsWith("/api")` also swallows `/apifoo`, which is an
+      // ordinary SPA route and must reach the dev server.
+      for (const path of ["/apifoo", "/wsx", "/.well-knownish"]) {
+        const response = yield* rawGet(path);
+        assert.equal(response.status, 302, path);
+        assert.equal(response.location, `http://127.0.0.1:5173${path}`, path);
+      }
+    }).pipe(Effect.provide(appLayer({ devWebUrl: new URL("http://127.0.0.1:5173") }))),
+  );
 });
 
 // One resource span carrying one client span, in the wire shape the renderer's
@@ -391,7 +437,7 @@ describe("browser OTLP trace ingest", () => {
     Effect.gen(function* () {
       const traceRecords: Array<TraceRecord> = [];
 
-      const response = yield* postJson(
+      const response = yield* postJsonAuthenticated(
         OTLP_TRACES_PROXY_PATH,
         JSON.stringify(BROWSER_OTLP_PAYLOAD),
       ).pipe(Effect.provide(appLayer({ traceRecords })));
@@ -416,11 +462,39 @@ describe("browser OTLP trace ingest", () => {
     Effect.gen(function* () {
       const traceRecords: Array<TraceRecord> = [];
 
-      const response = yield* postJson(OTLP_TRACES_PROXY_PATH, "not json at all").pipe(
+      const response = yield* postJsonAuthenticated(OTLP_TRACES_PROXY_PATH, "not json at all").pipe(
         Effect.provide(appLayer({ traceRecords })),
       );
 
       assert.equal(response.status, 400);
+      assert.deepEqual(traceRecords, []);
+    }),
+  );
+
+  it.effect("rejects trace ingest without a bearer token", () =>
+    Effect.gen(function* () {
+      const traceRecords: Array<TraceRecord> = [];
+
+      const response = yield* postJson(
+        OTLP_TRACES_PROXY_PATH,
+        JSON.stringify(BROWSER_OTLP_PAYLOAD),
+      ).pipe(Effect.provide(appLayer({ traceRecords })));
+
+      assert.equal(response.status, 401);
+      assert.deepEqual(traceRecords, []);
+    }),
+  );
+
+  it.effect("rejects trace ingest presenting an unknown bearer token", () =>
+    Effect.gen(function* () {
+      const traceRecords: Array<TraceRecord> = [];
+
+      const response = yield* HttpClient.post(OTLP_TRACES_PROXY_PATH, {
+        body: HttpBody.text(JSON.stringify(BROWSER_OTLP_PAYLOAD), "application/json"),
+        headers: { authorization: "Bearer not-a-real-session" },
+      }).pipe(Effect.provide(appLayer({ traceRecords })));
+
+      assert.equal(response.status, 401);
       assert.deepEqual(traceRecords, []);
     }),
   );
@@ -430,7 +504,7 @@ describe("browser OTLP trace ingest", () => {
       // Telemetry must never be the thing that breaks the app reporting it.
       const traceRecords: Array<TraceRecord> = [];
 
-      const response = yield* postJson(
+      const response = yield* postJsonAuthenticated(
         OTLP_TRACES_PROXY_PATH,
         JSON.stringify({ resourceSpans: "not-an-array" }),
       ).pipe(Effect.provide(appLayer({ traceRecords })));

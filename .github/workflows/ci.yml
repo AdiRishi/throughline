@@ -6,22 +6,79 @@ on:
       - main
   pull_request:
 
+# A push that supersedes an in-flight PR run makes that run's result
+# irrelevant; cancel it instead of paying for it. Pushes to main are never
+# cancelled — every commit on the default branch keeps its own status.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
+    name: Check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # `.repos/` is a vendored read-only reference subtree — thousands of
+          # files nothing in CI reads. Excluding it keeps the clone small.
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .nvmrc
+          # One source of truth for the Node version: package.json `engines.node`.
+          node-version-file: package.json
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
+
+      # Cheapest gate first: formatting and lint fail in seconds, so a run that
+      # is going to fail on them never pays for typecheck or a build.
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+
+      # Without this a broken `vite build` ships: nothing else in CI compiles
+      # the app, and the desktop bundles are what the release actually contains.
+      - run: pnpm build:desktop
+
+      # A preload that builds but exports nothing still "succeeds". Assert the
+      # bundle exists and carries the bridge symbols the renderer depends on.
+      - name: Verify desktop build output
+        run: |
+          test -f apps/web/dist/index.html
+          test -f apps/server/dist/bin.mjs
+          test -f apps/desktop/dist-electron/main.cjs
+          test -f apps/desktop/dist-electron/preload.cjs
+          grep -nE "desktopBridge|desktop:get-server-bootstrap|desktop:pick-folder" apps/desktop/dist-electron/preload.cjs
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+
       # electron's postinstall exits 0 without installing on Node >= 24.16
       # (electron#51619), and the desktop unit tests load the `electron`
       # package. The ensure script repairs the runtime, bypassing install.js.
       - run: pnpm --filter @app/desktop ensure:electron
-      - run: pnpm typecheck
-      - run: pnpm lint
       - run: pnpm test
-      - run: pnpm format:check
