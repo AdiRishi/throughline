@@ -53,8 +53,6 @@ function obtainBearerToken(httpBaseUrl: string): Effect.Effect<string, Connectio
   }).pipe(
     Effect.map((session) => session.access_token),
     Effect.mapError(mapBearerBootstrapError),
-    // The browser path talks HTTP through Effect's client rather than raw
-    // `fetch`, so the exchange needs a concrete implementation.
     Effect.provide(FetchHttpClient.layer),
   );
 }
@@ -133,8 +131,7 @@ const observabilityLayer = Layer.mergeAll(
 /**
  * Build the app's atoms against an `AtomRuntime` that provides the supervisor.
  * A factory (rather than module-level atoms) so tests can instantiate the same
- * atoms over a scripted runtime — the pattern the reference repo uses for its
- * state modules.
+ * atoms over a scripted runtime.
  */
 export function createConnectionAtoms<R, E>(
   runtime: Atom.AtomRuntime<ConnectionSupervisor | R, E>,

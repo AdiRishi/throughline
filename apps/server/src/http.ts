@@ -62,9 +62,9 @@ export function resolveDevRedirectUrl(devUrl: URL, requestUrl: URL): string {
 }
 
 /**
- * Paths that must never be redirected/served as SPA navigations. Shares the
- * prefix list with the Vite dev proxy: a bare `startsWith` also swallows
- * `/apifoo` and `/wsx`, which are ordinary app routes.
+ * Paths that must never be redirected/served as SPA navigations. Prefix
+ * matching has to be segment-aware: `/apifoo` and `/wsx` are ordinary app
+ * routes, not backend paths.
  */
 function isReservedPath(pathname: string): boolean {
   return isDevProxiedPath(pathname);

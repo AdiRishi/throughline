@@ -12,10 +12,6 @@ import { describeReadinessCause, waitForHttpReady } from "../src/httpReadiness.t
 
 const hangingHttpClient = HttpClient.make(() => Effect.never);
 
-/**
- * Tagged so the readiness failure stays distinguishable in the Effect failure
- * channel — untagged `Error`s merge together once more than one can fail.
- */
 class ReadinessProbeFailedError extends Data.TaggedError("ReadinessProbeFailedError")<{
   readonly message: string;
   readonly cause: unknown;

@@ -333,8 +333,7 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
     filePath: options.filePath,
     maxBytes: options.maxBytes,
     maxFiles: options.maxFiles,
-    // Surface write/rotate failures so the retry path below can re-queue the
-    // records instead of silently dropping them.
+    // The re-queue path below is only reachable if write failures throw.
     throwOnError: true,
   });
 

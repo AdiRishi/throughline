@@ -162,8 +162,7 @@ export interface RpcSessionFactoryShape {
 /**
  * How the supervisor obtains sessions. Defaults to the real WebSocket
  * `connect`, so app wiring stays zero-config; tests override it with scripted
- * sessions to drive connect/drop/backoff deterministically (the same seam the
- * reference repo models as its `RpcSessionFactory` service).
+ * sessions to drive connect/drop/backoff deterministically.
  */
 export const RpcSessionFactory = Context.Reference<RpcSessionFactoryShape>(
   "@app/client-runtime/rpc/RpcSessionFactory",

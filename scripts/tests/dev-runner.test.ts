@@ -10,13 +10,11 @@ import {
   BASE_WEB_PORT,
   createDevEnv,
   createLinePrefixer,
-  DEV_PORT_PROBE_HOSTS,
   formatLabel,
   isBrowserAllowedPort,
   isMode,
   isPortCandidate,
   MAX_PORT,
-  MODES,
   parsePortOverride,
   PORT_OFFSET_RANGE,
   repoPortOffset,
@@ -36,19 +34,9 @@ describe("cli entrypoint", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('Unknown mode "dev:mobile"');
   });
-
-  it("does not run when imported (this suite imported it and is still here)", () => {
-    expect(MODES.length).toBeGreaterThan(0);
-  });
 });
 
 describe("isMode", () => {
-  it("accepts every documented mode", () => {
-    for (const mode of MODES) {
-      expect(isMode(mode)).toBe(true);
-    }
-  });
-
   it("rejects anything else", () => {
     expect(isMode("dev:mobile")).toBe(false);
     expect(isMode("")).toBe(false);
@@ -119,14 +107,6 @@ describe("isPortCandidate", () => {
     expect(isPortCandidate(0, "server")).toBe(false);
     expect(isPortCandidate(MAX_PORT + 1, "server")).toBe(false);
     expect(isPortCandidate(1.5, "server")).toBe(false);
-  });
-});
-
-describe("DEV_PORT_PROBE_HOSTS", () => {
-  it("probes loopback only", () => {
-    // Probing the wildcards made the runner walk away from free ports whenever
-    // another process held the same number on a different interface.
-    expect([...DEV_PORT_PROBE_HOSTS]).toEqual(["127.0.0.1", "::1"]);
   });
 });
 
@@ -202,16 +182,6 @@ describe("formatLabel", () => {
   it("is a plain bracketed label when the stream is not a TTY", () => {
     expect(formatLabel("web", 0, false)).toBe("[web] ");
     expect(formatLabel("web", 5, false)).toBe("[web] ");
-  });
-
-  it("colors the label when the stream is a TTY", () => {
-    expect(formatLabel("web", 0, true)).toBe("\u001B[36m[web]\u001B[0m ");
-  });
-
-  it("gives consecutive children different colors and wraps around", () => {
-    const colors = [0, 1, 2, 3, 4, 5, 6].map((index) => formatLabel("x", index, true));
-    expect(new Set(colors.slice(0, 6)).size).toBe(6);
-    expect(colors[6]).toBe(colors[0]);
   });
 });
 

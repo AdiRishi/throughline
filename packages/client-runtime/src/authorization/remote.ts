@@ -137,10 +137,7 @@ const failBearerBootstrap = (
   return Effect.fail(cause);
 };
 
-/**
- * Apply the timeout and collapse every failure mode into `BearerBootstrapError`
- * (the same shape as the reference repo's `executeEnvironmentHttpRequest`).
- */
+/** Apply the timeout and collapse every failure mode into `BearerBootstrapError`. */
 const executeBootstrapRequest = <A, R>(
   requestUrl: string,
   timeoutMs: number,
