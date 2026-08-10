@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - Test asserts on real files written by the backend manager.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";

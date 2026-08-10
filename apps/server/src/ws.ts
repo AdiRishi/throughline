@@ -16,7 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
-import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import {
@@ -30,28 +30,6 @@ import * as Auth from "./auth.ts";
 import * as ServerConfig from "./config.ts";
 import * as LifecycleEvents from "./lifecycleEvents.ts";
 import * as NotesStore from "./notes/NotesStore.ts";
-
-/**
- * Extract a bearer token from the upgrade request: `Authorization: Bearer <t>`
- * header, or `?access_token=<t>` query param (browsers can't set WS headers).
- */
-function extractBearer(request: HttpServerRequest.HttpServerRequest): Option.Option<string> {
-  const header = Headers.get(request.headers, "authorization");
-  if (Option.isSome(header)) {
-    const match = /^Bearer\s+(.+)$/i.exec(header.value.trim());
-    if (match?.[1]) {
-      return Option.some(match[1].trim());
-    }
-  }
-  const url = HttpServerRequest.toURL(request);
-  if (Option.isSome(url)) {
-    const token = url.value.searchParams.get("access_token");
-    if (token) {
-      return Option.some(token);
-    }
-  }
-  return Option.none();
-}
 
 /**
  * Register the RPC handlers. `server.subscribeLifecycle` replays the retained
@@ -133,7 +111,7 @@ export const websocketRpcRouteLayer = HttpRouter.add(
     const request = yield* HttpServerRequest.HttpServerRequest;
     const auth = yield* Auth.BearerSessionStore;
 
-    const token = extractBearer(request);
+    const token = Auth.extractBearer(request);
     if (Option.isNone(token)) {
       return HttpServerResponse.text("Unauthorized", { status: 401 });
     }

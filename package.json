@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prepare": "effect-tsgo patch",
     "dev": "node scripts/dev-runner.ts dev",
     "dev:server": "node scripts/dev-runner.ts dev:server",
     "dev:web": "node scripts/dev-runner.ts dev:web",
@@ -13,8 +14,8 @@
     "typecheck": "pnpm -r --if-present --workspace-concurrency=2 typecheck",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check",
     "test": "pnpm -r --if-present test",
-    "lint": "oxlint --disable-nested-config --report-unused-disable-directives",
-    "lint:fix": "oxlint --fix --disable-nested-config --report-unused-disable-directives",
+    "lint": "oxlint --disable-nested-config --report-unused-disable-directives --max-warnings=0",
+    "lint:fix": "oxlint --fix --disable-nested-config --report-unused-disable-directives --max-warnings=0",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "dist:desktop": "node scripts/build-desktop-artifact.ts",
@@ -23,6 +24,8 @@
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules apps/*/dist apps/*/dist-electron packages/*/dist"
   },
   "devDependencies": {
+    "@effect/language-service": "catalog:",
+    "@effect/tsgo": "catalog:",
     "@types/node": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",

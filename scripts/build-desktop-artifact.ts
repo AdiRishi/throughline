@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @effect-diagnostics nodeBuiltinImport:off - Standalone Node build script; no Effect runtime.
 // Package the desktop app into a distributable (dmg / nsis / AppImage).
 //
 // Pipeline: build web -> build server -> build desktop -> stage an app dir ->
@@ -19,6 +20,21 @@ const REPO_ROOT = NodePath.dirname(NodePath.dirname(NodeURL.fileURLToPath(import
 
 const APP_ID = "com.arsoftware.throughline";
 const PRODUCT_NAME = "Throughline";
+
+// Electron ships ~50 locale .pak files; the app is English-only, so the rest
+// are dead weight in every artifact.
+const DESKTOP_ELECTRON_LANGUAGES = ["en-US"] as const;
+// electron-builder's default file set is "everything under the project dir";
+// listing only negations narrows it. The sourcemaps are the bulk of the stage
+// dir (main.cjs.map alone is ~3.6MB) and are only useful against a local build.
+const DESKTOP_FILE_EXCLUSIONS = ["!**/*.map"] as const;
+// The server child is spawned as `process.execPath` with ELECTRON_RUN_AS_NODE
+// against `apps/server/dist/bin.mjs`, and that bundle then serves the web build
+// from `dist/client`. Keeping the whole server tree outside the asar is what
+// makes both the ESM entry and the static assets plain files on disk. Nothing
+// else needs unpacking: the main process reads its own deps through Electron's
+// asar redirect.
+const ASAR_UNPACK = ["apps/server/dist/**"] as const;
 
 function arg(name: string, fallback: string): string {
   const index = process.argv.indexOf(`--${name}`);
@@ -79,6 +95,53 @@ function readWorkspaceAllowBuilds(): Record<string, boolean> {
     if (line.trim().length > 0 && !line.startsWith(" ")) inBlock = false;
   }
   return allowBuilds;
+}
+
+type PublishConfig = Readonly<Record<string, string>>;
+
+/**
+ * electron-builder only emits `app-update.yml` — the file electron-updater
+ * reads to find the release feed — from a `publish` config, so without one the
+ * packaged app's `checkForUpdates()` throws "Please define publish
+ * configuration". The feed is therefore resolved from the environment:
+ *
+ *   APP_DESKTOP_UPDATE_REPOSITORY / GITHUB_REPOSITORY -> GitHub releases
+ *   APP_DESKTOP_UPDATE_URL                            -> a generic static host
+ *   APP_DESKTOP_UPDATE_CHANNEL=nightly                -> prereleases
+ *
+ * Leaving them unset omits the block; the shell then reports the updater as
+ * disabled (it looks for `app-update.yml`) rather than failing at check time.
+ */
+function resolveGitHubPublishConfig(
+  updateChannel: "latest" | "nightly",
+): PublishConfig | undefined {
+  const rawRepo = (
+    process.env.APP_DESKTOP_UPDATE_REPOSITORY?.trim() ||
+    process.env.GITHUB_REPOSITORY?.trim() ||
+    ""
+  ).trim();
+  if (!rawRepo) return undefined;
+
+  const [owner, repo, ...rest] = rawRepo.split("/");
+  if (!owner || !repo || rest.length > 0) return undefined;
+
+  return {
+    provider: "github",
+    owner,
+    repo,
+    releaseType: updateChannel === "nightly" ? "prerelease" : "release",
+    ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
+  };
+}
+
+/** Fallback feed for builds published to a plain static host (or a mock server). */
+function resolveGenericPublishConfig(): PublishConfig | undefined {
+  const url = process.env.APP_DESKTOP_UPDATE_URL?.trim();
+  return url ? { provider: "generic", url } : undefined;
+}
+
+function resolveUpdateChannel(): "latest" | "nightly" {
+  return process.env.APP_DESKTOP_UPDATE_CHANNEL?.trim() === "nightly" ? "nightly" : "latest";
 }
 
 function main(): void {
@@ -149,15 +212,29 @@ function main(): void {
   run("pnpm", ["install", "--prod"], stage);
 
   // 3. electron-builder config.
+  const updateChannel = resolveUpdateChannel();
+  const publishConfig = resolveGitHubPublishConfig(updateChannel) ?? resolveGenericPublishConfig();
+  if (publishConfig === undefined) {
+    process.stdout.write(
+      "\n[desktop-artifact] No update feed configured (set APP_DESKTOP_UPDATE_REPOSITORY or " +
+        "APP_DESKTOP_UPDATE_URL); the packaged app ships with auto-updates disabled.\n",
+    );
+  }
   const config = {
     appId: APP_ID,
     productName: PRODUCT_NAME,
     directories: { output: NodePath.join(REPO_ROOT, "release/dist") },
-    files: ["**/*"],
-    asarUnpack: ["apps/server/**"],
-    mac: { target: [target], category: "public.app-category.developer-tools" },
-    win: { target: [target] },
-    linux: { target: [target], category: "Development" },
+    electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
+    files: [...DESKTOP_FILE_EXCLUSIONS],
+    asarUnpack: [...ASAR_UNPACK],
+    ...(publishConfig ? { publish: [publishConfig] } : {}),
+    // Only the platform being built gets a target block. Writing the same
+    // target into all three means a `dmg` build also asks linux/win for `dmg`.
+    ...(platform === "mac"
+      ? { mac: { target: [target], category: "public.app-category.developer-tools" } }
+      : {}),
+    ...(platform === "win" ? { win: { target: [target] } } : {}),
+    ...(platform === "linux" ? { linux: { target: [target], category: "Development" } } : {}),
   };
   const configPath = NodePath.join(REPO_ROOT, "release/electron-builder.json");
   NodeFS.mkdirSync(NodePath.dirname(configPath), { recursive: true });

@@ -4,46 +4,30 @@ import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import { FetchHttpClient } from "effect/unstable/http";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import * as Socket from "effect/unstable/socket/Socket";
 
-import {
-  type BearerBootstrapError,
-  bootstrapRemoteBearerSession,
-} from "@app/client-runtime/authorization";
+import { bootstrapRemoteBearerSession } from "@app/client-runtime/authorization";
 import {
   type ConnectionAttemptError,
   ConnectionBlockedError,
   ConnectionSupervisor,
   connectionSupervisorLayer,
   ConnectionTransientError,
+  mapBearerBootstrapError,
   INITIAL_CONNECTION_STATE,
   type PreparedConnection,
 } from "@app/client-runtime/connection";
 import { request as rpcRequest, subscribe as rpcSubscribe } from "@app/client-runtime/rpc";
 import type { ServerConfig, ServerLifecyclePhase } from "@app/contracts";
 
-import { isElectron, resolveConnectionTarget } from "../env.ts";
+import { isElectron, resolveConnectionTargetResult } from "../env.ts";
+import { errorMessage } from "../errors.ts";
 import { ClientTracingLive, configureClientTracing } from "../observability/clientTracing.ts";
+import { browserConnectivityLayer, browserWakeupsLayer } from "./platformSignals.ts";
 
 const BOOTSTRAP_TOKEN = import.meta.env.VITE_BOOTSTRAP_TOKEN;
-
-/**
- * Classify a failed bootstrap exchange: an explicit auth rejection means the
- * bootstrap credential itself is being refused — retrying with backoff cannot
- * fix that, so the supervisor should park (`blocked`) until the credential
- * changes. Everything else (network, timeout, bad payload) stays transient.
- */
-export function mapBearerBootstrapError(error: BearerBootstrapError): ConnectionAttemptError {
-  switch (error.status) {
-    case 401:
-      return new ConnectionBlockedError({ reason: "authentication", detail: error.detail });
-    case 403:
-      return new ConnectionBlockedError({ reason: "permission", detail: error.detail });
-    default:
-      return new ConnectionTransientError({ detail: error.detail });
-  }
-}
 
 /**
  * Obtain a bearer token (integration contract):
@@ -57,6 +41,7 @@ function obtainBearerToken(httpBaseUrl: string): Effect.Effect<string, Connectio
       try: () => bridge.getBearerToken(),
       catch: (cause) =>
         new ConnectionTransientError({
+          reason: "transport",
           detail: `Bridge failed to mint a bearer token: ${String(cause)}`,
         }),
     });
@@ -68,6 +53,9 @@ function obtainBearerToken(httpBaseUrl: string): Effect.Effect<string, Connectio
   }).pipe(
     Effect.map((session) => session.access_token),
     Effect.mapError(mapBearerBootstrapError),
+    // The browser path talks HTTP through Effect's client rather than raw
+    // `fetch`, so the exchange needs a concrete implementation.
+    Effect.provide(FetchHttpClient.layer),
   );
 }
 
@@ -89,14 +77,38 @@ export function makeConnectionLayer(): Layer.Layer<ConnectionSupervisor> {
   const connection: PreparedConnection = {
     label: "server",
     prepareSocketUrl: Effect.suspend(() => {
-      const target = resolveConnectionTarget();
+      // A target that cannot be parsed is broken configuration, not weather:
+      // backing off would retry the same malformed URL forever, and letting the
+      // throw escape would make it a defect that kills the runtime and every
+      // atom on it. Park instead, with the reason on the connection state where
+      // the UI already renders it.
+      const targetRead = resolveConnectionTargetResult();
+      if (targetRead._tag === "Failure") {
+        return Effect.fail(
+          new ConnectionBlockedError({
+            reason: "configuration",
+            detail: errorMessage(targetRead.cause),
+          }),
+        );
+      }
+      const target = targetRead.target;
       return obtainBearerToken(target.httpBaseUrl).pipe(
+        // The trace-ingest route is bearer-gated like `/ws`, so hand the
+        // exporter the credential this attempt just minted. Tracing is not
+        // load-bearing: a failure here must never fail the connection.
+        Effect.tap((token) =>
+          Effect.promise(() => configureClientTracing({ bearerToken: token })).pipe(Effect.ignore),
+        ),
         Effect.map((token) => socketUrl(target.wsBaseUrl, token)),
       );
     }),
   };
   return connectionSupervisorLayer(connection).pipe(
     Layer.provide(Socket.layerWebSocketConstructorGlobal),
+    // Without these the supervisor's platform seams stay at their no-op
+    // defaults, and a `blocked` connection has nothing that can wake it.
+    Layer.provide(browserConnectivityLayer),
+    Layer.provide(browserWakeupsLayer),
     Layer.provideMerge(observabilityLayer),
   );
 }

@@ -1,5 +1,6 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -96,9 +97,17 @@ export const make = Effect.gen(function* () {
   const settings = yield* DesktopAppSettings.DesktopAppSettings;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const electronUpdater = yield* ElectronUpdater.ElectronUpdater;
+  const fileSystem = yield* FileSystem.FileSystem;
 
   // Not packaged → inert: no release feed and no code signing exist in dev.
-  const enabled = environment.isPackaged;
+  // Packaged but without an `app-update.yml` → also inert: electron-builder
+  // only writes that file when the build had a `publish` config, and driving
+  // electron-updater without a feed just throws "Please define publish
+  // configuration" at check time. Stay visibly disabled instead.
+  const hasUpdateFeedConfig = yield* fileSystem
+    .exists(environment.appUpdateYmlPath)
+    .pipe(Effect.orElseSucceed(() => false));
+  const enabled = environment.isPackaged && hasUpdateFeedConfig;
   const initialStatus: DesktopUpdateStatus = enabled ? "idle" : "disabled";
   const persisted = yield* settings.get;
   const stateRef = yield* Ref.make<DesktopUpdateState>({
@@ -182,7 +191,11 @@ export const make = Effect.gen(function* () {
             channel: persisted.updateChannel,
           });
         }).pipe(Effect.withSpan("desktop.updater.configure"))
-      : logInfo("updater disabled (app is not packaged)"),
+      : logInfo(
+          environment.isPackaged
+            ? "updater disabled (no app-update.yml: the build had no publish config)"
+            : "updater disabled (app is not packaged)",
+        ),
     getState: Ref.get(stateRef),
     setChannel: (channel) =>
       Effect.gen(function* () {

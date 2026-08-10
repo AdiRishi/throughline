@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - Test drives the real fd bootstrap over Node pipes.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";

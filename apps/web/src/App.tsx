@@ -12,19 +12,25 @@ import { connectionAtoms } from "./state/connection.ts";
 
 const STATUS_LABEL: Record<ConnectionPhase, string> = {
   idle: "idle",
+  offline: "offline",
   connecting: "connecting",
   connected: "connected",
   reconnecting: "reconnecting",
+  backoff: "reconnecting",
   blocked: "blocked",
 };
 
 // Connected wears the accent: the brand color IS the color of a live bus.
-// Blocked is steady red — the supervisor is parked, not trying.
+// Blocked is steady red — the supervisor is parked, not trying. `backoff` is
+// sleeping between attempts and `offline` is waiting on the radio; neither is
+// actively dialing, so only `connecting`/`reconnecting` pulse.
 const STATUS_DOT: Record<ConnectionPhase, string> = {
   idle: "bg-muted",
+  offline: "bg-muted",
   connecting: "bg-amber-400 animate-pulse",
   connected: "bg-accent",
   reconnecting: "bg-amber-400 animate-pulse",
+  backoff: "bg-amber-400",
   blocked: "bg-red-400",
 };
 
@@ -93,8 +99,8 @@ export function App() {
           {lifecycle && <Meter label={lifecycle} />}
           <Meter label={`seq ${notesView.sequence}`} />
           {isDesktop && menuAction && <Meter label={`menu ${menuAction}`} />}
-          {connectionState.lastError && connectionState.phase !== "connected" && (
-            <Meter label={connectionState.lastError} />
+          {connectionState.lastFailure && connectionState.phase !== "connected" && (
+            <Meter label={connectionState.lastFailure.detail} />
           )}
         </div>
       </footer>

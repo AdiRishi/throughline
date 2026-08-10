@@ -16,6 +16,7 @@ import {
   ConnectionTransientError,
   type PreparedConnection,
 } from "../connection/model.ts";
+import { findErrorTraceId } from "../errors/errorTrace.ts";
 import { makeWsRpcProtocolClient, type WsRpcProtocolClient } from "./protocol.ts";
 
 const SOCKET_OPEN_TIMEOUT = "15 seconds";
@@ -28,17 +29,25 @@ type InitialConfigError = Effect.Error<
  * Classify the readiness probe's failures: an authorization rejection means the
  * credential this session presented will keep being rejected — blocked — while
  * transport failures are the socket's problem and stay transient.
+ *
+ * `traceId` is carried across whenever the underlying failure knows one, so the
+ * error the UI renders can be grepped straight out of the trace files.
  */
 function mapInitialConfigError(error: InitialConfigError): ConnectionAttemptError {
+  const traceId = findErrorTraceId(error);
+  const trace = traceId === null ? {} : { traceId };
   switch (error._tag) {
     case "EnvironmentAuthorizationError":
       return new ConnectionBlockedError({
         reason: "permission",
         detail: error.message,
+        ...trace,
       });
     case "RpcClientError":
       return new ConnectionTransientError({
+        reason: "transport",
         detail: error.message,
+        ...trace,
       });
   }
 }
@@ -83,11 +92,15 @@ export const connect = (
         Effect.flatMap((wasConnected) =>
           Deferred.fail(
             disconnected,
-            new ConnectionTransientError({
-              detail: wasConnected
-                ? `${connection.label} disconnected.`
-                : `${connection.label} could not establish a WebSocket connection.`,
-            }),
+            wasConnected
+              ? new ConnectionTransientError({
+                  reason: "transport",
+                  detail: `${connection.label} disconnected.`,
+                })
+              : new ConnectionTransientError({
+                  reason: "network",
+                  detail: `${connection.label} could not establish a WebSocket connection.`,
+                }),
           ),
         ),
         Effect.asVoid,

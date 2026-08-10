@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -10,6 +11,15 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { describeReadinessCause, waitForHttpReady } from "../src/httpReadiness.ts";
 
 const hangingHttpClient = HttpClient.make(() => Effect.never);
+
+/**
+ * Tagged so the readiness failure stays distinguishable in the Effect failure
+ * channel — untagged `Error`s merge together once more than one can fail.
+ */
+class ReadinessProbeFailedError extends Data.TaggedError("ReadinessProbeFailedError")<{
+  readonly message: string;
+  readonly cause: unknown;
+}> {}
 
 it.effect("retries unsuccessful responses until the server is ready", () =>
   Effect.gen(function* () {
@@ -30,7 +40,8 @@ it.effect("retries unsuccessful responses until the server is ready", () =>
       timeoutMs: 1_000,
       intervalMs: 100,
       probeTimeoutMs: 50,
-      makeError: ({ cause }) => new Error("Readiness probe failed", { cause }),
+      makeError: ({ cause }) =>
+        new ReadinessProbeFailedError({ message: "Readiness probe failed", cause }),
     }).pipe(
       Effect.provideService(HttpClient.HttpClient, client),
       Effect.forkChild({ startImmediately: true }),
@@ -52,7 +63,8 @@ it.effect("bounds each HTTP readiness probe so retries cannot hang on one reques
           timeoutMs: 1_000,
           intervalMs: 100,
           probeTimeoutMs: 250,
-          makeError: ({ cause }) => new Error("Readiness probe failed", { cause }),
+          makeError: ({ cause }) =>
+            new ReadinessProbeFailedError({ message: "Readiness probe failed", cause }),
         }),
       ),
       { startImmediately: true },

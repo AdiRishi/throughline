@@ -13,6 +13,7 @@ import {
   HttpBody,
   HttpClient,
   HttpClientResponse,
+  HttpMiddleware,
   HttpRouter,
   HttpServerRequest,
   HttpServerResponse,
@@ -20,10 +21,16 @@ import {
 import type * as OtlpTracer from "effect/unstable/observability/OtlpTracer";
 
 import { BearerSessionJson, BootstrapBearerInput, type BearerSession } from "@app/contracts";
+import { isDevProxiedPath } from "@app/shared/devProxy";
 import { decodeOtlpTraceRecords } from "@app/shared/observability";
 
 import * as Auth from "./auth.ts";
 import * as ServerConfig from "./config.ts";
+import {
+  browserApiCorsAllowedHeaders,
+  browserApiCorsAllowedMethods,
+  browserApiCorsMaxAgeSeconds,
+} from "./httpCors.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as Readiness from "./readiness.ts";
 
@@ -54,11 +61,13 @@ export function resolveDevRedirectUrl(devUrl: URL, requestUrl: URL): string {
   return redirectUrl.toString();
 }
 
-/** Paths that must never be redirected/served as SPA navigations. */
+/**
+ * Paths that must never be redirected/served as SPA navigations. Shares the
+ * prefix list with the Vite dev proxy: a bare `startsWith` also swallows
+ * `/apifoo` and `/wsx`, which are ordinary app routes.
+ */
 function isReservedPath(pathname: string): boolean {
-  return (
-    pathname.startsWith("/api") || pathname.startsWith("/ws") || pathname.startsWith("/.well-known")
-  );
+  return isDevProxiedPath(pathname);
 }
 
 /**
@@ -71,12 +80,20 @@ export const corsLayer = Layer.unwrap(
     const devOrigin = config.devWebUrl?.origin;
     return HttpRouter.cors({
       ...(devOrigin ? { allowedOrigins: [devOrigin], credentials: true } : {}),
-      allowedMethods: ["GET", "POST", "OPTIONS"],
-      allowedHeaders: ["Authorization", "Content-Type"],
-      maxAge: 600,
+      allowedMethods: [...browserApiCorsAllowedMethods],
+      allowedHeaders: [...browserApiCorsAllowedHeaders],
+      maxAge: browserApiCorsMaxAgeSeconds,
     });
   }),
 );
+
+/**
+ * Global response compression. The SPA's JS/CSS bundles and every JSON response
+ * go through this router, so leaving it off ships every byte uncompressed.
+ */
+export const httpCompressionLayer = HttpRouter.middleware(HttpMiddleware.compression(), {
+  global: true,
+});
 
 /** `GET /.well-known/app/health` — no auth. 200 `ok` once the gate is open, else 503. */
 export const healthRouteLayer = HttpRouter.add(
@@ -110,8 +127,8 @@ export const authBootstrapRouteLayer = HttpRouter.add(
     }
 
     const session: BearerSession = {
-      access_token: minted.value,
-      expires_at: null,
+      access_token: minted.value.token,
+      expires_at: minted.value.expiresAt,
     };
     // Encoding a value we just constructed can only fail on a schema bug — die.
     return yield* respondBearerSession(session).pipe(Effect.orDie);
@@ -147,6 +164,21 @@ export const otlpTracesRouteLayer = HttpRouter.add(
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const config = yield* ServerConfig.ServerConfig;
+    const auth = yield* Auth.BearerSessionStore;
+
+    // Same bearer gate as the `/ws` upgrade. Without it anything that can reach
+    // the port can push arbitrary records into the trace file — forcing the
+    // rotation that evicts real diagnostics — and make the server POST
+    // attacker-chosen JSON at the configured OTLP endpoint.
+    const token = Auth.extractBearer(request);
+    if (Option.isNone(token)) {
+      return HttpServerResponse.text("Unauthorized", { status: 401 });
+    }
+    const valid = yield* auth.authenticateBearer(token.value);
+    if (!valid) {
+      return HttpServerResponse.text("Unauthorized", { status: 401 });
+    }
+
     const collector = yield* BrowserTraceCollector.BrowserTraceCollector;
     const httpClient = yield* HttpClient.HttpClient;
     // OTLP payloads are validated by `decodeOtlpTraceRecords` below, not by the
