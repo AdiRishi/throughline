@@ -14,7 +14,7 @@ const BOOTSTRAP_TIMEOUT = Duration.seconds(10);
  * tell an auth rejection (401/403 — retrying is pointless) apart from a
  * network or timeout failure (retrying may succeed).
  */
-export class BearerBootstrapError extends Schema.TaggedErrorClass<BearerBootstrapError>()(
+export class BearerBootstrapError extends Schema.TaggedError<BearerBootstrapError>()(
   "BearerBootstrapError",
   {
     detail: Schema.String,

@@ -26,7 +26,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Scope from "effect/Scope";
 import * as Tracer from "effect/Tracer";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
+import { OtlpExporter, OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 
 import { isElectron, resolveConnectionTarget } from "../env.ts";
 
@@ -46,6 +46,7 @@ const CLIENT_TRACING_RESOURCE = {
 // which would otherwise feed themselves forever.
 const delegateRuntimeLayer = Layer.mergeAll(
   FetchHttpClient.layer,
+  OtlpExporter.layerFlusher,
   OtlpSerialization.layerJson,
   Layer.succeed(HttpClient.TracerDisabledWhen, () => true),
 );

@@ -45,7 +45,7 @@ const encodeBootstrapEnvelopeJson = Schema.encodeEffect(
   Schema.fromJsonString(ServerBootstrapEnvelope),
 );
 
-export class DesktopBackendReadinessError extends Schema.TaggedErrorClass<DesktopBackendReadinessError>()(
+export class DesktopBackendReadinessError extends Schema.TaggedError<DesktopBackendReadinessError>()(
   "DesktopBackendReadinessError",
   {
     url: Schema.String,
@@ -56,7 +56,7 @@ export class DesktopBackendReadinessError extends Schema.TaggedErrorClass<Deskto
   }
 }
 
-export class DesktopBackendBootstrapEncodeError extends Schema.TaggedErrorClass<DesktopBackendBootstrapEncodeError>()(
+export class DesktopBackendBootstrapEncodeError extends Schema.TaggedError<DesktopBackendBootstrapEncodeError>()(
   "DesktopBackendBootstrapEncodeError",
   {
     cause: Schema.Defect(),
@@ -67,7 +67,7 @@ export class DesktopBackendBootstrapEncodeError extends Schema.TaggedErrorClass<
   }
 }
 
-class BackendProcessSpawnError extends Schema.TaggedErrorClass<BackendProcessSpawnError>()(
+class BackendProcessSpawnError extends Schema.TaggedError<BackendProcessSpawnError>()(
   "BackendProcessSpawnError",
   {
     executablePath: Schema.String,

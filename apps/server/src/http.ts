@@ -118,7 +118,7 @@ export const authBootstrapRouteLayer = HttpRouter.add(
   }),
 );
 
-class DecodeOtlpTraceRecordsError extends Schema.TaggedErrorClass<DecodeOtlpTraceRecordsError>()(
+class DecodeOtlpTraceRecordsError extends Schema.TaggedError<DecodeOtlpTraceRecordsError>()(
   "DecodeOtlpTraceRecordsError",
   {
     cause: Schema.Defect(),

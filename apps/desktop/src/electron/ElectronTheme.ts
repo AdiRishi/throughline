@@ -6,7 +6,7 @@ import * as Electron from "electron";
 
 import { DesktopTheme } from "@app/contracts";
 
-export class ElectronThemeSetSourceError extends Schema.TaggedErrorClass<ElectronThemeSetSourceError>()(
+export class ElectronThemeSetSourceError extends Schema.TaggedError<ElectronThemeSetSourceError>()(
   "ElectronThemeSetSourceError",
   {
     source: DesktopTheme,

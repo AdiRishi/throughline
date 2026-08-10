@@ -19,7 +19,7 @@ export const Note = Schema.Struct({
 });
 export type Note = typeof Note.Type;
 
-export class NoteNotFoundError extends Schema.TaggedErrorClass<NoteNotFoundError>()(
+export class NoteNotFoundError extends Schema.TaggedError<NoteNotFoundError>()(
   "NoteNotFoundError",
   {
     id: NoteId,

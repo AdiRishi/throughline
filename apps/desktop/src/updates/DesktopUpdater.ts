@@ -28,7 +28,7 @@ const { logInfo } = makeComponentLogger("desktop-updater");
 
 type DesktopUpdateAction = "check" | "download" | "install";
 
-export class DesktopUpdateActionInProgressError extends Schema.TaggedErrorClass<DesktopUpdateActionInProgressError>()(
+export class DesktopUpdateActionInProgressError extends Schema.TaggedError<DesktopUpdateActionInProgressError>()(
   "DesktopUpdateActionInProgressError",
   {
     action: Schema.Literals(["check", "download", "install"]),

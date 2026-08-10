@@ -68,19 +68,16 @@ export function createNotesAtoms<R, E>(runtime: Atom.AtomRuntime<ConnectionSuper
     rpcSubscribe("notes.subscribe", {}).pipe(Stream.scan(INITIAL_NOTES_VIEW, applyNotesEvent)),
   );
 
-  const viewAtom = Atom.make(
-    (get): NotesView =>
-      Option.getOrElse(AsyncResult.value(get(viewResultAtom)), () => INITIAL_NOTES_VIEW),
+  const viewAtom = Atom.make((get): NotesView =>
+    Option.getOrElse(AsyncResult.value(get(viewResultAtom)), () => INITIAL_NOTES_VIEW),
   ).pipe(Atom.withLabel("notes-view"));
 
   /** Newest first, so a note added in another window appears at the top. */
-  const notesAtom = Atom.make(
-    (get): ReadonlyArray<NoteView> =>
-      [...get(viewAtom).entries.values()].toSorted(
-        (left, right) =>
-          DateTime.toEpochMillis(right.note.createdAt) -
-          DateTime.toEpochMillis(left.note.createdAt),
-      ),
+  const notesAtom = Atom.make((get): ReadonlyArray<NoteView> =>
+    [...get(viewAtom).entries.values()].toSorted(
+      (left, right) =>
+        DateTime.toEpochMillis(right.note.createdAt) - DateTime.toEpochMillis(left.note.createdAt),
+    ),
   ).pipe(Atom.withLabel("notes"));
 
   const createNoteAtom = runtime.fn((text: string) => rpcRequest("notes.create", { text }));

@@ -13,7 +13,7 @@ export type ConnectionBlockedReason = typeof ConnectionBlockedReason.Type;
  * failed open, or a network blip all collapse to this; the supervisor treats it
  * as "retry after backoff".
  */
-export class ConnectionTransientError extends Schema.TaggedErrorClass<ConnectionTransientError>()(
+export class ConnectionTransientError extends Schema.TaggedError<ConnectionTransientError>()(
   "ConnectionTransientError",
   {
     detail: Schema.String,
@@ -30,7 +30,7 @@ export class ConnectionTransientError extends Schema.TaggedErrorClass<Connection
  * `blocked` until something outside the loop (changed credentials, an explicit
  * retry) requests another attempt.
  */
-export class ConnectionBlockedError extends Schema.TaggedErrorClass<ConnectionBlockedError>()(
+export class ConnectionBlockedError extends Schema.TaggedError<ConnectionBlockedError>()(
   "ConnectionBlockedError",
   {
     reason: ConnectionBlockedReason,

@@ -7,7 +7,7 @@ import * as Electron from "electron";
 
 // ── Tier-1 Electron wrapper ──
 // Every raw `Electron.app` call is wrapped in `Effect.try`/`Effect.tryPromise`
-// producing a `Schema.TaggedErrorClass`. `Desktop*` services depend on this
+// producing a `Schema.TaggedError`. `Desktop*` services depend on this
 // wrapper and never touch `electron` directly, which is what keeps the shell's
 // logic testable.
 
@@ -18,7 +18,7 @@ export interface ElectronAppMetadata {
   readonly resourcesPath: string;
 }
 
-export class ElectronAppMetadataReadError extends Schema.TaggedErrorClass<ElectronAppMetadataReadError>()(
+export class ElectronAppMetadataReadError extends Schema.TaggedError<ElectronAppMetadataReadError>()(
   "ElectronAppMetadataReadError",
   {
     property: Schema.Literals(["app-version", "app-path"]),
@@ -30,7 +30,7 @@ export class ElectronAppMetadataReadError extends Schema.TaggedErrorClass<Electr
   }
 }
 
-export class ElectronAppWhenReadyError extends Schema.TaggedErrorClass<ElectronAppWhenReadyError>()(
+export class ElectronAppWhenReadyError extends Schema.TaggedError<ElectronAppWhenReadyError>()(
   "ElectronAppWhenReadyError",
   {
     isPackaged: Schema.Boolean,

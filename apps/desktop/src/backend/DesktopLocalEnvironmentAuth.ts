@@ -18,7 +18,7 @@ import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 // is cached for the process lifetime; a `Semaphore(1)` collapses concurrent
 // first calls into one request.
 
-export class DesktopLocalEnvironmentAuthBackendNotReadyError extends Schema.TaggedErrorClass<DesktopLocalEnvironmentAuthBackendNotReadyError>()(
+export class DesktopLocalEnvironmentAuthBackendNotReadyError extends Schema.TaggedError<DesktopLocalEnvironmentAuthBackendNotReadyError>()(
   "DesktopLocalEnvironmentAuthBackendNotReadyError",
   {},
 ) {
@@ -27,7 +27,7 @@ export class DesktopLocalEnvironmentAuthBackendNotReadyError extends Schema.Tagg
   }
 }
 
-export class DesktopLocalEnvironmentAuthSessionBootstrapError extends Schema.TaggedErrorClass<DesktopLocalEnvironmentAuthSessionBootstrapError>()(
+export class DesktopLocalEnvironmentAuthSessionBootstrapError extends Schema.TaggedError<DesktopLocalEnvironmentAuthSessionBootstrapError>()(
   "DesktopLocalEnvironmentAuthSessionBootstrapError",
   { cause: Schema.Defect() },
 ) {

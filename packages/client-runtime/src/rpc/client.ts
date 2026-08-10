@@ -10,7 +10,7 @@ import { ConnectionSupervisor } from "../connection/supervisor.ts";
 import type { WsRpcProtocolClient } from "./protocol.ts";
 
 /** Raised when a request is issued while no socket is live. */
-export class RpcUnavailableError extends Schema.TaggedErrorClass<RpcUnavailableError>()(
+export class RpcUnavailableError extends Schema.TaggedError<RpcUnavailableError>()(
   "RpcUnavailableError",
   {
     method: Schema.String,

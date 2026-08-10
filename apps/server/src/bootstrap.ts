@@ -29,7 +29,7 @@ import { HostProcessPlatform } from "@app/shared/hostProcess";
 export const BootstrapEnvelope = ServerBootstrapEnvelope;
 export type BootstrapEnvelope = ServerBootstrapEnvelopeValue;
 
-export class BootstrapFdStatError extends Schema.TaggedErrorClass<BootstrapFdStatError>()(
+export class BootstrapFdStatError extends Schema.TaggedError<BootstrapFdStatError>()(
   "BootstrapFdStatError",
   {
     fd: Schema.Number,
@@ -41,7 +41,7 @@ export class BootstrapFdStatError extends Schema.TaggedErrorClass<BootstrapFdSta
   }
 }
 
-export class BootstrapInputStreamOpenError extends Schema.TaggedErrorClass<BootstrapInputStreamOpenError>()(
+export class BootstrapInputStreamOpenError extends Schema.TaggedError<BootstrapInputStreamOpenError>()(
   "BootstrapInputStreamOpenError",
   {
     fd: Schema.Number,
@@ -56,7 +56,7 @@ export class BootstrapInputStreamOpenError extends Schema.TaggedErrorClass<Boots
   }
 }
 
-export class BootstrapEnvelopeReadError extends Schema.TaggedErrorClass<BootstrapEnvelopeReadError>()(
+export class BootstrapEnvelopeReadError extends Schema.TaggedError<BootstrapEnvelopeReadError>()(
   "BootstrapEnvelopeReadError",
   {
     fd: Schema.Number,
@@ -68,7 +68,7 @@ export class BootstrapEnvelopeReadError extends Schema.TaggedErrorClass<Bootstra
   }
 }
 
-export class BootstrapEnvelopeDecodeError extends Schema.TaggedErrorClass<BootstrapEnvelopeDecodeError>()(
+export class BootstrapEnvelopeDecodeError extends Schema.TaggedError<BootstrapEnvelopeDecodeError>()(
   "BootstrapEnvelopeDecodeError",
   {
     fd: Schema.Number,

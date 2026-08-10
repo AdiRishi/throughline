@@ -92,9 +92,9 @@ const RpcRequest = Schema.TaggedStruct("Request", {
   payload: Schema.Unknown,
   tag: Schema.String,
 });
-const decodeJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const decodeRpcRequest = Schema.decodeUnknownSync(RpcRequest);
-const encodeJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeServerConfig = Schema.encodeSync(ServerConfig);
 
 /** Collects every socket the session constructs so tests can drive them. */

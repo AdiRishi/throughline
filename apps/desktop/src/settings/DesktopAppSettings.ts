@@ -48,7 +48,7 @@ const settingsChange = (settings: DesktopSettings, changed: boolean): DesktopSet
   changed,
 });
 
-export class DesktopSettingsWriteError extends Schema.TaggedErrorClass<DesktopSettingsWriteError>()(
+export class DesktopSettingsWriteError extends Schema.TaggedError<DesktopSettingsWriteError>()(
   "DesktopSettingsWriteError",
   {
     path: Schema.String,

@@ -8,7 +8,7 @@ import { TrimmedNonEmptyString } from "./baseSchemas.ts";
  * fails with this. Keeping one shared error keeps the RPC group's error
  * unions small and uniform.
  */
-export class EnvironmentAuthorizationError extends Schema.TaggedErrorClass<EnvironmentAuthorizationError>()(
+export class EnvironmentAuthorizationError extends Schema.TaggedError<EnvironmentAuthorizationError>()(
   "EnvironmentAuthorizationError",
   {
     reason: Schema.Literals(["missing-credential", "invalid-credential", "expired"]),

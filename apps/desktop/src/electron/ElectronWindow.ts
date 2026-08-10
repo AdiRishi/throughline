@@ -38,7 +38,7 @@ const ElectronWindowOperation = Schema.Literals([
   "set-open-handler",
 ]);
 
-export class ElectronWindowCreateError extends Schema.TaggedErrorClass<ElectronWindowCreateError>()(
+export class ElectronWindowCreateError extends Schema.TaggedError<ElectronWindowCreateError>()(
   "ElectronWindowCreateError",
   {
     options: ElectronWindowCreateOptions,
@@ -51,7 +51,7 @@ export class ElectronWindowCreateError extends Schema.TaggedErrorClass<ElectronW
   }
 }
 
-export class ElectronWindowOperationError extends Schema.TaggedErrorClass<ElectronWindowOperationError>()(
+export class ElectronWindowOperationError extends Schema.TaggedError<ElectronWindowOperationError>()(
   "ElectronWindowOperationError",
   {
     operation: ElectronWindowOperation,
@@ -67,7 +67,7 @@ export class ElectronWindowOperationError extends Schema.TaggedErrorClass<Electr
   }
 }
 
-export class ElectronWindowLoadUrlError extends Schema.TaggedErrorClass<ElectronWindowLoadUrlError>()(
+export class ElectronWindowLoadUrlError extends Schema.TaggedError<ElectronWindowLoadUrlError>()(
   "ElectronWindowLoadUrlError",
   {
     url: Schema.String,
