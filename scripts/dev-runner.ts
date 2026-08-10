@@ -4,15 +4,10 @@
 // shared bootstrap token, and launches the server + web (+ optionally the
 // desktop shell) with a consistent environment.
 //
-// The T3 Code original is an Effect CLI program (see the reference repo's
-// scripts/dev-runner.ts). This starter keeps it as a dependency-free Node
-// script so `pnpm dev` works before anything is installed into the workspace.
-//
-// T3 hands supervision to one `vp run --parallel` child, which prefixes output
-// per package and fails the run when that child exits non-zero. There is no
-// `vp` here, so this runner owns those behaviours directly: child stdout/stderr
-// is piped and prefixed with the package label, and any child exiting non-zero
-// tears down its siblings and propagates the exit code.
+// Dependency-free on purpose: `pnpm dev` has to work before anything is
+// installed into the workspace, so there is no task runner to delegate to.
+// That makes this file the only place that can prefix each child's output and
+// tear the session down when one child dies.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeNet from "node:net";

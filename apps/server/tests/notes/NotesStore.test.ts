@@ -14,7 +14,6 @@ import { NoteId, NoteNotFoundError, type NotesStreamEvent } from "@app/contracts
 import * as ServerConfig from "../../src/config.ts";
 import * as NotesStore from "../../src/notes/NotesStore.ts";
 
-/** Hoisted: compiling a schema guard per call is the pattern `app/no-inline-schema-compile` forbids. */
 const isNoteNotFoundError = Schema.is(NoteNotFoundError);
 
 const decodeNoteId = Schema.decodeUnknownSync(NoteId);

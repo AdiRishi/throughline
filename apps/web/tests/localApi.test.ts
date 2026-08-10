@@ -4,7 +4,7 @@ import type { DesktopBridge } from "@app/contracts";
 
 // `env.ts` reads `window` at module load and `localApi.ts` caches its instance,
 // so every scenario installs its own `window` stub and imports a fresh module
-// graph (the reference repo tests its localApi the same way).
+// graph.
 
 type MutableGlobal = { window?: unknown };
 

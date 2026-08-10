@@ -116,9 +116,6 @@ describe("connection atoms", () => {
 
     await vi.waitFor(() => {
       expect(registry.get(atoms.serverConfig)).toBeNull();
-      // `backoff`, not `connecting`: the supervisor is sleeping before the next
-      // attempt. The two are distinct phases so the UI can tell "dialing now"
-      // from "waiting to dial".
       expect(registry.get(atoms.state).phase).toBe("backoff");
     });
 

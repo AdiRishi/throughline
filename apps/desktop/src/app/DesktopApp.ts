@@ -48,8 +48,6 @@ const handleFatalStartupError = Effect.fn("desktop.startup.handleFatalStartupErr
   yield* electronApp.quit;
 });
 
-// Generic in `E` so the caller's error type survives into the failure channel;
-// pinning it to `unknown` erases every startup error into `unknown`.
 const fatalStartupCause = <E>(stage: string, cause: Cause.Cause<E>) =>
   handleFatalStartupError(stage, Cause.pretty(cause)).pipe(Effect.andThen(Effect.failCause(cause)));
 

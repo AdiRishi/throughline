@@ -31,7 +31,6 @@ import * as ServerConfig from "./config.ts";
 
 const TOKEN_BYTES = 32;
 
-/** Matches T3's `DEFAULT_SESSION_TTL`. */
 const SESSION_TTL = Duration.days(30);
 
 const toHex = (bytes: Uint8Array): string =>

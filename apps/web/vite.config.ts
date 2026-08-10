@@ -47,10 +47,7 @@ const unitTestProject = {
 } satisfies TestProjectInlineConfiguration;
 
 // Browser dev proxies the backend through this server so the app works from any
-// origin. Sourced from the shared module so the Vite proxy and the server's
-// dev catch-all cannot drift. Previously duplicated here; see
-// `@app/shared/devProxy`, which the server's dev catch-all 404s: drift is
-// silent and nasty in both directions.
+// origin.
 
 function resolveDevProxyTarget(wsUrl: string | undefined): string | undefined {
   if (!wsUrl) {

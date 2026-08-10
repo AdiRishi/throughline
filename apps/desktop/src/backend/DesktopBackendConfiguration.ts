@@ -88,8 +88,7 @@ export const make = Effect.gen(function* () {
         const httpBaseUrl = new URL(`http://127.0.0.1:${input.port}`);
         // In the Electron main process this is the Electron binary.
         // `ELECTRON_RUN_AS_NODE=1` makes it behave as plain Node so the
-        // spawned server doesn't become a second GUI app instance. Injected
-        // rather than read off the `process` global so tests can override it.
+        // spawned server doesn't become a second GUI app instance.
         const executablePath = yield* HostProcessExecutablePath;
         return {
           executablePath,
