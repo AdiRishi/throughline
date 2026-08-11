@@ -16,7 +16,7 @@ import * as Layer from "effect/Layer";
 import { FetchHttpClient } from "effect/unstable/http";
 import * as Electron from "electron";
 
-import { HostProcessPlatform } from "@app/shared/hostProcess";
+import { HostProcessArchitecture, HostProcessPlatform } from "@app/shared/hostProcess";
 import * as NetService from "@app/shared/Net";
 
 import * as DesktopApp from "./app/DesktopApp.ts";
@@ -47,6 +47,7 @@ const desktopEnvironmentLayer = Layer.unwrap(
       Effect.flatMap((app) => app.metadata),
     );
     const platform = yield* HostProcessPlatform;
+    const processArch = yield* HostProcessArchitecture;
     return DesktopEnvironment.layer({
       dirname: __dirname,
       homeDirectory: NodeOS.homedir(),
@@ -55,6 +56,8 @@ const desktopEnvironmentLayer = Layer.unwrap(
       appPath: metadata.appPath,
       isPackaged: metadata.isPackaged,
       resourcesPath: metadata.resourcesPath,
+      processArch,
+      runningUnderArm64Translation: metadata.runningUnderArm64Translation,
     });
   }),
 ).pipe(Layer.provide(ElectronApp.layer));
@@ -84,12 +87,16 @@ const desktopBackendLayer = DesktopBackendManager.layer.pipe(
   Layer.provideMerge(desktopWindowLayer),
 );
 
+// The application menu's "Check for Updates…" entry drives the updater, so the
+// updater has to be built before it — `Layer.mergeAll` builds in parallel and
+// would not satisfy that dependency.
+const desktopUpdaterLayer = DesktopUpdater.layer.pipe(Layer.provideMerge(desktopBackendLayer));
+
 const desktopApplicationLayer = Layer.mergeAll(
   DesktopLifecycle.layer,
-  DesktopUpdater.layer,
   DesktopApplicationMenu.layer,
   DesktopLocalEnvironmentAuth.layer,
-).pipe(Layer.provideMerge(desktopBackendLayer));
+).pipe(Layer.provideMerge(desktopUpdaterLayer));
 
 // The HttpClient is Electron's global `fetch` rather than the undici-based Node
 // client: bundling undici into the CJS main crashes Electron at load

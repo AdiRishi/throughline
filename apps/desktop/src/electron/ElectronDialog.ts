@@ -17,7 +17,8 @@ export class ElectronDialogPickFolderError extends Schema.TaggedError<ElectronDi
 ) {
   override get message(): string {
     const owner = this.ownerWindowId === null ? "the application" : `window ${this.ownerWindowId}`;
-    return `Failed to open the Electron folder picker for ${owner}.`;
+    const defaultPath = this.defaultPath ?? "no default path";
+    return `Failed to open the Electron folder picker for ${owner} with ${defaultPath}.`;
   }
 }
 
@@ -32,6 +33,23 @@ export class ElectronDialogConfirmError extends Schema.TaggedError<ElectronDialo
   override get message(): string {
     const owner = this.ownerWindowId === null ? "the application" : `window ${this.ownerWindowId}`;
     return `Failed to open an Electron confirmation dialog for ${owner}.`;
+  }
+}
+
+export class ElectronDialogShowMessageBoxError extends Schema.TaggedError<ElectronDialogShowMessageBoxError>()(
+  "ElectronDialogShowMessageBoxError",
+  {
+    type: Schema.NullOr(Schema.Literals(["none", "info", "error", "question", "warning"])),
+    titleLength: Schema.NullOr(Schema.Number),
+    messageLength: Schema.Number,
+    detailLength: Schema.NullOr(Schema.Number),
+    buttonCount: Schema.Number,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    const type = this.type === null ? "untyped" : this.type;
+    return `Failed to show the Electron ${type} message box with ${this.buttonCount} buttons.`;
   }
 }
 
@@ -68,6 +86,15 @@ export class ElectronDialog extends Context.Service<
     readonly confirm: (
       input: ElectronDialogConfirmInput,
     ) => Effect.Effect<boolean, ElectronDialogConfirmError>;
+    /**
+     * The general message-box primitive. `confirm` is the narrow two-button
+     * case; anything that needs a title, detail text or a non-question type
+     * (the update flows) goes through here.
+     */
+    readonly showMessageBox: (
+      options: Electron.MessageBoxOptions,
+      owner?: Option.Option<Electron.BrowserWindow>,
+    ) => Effect.Effect<Electron.MessageBoxReturnValue, ElectronDialogShowMessageBoxError>;
     readonly showErrorBox: (title: string, content: string) => Effect.Effect<void>;
   }
 >()("@app/desktop/electron/ElectronDialog") {}
@@ -138,6 +165,23 @@ export const make = ElectronDialog.of({
     });
     return result.response === CONFIRM_BUTTON_INDEX;
   }),
+  showMessageBox: (options, owner = Option.none()) =>
+    Effect.tryPromise({
+      try: () =>
+        Option.match(owner, {
+          onNone: () => Electron.dialog.showMessageBox(options),
+          onSome: (ownerWindow) => Electron.dialog.showMessageBox(ownerWindow, options),
+        }),
+      catch: (cause) =>
+        new ElectronDialogShowMessageBoxError({
+          type: options.type ?? null,
+          titleLength: options.title?.length ?? null,
+          messageLength: options.message.length,
+          detailLength: options.detail?.length ?? null,
+          buttonCount: options.buttons?.length ?? 0,
+          cause,
+        }),
+    }),
   showErrorBox: (title, content) =>
     Effect.try({
       try: () => Electron.dialog.showErrorBox(title, content),

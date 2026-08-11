@@ -22,6 +22,10 @@ const defaultInput = {
   otlpExportIntervalMs: Option.none(),
   configuredBackendPort: Option.none(),
   devServerUrl: Option.none(),
+  processArch: "arm64",
+  runningUnderArm64Translation: false,
+  appImagePath: Option.none(),
+  disableAutoUpdate: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
 const DEV_SERVER_URL = Option.some(new URL("http://localhost:5173"));

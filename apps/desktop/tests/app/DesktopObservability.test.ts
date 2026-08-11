@@ -40,6 +40,10 @@ const environmentLayer = (input: { readonly logDir: string; readonly isDevelopme
           devServerUrl: input.isDevelopment
             ? Option.some(new URL("http://127.0.0.1:5173"))
             : Option.none(),
+          processArch: "arm64",
+          runningUnderArm64Translation: false,
+          appImagePath: Option.none(),
+          disableAutoUpdate: false,
         },
         path,
       ),
