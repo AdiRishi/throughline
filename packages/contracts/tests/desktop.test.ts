@@ -33,6 +33,9 @@ const updateState = {
   status: "idle",
   channel: "latest",
   currentVersion: "1.0.0",
+  hostArch: "arm64",
+  appArch: "arm64",
+  runningUnderArm64Translation: false,
   availableVersion: null,
   downloadedVersion: null,
   downloadPercent: null,
@@ -49,6 +52,24 @@ describe("DesktopUpdateState", () => {
 
   it("rejects an unknown error context", () => {
     assert.throws(() => decodeUpdateState({ ...updateState, errorContext: "poll" }));
+  });
+
+  it("rejects an unknown architecture", () => {
+    assert.throws(() => decodeUpdateState({ ...updateState, hostArch: "riscv" }));
+  });
+
+  // The updater keys its differential-download guard off these, so an x64 build
+  // on an arm64 host has to survive the round trip intact.
+  it("carries a Rosetta runtime through decoding", () => {
+    const decoded = decodeUpdateState({
+      ...updateState,
+      hostArch: "arm64",
+      appArch: "x64",
+      runningUnderArm64Translation: true,
+    });
+    assert.strictEqual(decoded.hostArch, "arm64");
+    assert.strictEqual(decoded.appArch, "x64");
+    assert.isTrue(decoded.runningUnderArm64Translation);
   });
 
   it("accepts a fractional download percent alongside the populated version fields", () => {

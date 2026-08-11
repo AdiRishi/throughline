@@ -8,6 +8,26 @@ export type DesktopTheme = typeof DesktopTheme.Type;
 export const DesktopUpdateChannel = Schema.Literals(["latest", "nightly"]);
 export type DesktopUpdateChannel = typeof DesktopUpdateChannel.Type;
 
+/**
+ * Coarse CPU architecture. `other` exists because the shell only ever needs to
+ * distinguish the two architectures an update package can target; everything
+ * else is a value it must carry without interpreting.
+ */
+export const DesktopRuntimeArch = Schema.Literals(["arm64", "x64", "other"]);
+export type DesktopRuntimeArch = typeof DesktopRuntimeArch.Type;
+
+/**
+ * What the app is running *as* versus what the machine *is*. An x64 build on an
+ * arm64 host (Rosetta) is a real, common state, and it changes how updates must
+ * be fetched — see `setDisableDifferentialDownload` in the updater.
+ */
+export const DesktopRuntimeInfo = Schema.Struct({
+  hostArch: DesktopRuntimeArch,
+  appArch: DesktopRuntimeArch,
+  runningUnderArm64Translation: Schema.Boolean,
+});
+export type DesktopRuntimeInfo = typeof DesktopRuntimeInfo.Type;
+
 export const DesktopUpdateStatus = Schema.Literals([
   "disabled",
   "idle",
@@ -25,6 +45,9 @@ export const DesktopUpdateState = Schema.Struct({
   status: DesktopUpdateStatus,
   channel: DesktopUpdateChannel,
   currentVersion: Schema.String,
+  hostArch: DesktopRuntimeArch,
+  appArch: DesktopRuntimeArch,
+  runningUnderArm64Translation: Schema.Boolean,
   availableVersion: Schema.NullOr(Schema.String),
   downloadedVersion: Schema.NullOr(Schema.String),
   downloadPercent: Schema.NullOr(Schema.Number),
@@ -34,6 +57,27 @@ export const DesktopUpdateState = Schema.Struct({
   canRetry: Schema.Boolean,
 });
 export type DesktopUpdateState = typeof DesktopUpdateState.Type;
+
+/**
+ * The answer to "did that do anything?". `accepted` is false when the shell
+ * refused the request outright (wrong status, already in flight, updater not
+ * configured); `completed` is false when it was accepted but did not finish —
+ * install in particular never completes in-process, because a successful
+ * install quits the app. Without these a caller cannot tell a refusal from a
+ * success, and every button becomes a guess.
+ */
+export const DesktopUpdateActionResult = Schema.Struct({
+  accepted: Schema.Boolean,
+  completed: Schema.Boolean,
+  state: DesktopUpdateState,
+});
+export type DesktopUpdateActionResult = typeof DesktopUpdateActionResult.Type;
+
+export const DesktopUpdateCheckResult = Schema.Struct({
+  checked: Schema.Boolean,
+  state: DesktopUpdateState,
+});
+export type DesktopUpdateCheckResult = typeof DesktopUpdateCheckResult.Type;
 
 export const DesktopAppInfo = Schema.Struct({
   name: TrimmedNonEmptyString,
