@@ -8,12 +8,18 @@ const nodeBuiltinIds = new Set([
   ...NodeModule.builtinModules,
   ...NodeModule.builtinModules.map((moduleName) => `node:${moduleName}`),
 ]);
+const appVersion =
+  process.env.APP_VERSION?.trim() ||
+  (NodeModule.createRequire(import.meta.url)("./package.json") as { version: string }).version;
 
 function isExternalCliDependency(id: string): boolean {
   return nodeBuiltinIds.has(id);
 }
 
 export default defineConfig({
+  define: {
+    "process.env.APP_VERSION": JSON.stringify(appVersion),
+  },
   ssr: {
     noExternal: true,
   },

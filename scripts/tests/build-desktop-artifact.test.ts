@@ -1,11 +1,84 @@
+// @effect-diagnostics nodeBuiltinImport:off - Tests standalone Node path resolution.
+import * as NodePath from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   readWorkspaceAllowBuilds,
+  resolveDesktopArtifactOptions,
   resolveGenericPublishConfig,
   resolveGitHubPublishConfig,
   resolveUpdateChannel,
 } from "../build-desktop-artifact.ts";
+
+describe("resolveDesktopArtifactOptions", () => {
+  it("defaults to the host platform, architecture, and desktop package version", () => {
+    const options = resolveDesktopArtifactOptions({
+      argv: [],
+      env: {},
+      hostPlatform: "darwin",
+      hostArch: "arm64",
+      desktopVersion: "1.2.3",
+    });
+
+    expect(options).toMatchObject({
+      platform: "mac",
+      target: "dmg",
+      arch: "arm64",
+      version: "1.2.3",
+      skipBuild: false,
+      keepStage: false,
+      signed: false,
+    });
+    expect(options.outputDir).toMatch(/release\/dist$/u);
+  });
+
+  it("honours explicit release inputs", () => {
+    expect(
+      resolveDesktopArtifactOptions({
+        argv: [
+          "--platform",
+          "mac",
+          "--target=zip",
+          "--arch",
+          "universal",
+          "--build-version",
+          "2.0.0-nightly.4",
+          "--output-dir",
+          "/tmp/throughline-artifacts",
+          "--skip-build",
+          "--keep-stage",
+          "--signed",
+        ],
+        env: {},
+        hostPlatform: "darwin",
+        hostArch: "arm64",
+        desktopVersion: "1.2.3",
+      }),
+    ).toEqual({
+      platform: "mac",
+      target: "zip",
+      arch: "universal",
+      version: "2.0.0-nightly.4",
+      outputDir: NodePath.resolve("/tmp/throughline-artifacts"),
+      skipBuild: true,
+      keepStage: true,
+      signed: true,
+    });
+  });
+
+  it("rejects platform and architecture combinations electron-builder cannot produce", () => {
+    expect(() =>
+      resolveDesktopArtifactOptions({
+        argv: ["--platform", "win", "--arch", "universal"],
+        env: {},
+        hostPlatform: "darwin",
+        hostArch: "arm64",
+        desktopVersion: "1.2.3",
+      }),
+    ).toThrow("Unsupported architecture 'universal' for win");
+  });
+});
 
 // The helpers read the ambient environment, so every case pins all of the
 // variables it depends on — a CI runner exports GITHUB_REPOSITORY itself.

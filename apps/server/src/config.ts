@@ -30,8 +30,8 @@ export const DEFAULT_TRACE_MAX_FILES = 10;
 export const DEFAULT_TRACE_BATCH_WINDOW_MS = 1_000;
 export const DEFAULT_OTLP_EXPORT_INTERVAL_MS = 10_000;
 export const DEFAULT_OTLP_SERVICE_NAME = "throughline-server";
-/** Single-sourced from package.json so `--version` can't drift from the manifest. */
-export const APP_VERSION: string = packageJson.version;
+/** Overridden only while producing a versioned desktop artifact. */
+export const APP_VERSION: string = process.env.APP_VERSION?.trim() || packageJson.version;
 
 /**
  * ServerConfig - service tag for the resolved server runtime configuration.
