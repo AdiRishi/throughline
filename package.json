@@ -8,12 +8,12 @@
     "dev:server": "node scripts/dev-runner.ts dev:server",
     "dev:web": "node scripts/dev-runner.ts dev:web",
     "dev:desktop": "node scripts/dev-runner.ts dev:desktop",
-    "build": "pnpm -r --if-present --filter './apps/*' --filter './packages/*' build",
-    "build:desktop": "pnpm --filter @app/web build && pnpm --filter @app/server build && pnpm --filter @app/desktop build",
+    "build": "turbo run build --filter='./apps/*' --filter='./packages/*'",
+    "build:desktop": "turbo run build --filter=@app/web --filter=@app/server --filter=@app/desktop",
     "start:desktop": "pnpm --filter @app/desktop start",
-    "typecheck": "pnpm -r --if-present --workspace-concurrency=2 typecheck",
+    "typecheck": "turbo run typecheck --concurrency=2",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check",
-    "test": "pnpm -r --if-present test",
+    "test": "turbo run test",
     "lint": "oxlint --disable-nested-config --report-unused-disable-directives --max-warnings=0",
     "lint:fix": "oxlint --fix --disable-nested-config --report-unused-disable-directives --max-warnings=0",
     "format": "oxfmt",
@@ -21,7 +21,7 @@
     "dist:desktop": "node scripts/build-desktop-artifact.ts",
     "rename": "node scripts/rename-project.ts",
     "sync:repos": "node scripts/sync-reference-repos.ts",
-    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules apps/*/dist apps/*/dist-electron packages/*/dist"
+    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules apps/*/dist apps/*/dist-electron packages/*/dist .turbo"
   },
   "devDependencies": {
     "@effect/language-service": "catalog:",
@@ -29,6 +29,7 @@
     "@types/node": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
+    "turbo": "2.10.9",
     "typescript": "catalog:"
   },
   "engines": {

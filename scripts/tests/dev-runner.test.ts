@@ -14,8 +14,6 @@ import {
   BASE_SERVER_PORT,
   BASE_WEB_PORT,
   createDevEnv,
-  createLinePrefixer,
-  formatLabel,
   isBrowserAllowedPort,
   isDevRunnerError,
   isMode,
@@ -25,8 +23,8 @@ import {
   parsePortOverride,
   PORT_OFFSET_RANGE,
   repoPortOffset,
-  sessionExitCode,
-  spawnChild,
+  runTurbo,
+  turboArgsForMode,
 } from "../dev-runner.ts";
 
 const DEV_RUNNER = NodePath.join(
@@ -136,6 +134,8 @@ describe("parsePortOverride", () => {
 
   it("returns undefined for values the children would parse differently", () => {
     expect(parsePortOverride("abc")).toBeUndefined();
+    expect(parsePortOverride("13773junk")).toBeUndefined();
+    expect(parsePortOverride("13773.9")).toBeUndefined();
     expect(parsePortOverride("")).toBeUndefined();
     expect(parsePortOverride("0")).toBeUndefined();
     expect(parsePortOverride("-1")).toBeUndefined();
@@ -201,123 +201,50 @@ describe("createDevEnv", () => {
 
   it("never leaks the bootstrap token to the shell, which reads it from the server", () => {
     expect(env.desktopEnv["APP_BOOTSTRAP_TOKEN"]).toBeUndefined();
+    expect(desktopEnvResult.turboEnv["APP_BOOTSTRAP_TOKEN"]).toBeUndefined();
+    expect(desktopEnvResult.turboEnv["VITE_BOOTSTRAP_TOKEN"]).toBeUndefined();
   });
 });
 
-describe("formatLabel", () => {
-  it("is a plain bracketed label when the stream is not a TTY", () => {
-    expect(formatLabel("web", 0, false)).toBe("[web] ");
-    expect(formatLabel("web", 5, false)).toBe("[web] ");
+describe("turboArgsForMode", () => {
+  it("uses the browser dev tasks for the default session", () => {
+    expect(turboArgsForMode("dev")).toEqual([
+      "run",
+      "dev",
+      "--filter=@app/server",
+      "--filter=@app/web",
+    ]);
+  });
+
+  it("runs the bundle watchers and Electron supervisor for desktop development", () => {
+    expect(turboArgsForMode("dev:desktop")).toEqual([
+      "run",
+      "dev:bundle",
+      "dev:desktop",
+      "--filter=@app/server",
+      "--filter=@app/web",
+      "--filter=@app/desktop",
+    ]);
   });
 });
 
-describe("createLinePrefixer", () => {
-  const collect = (): { lines: Array<string>; write: (line: string) => void } => {
-    const lines: Array<string> = [];
-    return { lines, write: (line) => lines.push(line) };
-  };
+describe("runTurbo", () => {
+  const repoRoot = NodePath.resolve(
+    NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
+    "../..",
+  );
 
-  it("prefixes each complete line", () => {
-    const sink = collect();
-    const prefixer = createLinePrefixer("[web] ", sink.write);
-    prefixer.push("one\ntwo\n");
-    expect(sink.lines).toEqual(["[web] one\n", "[web] two\n"]);
-  });
-
-  it("buffers a partial line until its newline arrives", () => {
-    const sink = collect();
-    const prefixer = createLinePrefixer("[web] ", sink.write);
-    prefixer.push("ready in ");
-    expect(sink.lines).toEqual([]);
-    prefixer.push("120 ms\n");
-    expect(sink.lines).toEqual(["[web] ready in 120 ms\n"]);
-  });
-
-  it("splits a chunk that carries several lines and a remainder", () => {
-    const sink = collect();
-    const prefixer = createLinePrefixer("[server] ", sink.write);
-    prefixer.push("a\nb\nc");
-    expect(sink.lines).toEqual(["[server] a\n", "[server] b\n"]);
-    prefixer.flush();
-    expect(sink.lines).toEqual(["[server] a\n", "[server] b\n", "[server] c\n"]);
-  });
-
-  it("does not swallow the tail when the child exits mid-line", () => {
-    const sink = collect();
-    const prefixer = createLinePrefixer("[web] ", sink.write);
-    prefixer.push("crashed:");
-    prefixer.flush();
-    expect(sink.lines).toEqual(["[web] crashed:\n"]);
-  });
-
-  it("flushes nothing when the buffer is empty", () => {
-    const sink = collect();
-    const prefixer = createLinePrefixer("[web] ", sink.write);
-    prefixer.push("done\n");
-    prefixer.flush();
-    prefixer.flush();
-    expect(sink.lines).toEqual(["[web] done\n"]);
-  });
-
-  it("keeps a CRLF terminator out of the middle of the line", () => {
-    const sink = collect();
-    const prefixer = createLinePrefixer("[web] ", sink.write);
-    prefixer.push("windows\r\n");
-    expect(sink.lines).toEqual(["[web] windows\n"]);
-  });
-
-  it("preserves blank lines", () => {
-    const sink = collect();
-    const prefixer = createLinePrefixer("[web] ", sink.write);
-    prefixer.push("\n\n");
-    expect(sink.lines).toEqual(["[web] \n", "[web] \n"]);
-  });
-});
-
-describe("sessionExitCode", () => {
-  it("propagates a non-zero child exit so the runner cannot exit 0 on a crash", () => {
-    expect(sessionExitCode(1, null)).toBe(1);
-    expect(sessionExitCode(127, null)).toBe(127);
-  });
-
-  it("stays successful when a child exits cleanly", () => {
-    expect(sessionExitCode(0, null)).toBe(0);
-  });
-
-  it("treats a shutdown signal as the user stopping the run", () => {
-    // Ctrl+C reaches the whole process group, so children see SIGINT before
-    // the runner's own handler gets a turn.
-    expect(sessionExitCode(null, "SIGINT")).toBe(0);
-    expect(sessionExitCode(null, "SIGTERM")).toBe(0);
-    expect(sessionExitCode(null, "SIGHUP")).toBe(0);
-  });
-
-  it("treats any other signal as a failure", () => {
-    expect(sessionExitCode(null, "SIGKILL")).toBe(1);
-    expect(sessionExitCode(null, "SIGSEGV")).toBe(1);
-    expect(sessionExitCode(null, null)).toBe(1);
-  });
-});
-
-describe("spawnChild", () => {
-  const REPO_ROOT = NodePath.dirname(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)));
-  const context = { repoRoot: REPO_ROOT, useColor: false, onWindows: false };
-
-  // A crashing dev process has to reach the shell as a non-zero exit; a session
-  // that reports success after a child died is worse than one that never
-  // started, because CI and `&&` chains both believe it.
-  effectIt.effect("surfaces a non-zero child exit as a typed failure", () =>
+  effectIt.effect("surfaces a failed Turbo task as a typed failure", () =>
     Effect.gen(function* () {
-      const awaitExit = yield* spawnChild(context, {
-        label: "server",
-        filter: "@app/scripts",
-        script: "definitely-not-a-script",
-        env: {},
-        colorIndex: 0,
-      });
-
-      const exit = yield* Effect.exit(awaitExit);
-      assert.isTrue(Exit.isFailure(exit), "a missing script should fail the child");
+      const exit = yield* Effect.exit(
+        runTurbo({
+          repoRoot,
+          args: ["run", "definitely-not-a-task", "--filter=@app/scripts"],
+          env: {},
+          onWindows: false,
+        }),
+      );
+      assert.isTrue(Exit.isFailure(exit), "a missing Turbo task should fail the session");
       const failure = Exit.isFailure(exit)
         ? exit.cause.reasons.find(Cause.isFailReason)?.error
         : undefined;

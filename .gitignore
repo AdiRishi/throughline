@@ -4,6 +4,7 @@ dist-electron/
 *.tsbuildinfo
 *.log
 .logs/
+.turbo/
 .env
 .env.local
 .DS_Store

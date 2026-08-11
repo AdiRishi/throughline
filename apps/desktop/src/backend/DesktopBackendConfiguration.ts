@@ -92,7 +92,14 @@ export const make = Effect.gen(function* () {
         const executablePath = yield* HostProcessExecutablePath;
         return {
           executablePath,
-          args: [environment.backendEntryPath, "start", "--bootstrap-fd", "3"],
+          args: [
+            environment.backendEntryPath,
+            "start",
+            "--bootstrap-fd",
+            "3",
+            "--parent-lifetime-fd",
+            "4",
+          ],
           entryPath: environment.backendEntryPath,
           cwd: environment.backendCwd,
           env: {

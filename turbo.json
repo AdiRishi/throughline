@@ -1,0 +1,54 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "ui": "stream",
+  "cacheDir": ".turbo/cache",
+  "globalPassThroughEnv": [
+    "APP_BOOTSTRAP_TOKEN",
+    "APP_VERSION",
+    "APP_DESKTOP_REMOTE_DEBUGGING_PORT",
+    "APP_DEV_WEB_URL",
+    "APP_LOG_DIR",
+    "APP_LOG_LEVEL",
+    "APP_SERVER_ENTRY",
+    "APP_SERVER_PORT",
+    "APP_SINGLE_ORIGIN_DEV",
+    "APP_WEB_PORT",
+    "ELECTRON_RUN_AS_NODE",
+    "HOST",
+    "PORT",
+    "VITE_BOOTSTRAP_TOKEN",
+    "VITE_WS_URL"
+  ],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", "dist-electron/**"],
+      "env": [
+        "APP_SERVER_PORT",
+        "APP_SINGLE_ORIGIN_DEV",
+        "APP_VERSION",
+        "APP_WEB_SOURCEMAP",
+        "VITE_BOOTSTRAP_TOKEN",
+        "VITE_WS_URL"
+      ]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "dev:bundle": {
+      "cache": false,
+      "persistent": true
+    },
+    "dev:desktop": {
+      "cache": false,
+      "persistent": true
+    },
+    "typecheck": {
+      "outputs": []
+    },
+    "test": {
+      "outputs": []
+    }
+  }
+}

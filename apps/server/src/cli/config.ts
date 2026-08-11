@@ -44,12 +44,17 @@ export const bootstrapFdFlag = Flag.integer("bootstrap-fd").pipe(
   Flag.withDescription("Read the one-time bootstrap envelope from the given file descriptor."),
   Flag.optional,
 );
+export const parentLifetimeFdFlag = Flag.integer("parent-lifetime-fd").pipe(
+  Flag.withDescription("Stop when the parent-owned lifetime file descriptor closes."),
+  Flag.optional,
+);
 
 export const sharedServerCommandFlags = {
   port: portFlag,
   host: hostFlag,
   devWebUrl: devWebUrlFlag,
   bootstrapFd: bootstrapFdFlag,
+  parentLifetimeFd: parentLifetimeFdFlag,
 } as const;
 
 export interface CliServerFlags {
@@ -57,6 +62,7 @@ export interface CliServerFlags {
   readonly host: Option.Option<string>;
   readonly devWebUrl: Option.Option<URL>;
   readonly bootstrapFd: Option.Option<number>;
+  readonly parentLifetimeFd: Option.Option<number>;
 }
 
 /**

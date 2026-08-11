@@ -6,6 +6,8 @@
   "main": "dist-electron/main.cjs",
   "scripts": {
     "build": "vite build --mode main && vite build --mode preload",
+    "dev:bundle": "node scripts/watch-bundles.mjs",
+    "dev:desktop": "node scripts/dev-electron.mjs",
     "ensure:electron": "node scripts/ensure-electron-runtime.mjs",
     "start": "node scripts/start-electron.mjs",
     "typecheck": "tsc --noEmit",
