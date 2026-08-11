@@ -1,8 +1,11 @@
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import * as DateTime from "effect/DateTime";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useState } from "react";
 
+import { errorMessage } from "../../errors.ts";
+import { squashAtomCommandFailure } from "../../state/asyncResult.ts";
+import { useAtomCommand } from "../../state/useAtomCommand.ts";
 import { notesAtoms, type NoteView } from "./atoms.ts";
 
 /**
@@ -15,7 +18,11 @@ export function NotesPanel({ connected }: { readonly connected: boolean }) {
   const view = useAtomValue(notesAtoms.view);
   const notes = useAtomValue(notesAtoms.notes);
   const createResult = useAtomValue(notesAtoms.createNote);
-  const createNote = useAtomSet(notesAtoms.createNote);
+  // The panel renders this failure itself, so it only needs the defect channel.
+  const createNote = useAtomCommand(notesAtoms.createNote, {
+    label: "notes.create",
+    reportFailure: false,
+  });
 
   const [draft, setDraft] = useState("");
 
@@ -53,7 +60,7 @@ export function NotesPanel({ connected }: { readonly connected: boolean }) {
       </form>
       {AsyncResult.isFailure(createResult) && (
         <p className="mt-2 font-mono text-xs text-red-500">
-          The note was not saved: {String(createResult.cause)}
+          The note was not saved: {errorMessage(squashAtomCommandFailure(createResult))}
         </p>
       )}
 
@@ -77,8 +84,10 @@ export function NotesPanel({ connected }: { readonly connected: boolean }) {
 }
 
 function NoteRow({ entry }: { readonly entry: NoteView }) {
-  const updateNote = useAtomSet(notesAtoms.updateNote);
-  const deleteNote = useAtomSet(notesAtoms.deleteNote);
+  // Nothing reads these results, so without the command wrapper a failed edit
+  // or delete would be completely silent.
+  const updateNote = useAtomCommand(notesAtoms.updateNote, "notes.update");
+  const deleteNote = useAtomCommand(notesAtoms.deleteNote, "notes.delete");
   const [editing, setEditing] = useState(false);
 
   const { note, revision } = entry;

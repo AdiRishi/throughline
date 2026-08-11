@@ -30,3 +30,42 @@ export async function settleAsyncResult<A, E>(
     return AsyncResult.failure(Cause.die(defect));
   }
 }
+
+export interface AtomCommandReporter {
+  readonly warn: (message: string, cause: Cause.Cause<unknown>) => void;
+  readonly error: (message: string, cause: Cause.Cause<unknown>) => void;
+}
+
+export interface AtomCommandOptions {
+  readonly label?: string;
+  readonly reportFailure?: boolean;
+  readonly reportDefect?: boolean;
+}
+
+/**
+ * Reporting a settled command is the DEFAULT, not the call site's job. An atom
+ * mutation whose result nothing reads is otherwise completely silent: no
+ * console line, no span, no UI — the click just does nothing. A caller that
+ * genuinely handles the failure itself opts out with `reportFailure: false`.
+ *
+ * Interrupts are not failures (a component unmounted mid-request), and a defect
+ * is louder than a typed failure because it is a bug rather than an outcome.
+ */
+export function reportAtomCommandResult(
+  result: SettledAsyncResult<unknown, unknown>,
+  options: AtomCommandOptions = {},
+  reporter: AtomCommandReporter = console,
+): void {
+  if (AsyncResult.isSuccess(result) || Cause.hasInterruptsOnly(result.cause)) {
+    return;
+  }
+
+  const label = options.label ?? "atom command";
+  if (Cause.hasDies(result.cause)) {
+    if (options.reportDefect ?? true) {
+      reporter.error(`[atom-command] ${label} defected`, result.cause);
+    }
+  } else if (options.reportFailure ?? true) {
+    reporter.warn(`[atom-command] ${label} failed`, result.cause);
+  }
+}
