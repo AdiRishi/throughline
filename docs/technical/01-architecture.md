@@ -4,16 +4,16 @@ The system shape: processes, packages, and the seams everything else in `docs/te
 
 ## Process topology
 
-Throughline keeps the starter's three-process shape unchanged — the ADRs in `docs/adr/` all continue to apply:
+Throughline keeps the starter's three-process shape unchanged:
 
 ```
 ┌──────────────────────────┐   spawn + fd3 envelope   ┌──────────────────────────┐
 │  Electron shell           │ ───────────────────────▶ │  Local Effect server      │
-│  (apps/desktop)           │      (ADR-0001/0002)     │  (apps/server)            │
+│  (apps/desktop)           │   supervised lifecycle   │  (apps/server)            │
 │  windows, menus, updates  │                          │  GitHub, workspaces,      │
 └──────────┬───────────────┘                          │  analysis, persistence    │
            │ IPC bridge                                └──────────┬───────────────┘
-┌──────────▼───────────────┐        WS RPC (one build, ADR-0004)  │
+┌──────────▼───────────────┐        WS RPC (one build)            │
 │  Renderer (apps/web)      │ ◀────────────────────────────────────┘
 │  welcome, journey reading │
 └──────────────────────────┘
@@ -22,7 +22,7 @@ Throughline keeps the starter's three-process shape unchanged — the ADRs in `d
 The division of labor is the important commitment:
 
 - **The server owns everything durable and everything slow.** GitHub access, clone workspaces, the analysis pipeline, journey persistence, read state. An ingestion run survives the renderer closing its window because nothing about it lives in the renderer.
-- **The renderer owns only presentation.** It holds no state the server can't rebuild it from; refreshing the page mid-ingestion reconnects and resumes watching (ADR-0003's supervisor plus the snapshot-then-live push-bus pattern).
+- **The renderer owns only presentation.** It holds no state the server can't rebuild it from; refreshing the page mid-ingestion reconnects and resumes watching (the single connection supervisor plus the snapshot-then-live push-bus pattern).
 - **The shell owns only being a good host.** It gains no Throughline domain knowledge; its jobs stay windows, lifecycle, updates, and the IPC bridge.
 
 Everything is local-first: there is no Throughline cloud, no telemetry, no server other than the one the shell spawns. The reviewer's own `gh` login and their own agent-harness logins are the only credentials in the system.
@@ -61,7 +61,7 @@ Five seams carry the whole design. Each is deliberately small; the depth lives b
 2. **`GitHub`** — one module, one choke point. Every byte to or from the GitHub API flows through it, which is what makes the rate-limit discipline ([03](./03-github.md)) enforceable instead of aspirational.
 3. **`AnalysisHarness`** — the seam the user's agent harnesses plug into. Codex and Claude are the two v1 adapters; ACP is a planned third. The interface is small enough (detect, run-with-schema, cancel-via-scope) that adding a harness never touches the pipeline. T3 Code (`~/forks/t3code`) proves this shape at much larger scale — five harnesses behind one provider interface — and is our reference for the subprocess-supervision details.
 4. **`Ingestion`** — the pipeline as a module. Callers see "start job, watch events, get journey"; clone orchestration, prompt assembly, validation, and repair are implementation.
-5. **`LocalApi`** (existing, ADR-0004) — the renderer↔host seam. Unchanged; any new bridge capability must define its browser degradation.
+5. **`LocalApi`** (existing) — the renderer↔host seam. Unchanged; any new bridge capability must define its browser degradation.
 
 ## The ingestion data flow
 
@@ -81,7 +81,7 @@ renderer ── ingestion.start(prRef) ──▶ Ingestion
 ## Runtime constraints carried forward
 
 - **Effect v4 everywhere** on the server and in transport; the vendored `.repos/effect` stays the idiom reference.
-- **Persistence is SQLite via `@effect/sql-sqlite-node`** ([02](./02-domain-model.md)) — same pinned Effect version, riding Node's built-in `node:sqlite`: no native modules, verified under Electron's bundled Node (24.x under the pinned Electron; build targets stay under that floor, per ADR-0006).
-- **The server runs under Electron's bundled Node when packaged** (ADR-0006). The harness SDKs (`@openai/codex-sdk`, `@anthropic-ai/claude-agent-sdk`) both spawn their own bundled platform binaries — they must stay **external** to the server bundle and ship as packaged dependencies, and any change here is verified against a packaged app, per ADR-0006.
-- **Auth posture unchanged** (ADR-0002): one local trust level, bearer at the WS upgrade. Journeys contain the reviewer's own code visible to their own logins; nothing new crosses a trust boundary.
+- **Persistence is SQLite via `@effect/sql-sqlite-node`** ([02](./02-domain-model.md)) — same pinned Effect version, riding Node's built-in `node:sqlite`: no native modules, verified under Electron's bundled Node (24.x under the pinned Electron; build targets stay under that floor).
+- **The server runs under Electron's bundled Node when packaged.** The harness SDKs (`@openai/codex-sdk`, `@anthropic-ai/claude-agent-sdk`) both spawn their own bundled platform binaries — they must stay **external** to the server bundle and ship as packaged dependencies, and any change here is verified against a packaged app.
+- **Auth posture unchanged**: one local trust level, bearer at the WS upgrade. Journeys contain the reviewer's own code visible to their own logins; nothing new crosses a trust boundary.
 - **Analysis is read-only.** No harness run may mutate the workspace, and nothing anywhere writes to GitHub. These are enforced mechanically (sandbox modes, tool allowlists — see [04](./04-analysis.md)), not by prompt politeness.
