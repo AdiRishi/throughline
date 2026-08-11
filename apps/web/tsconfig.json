@@ -12,6 +12,7 @@
     "plugins": [
       {
         "name": "@effect/language-service",
+        // Diagnostic severities are deep-merged with tsconfig.base.json; list only web-specific overrides here.
         "diagnosticSeverity": {
           "globalDate": "off",
           "globalConsole": "off",
