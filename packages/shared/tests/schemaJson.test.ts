@@ -9,7 +9,10 @@ import {
   extractJsonObject,
   formatSchemaError,
   fromJsonStringPretty,
+  fromLenientJson,
 } from "../src/schemaJson.ts";
+
+const decodeLenientJson = Schema.decodeUnknownSync(fromLenientJson(Schema.Unknown));
 
 describe("extractJsonObject", () => {
   it("extracts a balanced JSON object from surrounding text", () => {
@@ -36,6 +39,48 @@ Done.`),
 
   it("returns trimmed input when no JSON object starts", () => {
     expect(extractJsonObject("  no structured output  ")).toBe("no structured output");
+  });
+});
+
+// Settings files are hand-editable, so a `//` note or a trailing comma left by
+// a human must not reset every setting to its default.
+describe("fromLenientJson", () => {
+  it("decodes JSON with comments and trailing commas", () => {
+    expect(
+      decodeLenientJson(`{
+        // Comments are valid in settings files.
+        "enabled": true,
+        "values": [1, 2,],
+      }`),
+    ).toEqual({
+      enabled: true,
+      values: [1, 2],
+    });
+  });
+
+  it("strips block comments", () => {
+    expect(decodeLenientJson('{ /* why */ "enabled": true }')).toEqual({ enabled: true });
+  });
+
+  it("rejects malformed JSON after lenient preprocessing", () => {
+    expect(() => decodeLenientJson('{ "enabled": true,, }')).toThrow(
+      /Expected a valid JSON string/,
+    );
+  });
+
+  it("preserves commas before brackets inside string values", () => {
+    // A comma inside a string value that happens to precede `}`/`]` must not
+    // be stripped as if it were a trailing comma.
+    expect(decodeLenientJson('{"note":"a,]"}')).toEqual({ note: "a,]" });
+    expect(decodeLenientJson('{"list":["x,}"]}')).toEqual({ list: ["x,}"] });
+    // Genuine trailing commas are still removed.
+    expect(decodeLenientJson('{"values":[1, 2,],}')).toEqual({ values: [1, 2] });
+  });
+
+  it("preserves comment-like sequences inside string values", () => {
+    expect(decodeLenientJson('{"url":"https://example.com"}')).toEqual({
+      url: "https://example.com",
+    });
   });
 });
 

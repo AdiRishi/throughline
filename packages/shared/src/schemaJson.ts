@@ -1,9 +1,12 @@
 import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as SchemaIssue from "effect/SchemaIssue";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 const MAX_SCHEMA_DIAGNOSTIC_ISSUES = 8;
 const MAX_SCHEMA_DIAGNOSTIC_PATH_SEGMENTS = 16;
@@ -166,9 +169,68 @@ export const formatSchemaError = (cause: Cause.Cause<Schema.SchemaError>) => {
   return truncateDiagnostic(formatted, MAX_SCHEMA_DIAGNOSTIC_LENGTH - suffix.length) + suffix;
 };
 
+/**
+ * A `Getter` that parses a lenient JSON string (tolerating trailing commas
+ * and JS-style comments) into an unknown value.
+ *
+ * Mirrors `SchemaGetter.parseJson()` but strips JSONC syntax before parsing.
+ */
+const decodeJsonString = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+
+const parseLenientJsonGetter = SchemaGetter.onSome((input: string) => {
+  // Strip single-line comments - alternation preserves quoted strings.
+  let stripped = input.replace(
+    /("(?:[^"\\]|\\.)*")|\/\/[^\n]*/g,
+    (match, stringLiteral: string | undefined) => (stringLiteral ? match : ""),
+  );
+
+  // Strip multi-line comments.
+  stripped = stripped.replace(
+    /("(?:[^"\\]|\\.)*")|\/\*[\s\S]*?\*\//g,
+    (match, stringLiteral: string | undefined) => (stringLiteral ? match : ""),
+  );
+
+  // Strip trailing commas before `}` or `]`. The alternation preserves quoted
+  // strings so a comma inside a string value (e.g. `{"note":"a,]"}`) is not
+  // mistaken for a trailing comma and removed.
+  stripped = stripped.replace(
+    /("(?:[^"\\]|\\.)*")|,(\s*[}\]])/g,
+    (match, stringLiteral: string | undefined, bracket: string | undefined) =>
+      stringLiteral ? match : (bracket ?? ""),
+  );
+
+  return decodeJsonString(stripped).pipe(
+    Effect.map(Option.some),
+    Effect.mapError((error) => error.issue),
+  );
+});
+
+/**
+ * Schema transformation: lenient JSONC string ↔ unknown.
+ *
+ * Same API as `SchemaTransformation.fromJsonString`, but the decode side
+ * strips trailing commas and JS-style comments before parsing.
+ * Encoding produces strict JSON via `JSON.stringify`.
+ */
+export const fromLenientJsonString = new SchemaTransformation.Transformation(
+  parseLenientJsonGetter,
+  SchemaGetter.stringifyJson(),
+);
+
 export const prettyJsonString = SchemaGetter.parseJson<string>().compose(
   SchemaGetter.stringifyJson({ space: 2 }),
 );
+
+/**
+ * Build a schema that decodes a lenient JSON string into `A`.
+ *
+ * Drop-in replacement for `Schema.fromJsonString(schema)` that tolerates
+ * trailing commas and comments in the input. Use it for anything a human may
+ * hand-edit — a settings file someone annotated with a `//` note must not
+ * silently reset to defaults.
+ */
+export const fromLenientJson = <S extends Schema.Top>(schema: S) =>
+  Schema.String.pipe(Schema.decodeTo(schema, fromLenientJsonString));
 
 export function extractJsonObject(raw: string): string {
   const trimmed = raw.trim();
