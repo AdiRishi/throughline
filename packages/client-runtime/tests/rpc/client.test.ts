@@ -29,10 +29,10 @@ const AT = DateTime.makeUnsafe(0);
 
 const tick = (n: number): TickEvent => ({ tick: n, at: AT });
 
-/** A live-looking session around a hand-rolled client record. */
 const session = (client: WsRpcProtocolClient): RpcSession => ({
   client,
   connected: Effect.void,
+  probe: Effect.void,
   closed: Effect.never,
 });
 
@@ -44,7 +44,6 @@ const transportError = () =>
     }),
   });
 
-/** A fake supervisor whose session ref the test drives by hand. */
 const makeHarness = Effect.gen(function* () {
   const state = yield* SubscriptionRef.make<ConnectionState>(INITIAL_CONNECTION_STATE);
   const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession>>(Option.none());
@@ -127,8 +126,7 @@ describe("rpc client", () => {
         ),
       );
 
-      // First session delivers, then the connection drops and a new session
-      // replaces it — the consumer must keep receiving without re-subscribing.
+      // The consumer must keep receiving across the drop without re-subscribing.
       yield* SubscriptionRef.set(activeSession, Option.some(session(firstClient)));
       yield* Queue.offer(firstTicks, tick(1));
       yield* Deferred.await(sawFirst);
@@ -174,8 +172,6 @@ describe("rpc client", () => {
       }
       yield* Fiber.interrupt(consumer);
 
-      // The input is derived from the session that is actually live — that is
-      // the seam a resume cursor rides on.
       assert.deepEqual(yield* Ref.get(observedSessions), [firstSession, secondSession]);
     }),
   );

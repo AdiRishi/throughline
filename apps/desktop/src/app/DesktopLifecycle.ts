@@ -6,6 +6,7 @@ import * as Scope from "effect/Scope";
 import type * as Electron from "electron";
 
 import * as ElectronApp from "../electron/ElectronApp.ts";
+import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
@@ -17,7 +18,8 @@ export type DesktopLifecycleRuntimeServices =
   | DesktopShutdown.DesktopShutdown
   | DesktopState.DesktopState
   | DesktopWindow.DesktopWindow
-  | ElectronApp.ElectronApp;
+  | ElectronApp.ElectronApp
+  | ElectronTheme.ElectronTheme;
 
 export class DesktopLifecycle extends Context.Service<
   DesktopLifecycle,
@@ -114,10 +116,15 @@ function quitFromSignal(
 export const make = DesktopLifecycle.of({
   register: Effect.gen(function* () {
     const electronApp = yield* ElectronApp.ElectronApp;
+    const electronTheme = yield* ElectronTheme.ElectronTheme;
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     const window = yield* DesktopWindow.DesktopWindow;
     const context = yield* Effect.context<DesktopLifecycleRuntimeServices>();
     const runEffect = Effect.runPromiseWith(context);
+
+    yield* electronTheme.onUpdated(() => {
+      void runEffect(window.syncAppearance.pipe(Effect.withSpan("desktop.lifecycle.themeUpdated")));
+    });
 
     if (!(yield* electronApp.requestSingleInstanceLock)) {
       yield* logLifecycleInfo("another instance holds the lock; quitting");
@@ -129,11 +136,23 @@ export const make = DesktopLifecycle.of({
     });
 
     let quitAllowed = false;
+    let updaterQuitAllowed = false;
+    yield* electronApp.onBeforeQuitForUpdate(() => {
+      // Electron's updater owns the remaining quit/install/relaunch sequence.
+      // Cancelling the following app "before-quit" event breaks that sequence,
+      // most visibly on macOS where the native updater performs the relaunch.
+      updaterQuitAllowed = true;
+      void runEffect(
+        logLifecycleInfo("allowing updater-controlled quit").pipe(
+          Effect.withSpan("desktop.lifecycle.beforeQuitForUpdate"),
+        ),
+      );
+    });
     yield* electronApp.on("before-quit", (event: Electron.Event) => {
       handleBeforeQuit(
         event,
         runEffect,
-        () => quitAllowed,
+        () => quitAllowed || updaterQuitAllowed,
         () => {
           quitAllowed = true;
         },

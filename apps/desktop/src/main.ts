@@ -38,16 +38,9 @@ import * as ElectronWindow from "./electron/ElectronWindow.ts";
 import * as DesktopIpc from "./ipc/DesktopIpc.ts";
 import * as DesktopAppSettings from "./settings/DesktopAppSettings.ts";
 import * as DesktopUpdater from "./updates/DesktopUpdater.ts";
+import * as DesktopApplicationMenu from "./window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 
-// ── Composition root ──
-// This file is pure Layer wiring: it reads Electron/host metadata, builds the
-// DesktopEnvironment from it, then assembles every service into one runtime
-// layer and hands `DesktopApp.program` to `NodeRuntime.runMain`. No logic.
-
-// Build the environment from injected Electron + host metadata. `Layer.unwrap`
-// lets us read services (ElectronApp metadata, host platform) before deciding
-// the layer's contents.
 const desktopEnvironmentLayer = Layer.unwrap(
   Effect.gen(function* () {
     const metadata = yield* Effect.service(ElectronApp.ElectronApp).pipe(
@@ -66,7 +59,6 @@ const desktopEnvironmentLayer = Layer.unwrap(
   }),
 ).pipe(Layer.provide(ElectronApp.layer));
 
-// Tier-1 Electron wrappers + the IPC registration service bound to ipcMain.
 const electronLayer = Layer.mergeAll(
   ElectronApp.layer,
   ElectronDialog.layer,
@@ -78,8 +70,6 @@ const electronLayer = Layer.mergeAll(
   DesktopIpc.layer(Electron.ipcMain),
 );
 
-// Foundation services that only need the environment (+ NodeServices for
-// settings' FileSystem/Crypto).
 const desktopFoundationLayer = Layer.mergeAll(
   DesktopState.layer,
   DesktopShutdown.layer,
@@ -88,11 +78,8 @@ const desktopFoundationLayer = Layer.mergeAll(
   DesktopBackendConfiguration.layer,
 ).pipe(Layer.provideMerge(desktopEnvironmentLayer));
 
-// The window needs the environment + electron shell/theme/window wrappers.
 const desktopWindowLayer = DesktopWindow.layer.pipe(Layer.provideMerge(desktopFoundationLayer));
 
-// The backend manager depends on the window (readiness callbacks) + config +
-// NetService + platform services.
 const desktopBackendLayer = DesktopBackendManager.layer.pipe(
   Layer.provideMerge(desktopWindowLayer),
 );
@@ -100,13 +87,12 @@ const desktopBackendLayer = DesktopBackendManager.layer.pipe(
 const desktopApplicationLayer = Layer.mergeAll(
   DesktopLifecycle.layer,
   DesktopUpdater.layer,
+  DesktopApplicationMenu.layer,
   DesktopLocalEnvironmentAuth.layer,
 ).pipe(Layer.provideMerge(desktopBackendLayer));
 
-// Provide the platform services (FileSystem, Path, ChildProcessSpawner, Crypto,
-// NetService) and the electron wrappers under the whole graph. The HttpClient
-// uses Electron's global `fetch` (FetchHttpClient) rather than the undici-based
-// Node client: bundling undici into the CJS main crashes Electron at load
+// The HttpClient is Electron's global `fetch` rather than the undici-based Node
+// client: bundling undici into the CJS main crashes Electron at load
 // (`webidl.util.markAsUncloneable is not a function` from undici's CacheStorage).
 const desktopRuntimeLayer = desktopApplicationLayer.pipe(
   Layer.provideMerge(NodeServices.layer),

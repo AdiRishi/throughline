@@ -1,4 +1,3 @@
-// Typed RPC surface over the supervised connection.
 export {
   type RpcFailure,
   type RpcInput,
@@ -19,5 +18,6 @@ export {
   type RpcSession,
   RpcSessionFactory,
   type RpcSessionFactoryShape,
-  connect,
+  layer as rpcSessionFactoryLayer,
+  make as makeRpcSessionFactory,
 } from "./session.ts";

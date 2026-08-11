@@ -8,11 +8,6 @@ import * as Electron from "electron";
 
 import { HostProcessPlatform } from "@app/shared/hostProcess";
 
-// ── Tier-1 Electron wrapper for BrowserWindow ──
-// The `create` diagnostic schema mirrors only the fields we actually pass, so a
-// failed construction produces a structured, serializable error instead of a
-// raw Electron throw.
-
 const ElectronWindowCreateOptions = Schema.Struct({
   title: Schema.NullOr(Schema.String),
   width: Schema.NullOr(Schema.Number),
@@ -32,7 +27,7 @@ const ElectronWindowOperation = Schema.Literals([
   "get-focused-window",
   "inspect-window",
   "reveal-window",
-  "load-url",
+  "destroy-window",
   "send-window-message",
   "add-window-listener",
   "set-open-handler",
@@ -67,29 +62,12 @@ export class ElectronWindowOperationError extends Schema.TaggedError<ElectronWin
   }
 }
 
-export class ElectronWindowLoadUrlError extends Schema.TaggedError<ElectronWindowLoadUrlError>()(
-  "ElectronWindowLoadUrlError",
-  {
-    url: Schema.String,
-    windowId: Schema.Number,
-    cause: Schema.Defect(),
-  },
-) {
-  override get message(): string {
-    return `Failed to load ${this.url} in window ${this.windowId}.`;
-  }
-}
-
 export class ElectronWindow extends Context.Service<
   ElectronWindow,
   {
     readonly create: (
       options: Electron.BrowserWindowConstructorOptions,
     ) => Effect.Effect<Electron.BrowserWindow, ElectronWindowCreateError>;
-    readonly loadUrl: (
-      window: Electron.BrowserWindow,
-      url: string,
-    ) => Effect.Effect<void, ElectronWindowLoadUrlError>;
     readonly currentMainOrFirst: Effect.Effect<Option.Option<Electron.BrowserWindow>>;
     readonly focusedMainOrFirst: Effect.Effect<Option.Option<Electron.BrowserWindow>>;
     readonly setMain: (window: Electron.BrowserWindow) => Effect.Effect<void>;
@@ -101,14 +79,15 @@ export class ElectronWindow extends Context.Service<
       ...args: readonly unknown[]
     ) => Effect.Effect<void>;
     readonly sendAll: (channel: string, ...args: readonly unknown[]) => Effect.Effect<void>;
-    /** Register a one-shot `ready-to-show` listener (fires when first painted). */
+    readonly destroyAll: Effect.Effect<void>;
+    readonly syncAllAppearance: <E, R>(
+      sync: (window: Electron.BrowserWindow) => Effect.Effect<void, E, R>,
+    ) => Effect.Effect<void, E, R>;
     readonly onReadyToShow: (
       window: Electron.BrowserWindow,
       handler: () => void,
     ) => Effect.Effect<void>;
-    /** Register a `closed` listener (fires once the window is gone). */
     readonly onClosed: (window: Electron.BrowserWindow, handler: () => void) => Effect.Effect<void>;
-    /** Decide what happens when the page tries to open a new window. */
     readonly setWindowOpenHandler: (
       window: Electron.BrowserWindow,
       handler: Parameters<Electron.WebContents["setWindowOpenHandler"]>[0],
@@ -205,11 +184,6 @@ export const make = Effect.gen(function* () {
         catch: (cause) => new ElectronWindowCreateError({ options: diagnosticOptions, cause }),
       });
     },
-    loadUrl: (window, url) =>
-      Effect.tryPromise({
-        try: () => window.loadURL(url),
-        catch: (cause) => new ElectronWindowLoadUrlError({ url, windowId: window.id, cause }),
-      }),
     currentMainOrFirst,
     focusedMainOrFirst,
     setMain: (window) => Ref.set(mainWindowRef, Option.some(window)),
@@ -268,6 +242,32 @@ export const make = Effect.gen(function* () {
           }).pipe(Effect.orDie);
         }
       }),
+    destroyAll: Effect.gen(function* () {
+      for (const window of yield* listWindows) {
+        yield* Effect.try({
+          try: () => window.destroy(),
+          catch: (cause) =>
+            new ElectronWindowOperationError({
+              operation: "destroy-window",
+              platform,
+              windowId: window.id,
+              channel: null,
+              cause,
+            }),
+        }).pipe(Effect.orDie);
+      }
+    }),
+    syncAllAppearance: Effect.fn("desktop.electron.window.syncAllAppearance")(function* <E, R>(
+      sync: (window: Electron.BrowserWindow) => Effect.Effect<void, E, R>,
+    ) {
+      const windows = yield* listWindows;
+      for (const window of windows) {
+        if (yield* isWindowDestroyed(window)) {
+          continue;
+        }
+        yield* sync(window);
+      }
+    }),
     send: (window, channel, ...args) =>
       Effect.try({
         try: () => {

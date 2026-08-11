@@ -1,16 +1,11 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off - Standalone Node build script; no Effect runtime.
-// Package the desktop app into a distributable (dmg / nsis / AppImage).
-//
-// Pipeline: build web -> build server -> build desktop -> stage an app dir ->
-// run electron-builder. The packaged app runs the SAME local-server + web
-// bundle the dev flow does; the shell spawns `apps/server/dist/bin.mjs` and
-// the server serves the web build from its `dist/client`.
-//
-// This is the one piece the starter ships as a *skeleton*: signing, icons,
-// notarization, and per-OS targets always need project-specific values. It is
-// intentionally small and honest rather than a 1000-line clone. Run:
+// Package the desktop app into a distributable (dmg / nsis / AppImage):
 //   pnpm dist:desktop -- --platform mac --target dmg
+//
+// The packaged app runs the same local-server + web bundle the dev flow does:
+// the shell spawns `apps/server/dist/bin.mjs` and the server serves the web
+// build from its `dist/client`.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -45,14 +40,26 @@ function arg(name: string, fallback: string): string {
 
 const platform = arg(
   "platform",
-  // oxlint-disable-next-line app/no-global-process-runtime -- Standalone Node script has no Effect runtime (see dev-runner.ts header).
+  // oxlint-disable-next-line app/no-global-process-runtime -- Standalone Node script has no Effect runtime (see file header).
   process.platform === "win32" ? "win" : process.platform === "linux" ? "linux" : "mac",
 );
 const target = arg("target", platform === "mac" ? "dmg" : platform === "win" ? "nsis" : "AppImage");
 
-function run(command: string, args: ReadonlyArray<string>, cwd = REPO_ROOT): void {
+function run(
+  command: string,
+  args: ReadonlyArray<string>,
+  cwd = REPO_ROOT,
+  env?: NodeJS.ProcessEnv,
+): void {
   process.stdout.write(`\n$ ${command} ${args.join(" ")}\n`);
-  NodeChildProcess.execFileSync(command, args, { cwd, stdio: "inherit" });
+  NodeChildProcess.execFileSync(command, args, {
+    cwd,
+    stdio: "inherit",
+    ...(env ? { env } : {}),
+    // `pnpm` is a .CMD shim on Windows, which cannot be spawned without a shell.
+    // oxlint-disable-next-line app/no-global-process-runtime -- Standalone Node script has no Effect runtime (see file header).
+    shell: process.platform === "win32",
+  });
 }
 
 function validateBundledClientAssets(clientDir: string): void {
@@ -77,7 +84,7 @@ function validateBundledClientAssets(clientDir: string): void {
  * workspace config. Without them the staged `pnpm install --prod` fails with
  * ERR_PNPM_IGNORED_BUILDS for dependencies that have lifecycle scripts.
  */
-function readWorkspaceAllowBuilds(): Record<string, boolean> {
+export function readWorkspaceAllowBuilds(): Record<string, boolean> {
   const raw = NodeFS.readFileSync(NodePath.join(REPO_ROOT, "pnpm-workspace.yaml"), "utf8");
   const allowBuilds: Record<string, boolean> = {};
   let inBlock = false;
@@ -97,7 +104,7 @@ function readWorkspaceAllowBuilds(): Record<string, boolean> {
   return allowBuilds;
 }
 
-type PublishConfig = Readonly<Record<string, string>>;
+export type PublishConfig = Readonly<Record<string, string>>;
 
 /**
  * electron-builder only emits `app-update.yml` — the file electron-updater
@@ -112,7 +119,7 @@ type PublishConfig = Readonly<Record<string, string>>;
  * Leaving them unset omits the block; the shell then reports the updater as
  * disabled (it looks for `app-update.yml`) rather than failing at check time.
  */
-function resolveGitHubPublishConfig(
+export function resolveGitHubPublishConfig(
   updateChannel: "latest" | "nightly",
 ): PublishConfig | undefined {
   const rawRepo = (
@@ -135,22 +142,20 @@ function resolveGitHubPublishConfig(
 }
 
 /** Fallback feed for builds published to a plain static host (or a mock server). */
-function resolveGenericPublishConfig(): PublishConfig | undefined {
+export function resolveGenericPublishConfig(): PublishConfig | undefined {
   const url = process.env.APP_DESKTOP_UPDATE_URL?.trim();
   return url ? { provider: "generic", url } : undefined;
 }
 
-function resolveUpdateChannel(): "latest" | "nightly" {
+export function resolveUpdateChannel(): "latest" | "nightly" {
   return process.env.APP_DESKTOP_UPDATE_CHANNEL?.trim() === "nightly" ? "nightly" : "latest";
 }
 
 function main(): void {
-  // 1. Build all three packages (order matters: the server serves the web build).
   run("pnpm", ["--filter", "@app/web", "build"]);
   run("pnpm", ["--filter", "@app/server", "build"]);
   run("pnpm", ["--filter", "@app/desktop", "build"]);
 
-  // 2. Stage an app directory electron-builder will pack.
   const stage = NodePath.join(REPO_ROOT, "release/app");
   NodeFS.rmSync(stage, { recursive: true, force: true });
   NodeFS.mkdirSync(NodePath.join(stage, "apps/desktop"), {
@@ -211,7 +216,6 @@ function main(): void {
   process.stdout.write("\n[desktop-artifact] Installing staged production dependencies...\n");
   run("pnpm", ["install", "--prod"], stage);
 
-  // 3. electron-builder config.
   const updateChannel = resolveUpdateChannel();
   const publishConfig = resolveGitHubPublishConfig(updateChannel) ?? resolveGenericPublishConfig();
   if (publishConfig === undefined) {
@@ -240,21 +244,45 @@ function main(): void {
   NodeFS.mkdirSync(NodePath.dirname(configPath), { recursive: true });
   NodeFS.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-  // 4. Pack. Requires `electron-builder` (a devDependency of @app/desktop).
-  run("pnpm", [
-    "--filter",
-    "@app/desktop",
-    "exec",
-    "electron-builder",
-    "--projectDir",
-    stage,
-    `--${platform}`,
-    "--config",
-    configPath,
-    "--publish",
-    "never",
-  ]);
+  // electron-builder treats several set-but-empty variables (e.g. CSC_LINK="")
+  // as enabled, so copy the host env and scrub empty values instead of
+  // inheriting it. The artifacts this script produces are always unsigned, so
+  // identity auto-discovery (which would pick up any Developer ID in the
+  // keychain) and every signing credential are turned off explicitly.
+  const buildEnv: NodeJS.ProcessEnv = { ...process.env };
+  for (const [key, value] of Object.entries(buildEnv)) {
+    if (value === "") {
+      delete buildEnv[key];
+    }
+  }
+  buildEnv.CSC_IDENTITY_AUTO_DISCOVERY = "false";
+  delete buildEnv.CSC_LINK;
+  delete buildEnv.CSC_KEY_PASSWORD;
+  delete buildEnv.APPLE_API_KEY;
+  delete buildEnv.APPLE_API_KEY_ID;
+  delete buildEnv.APPLE_API_ISSUER;
+
+  run(
+    "pnpm",
+    [
+      "--filter",
+      "@app/desktop",
+      "exec",
+      "electron-builder",
+      "--projectDir",
+      stage,
+      `--${platform}`,
+      "--config",
+      configPath,
+      "--publish",
+      "never",
+    ],
+    REPO_ROOT,
+    buildEnv,
+  );
   process.stdout.write(`\n✔ Artifacts in release/dist\n`);
 }
 
-main();
+if (process.argv[1] === NodeURL.fileURLToPath(import.meta.url)) {
+  main();
+}

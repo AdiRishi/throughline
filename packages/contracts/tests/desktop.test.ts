@@ -28,15 +28,38 @@ describe("ContextMenuItemSchema", () => {
   });
 });
 
+const updateState = {
+  enabled: true,
+  status: "idle",
+  channel: "latest",
+  currentVersion: "1.0.0",
+  availableVersion: null,
+  downloadedVersion: null,
+  downloadPercent: null,
+  checkedAt: null,
+  message: null,
+  errorContext: null,
+  canRetry: false,
+};
+
 describe("DesktopUpdateState", () => {
   it("rejects an unknown status literal", () => {
-    assert.throws(() =>
-      decodeUpdateState({
-        status: "installing",
-        channel: "latest",
-        version: null,
-        message: null,
-      }),
-    );
+    assert.throws(() => decodeUpdateState({ ...updateState, status: "installing" }));
+  });
+
+  it("rejects an unknown error context", () => {
+    assert.throws(() => decodeUpdateState({ ...updateState, errorContext: "poll" }));
+  });
+
+  it("accepts a fractional download percent alongside the populated version fields", () => {
+    const decoded = decodeUpdateState({
+      ...updateState,
+      status: "downloading",
+      availableVersion: "1.1.0",
+      downloadPercent: 42.5,
+      checkedAt: "2026-03-04T00:00:00.000Z",
+    });
+    assert.strictEqual(decoded.downloadPercent, 42.5);
+    assert.strictEqual(decoded.availableVersion, "1.1.0");
   });
 });

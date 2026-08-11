@@ -4,13 +4,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { Atom, AtomRegistry } from "effect/unstable/reactivity";
-import * as Socket from "effect/unstable/socket/Socket";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   ConnectionBlockedError,
   ConnectionTransientError,
   connectionSupervisorLayer,
+  connectivityLayer,
+  connectionWakeupsLayer,
   type PreparedConnection,
 } from "@app/client-runtime/connection";
 import {
@@ -35,9 +36,8 @@ const CONNECTION: PreparedConnection = {
 };
 
 /**
- * A supervisor layer over scripted sessions: a fake typed client answers the
- * four methods in-memory, and the test drops the live session by failing its
- * `closed` deferred — no sockets, no React.
+ * A real supervisor over scripted sessions: a fake typed client answers
+ * in-memory, and a session is dropped by failing its `closed` deferred.
  */
 const makeScriptedHarness = () => {
   const drops: Array<Deferred.Deferred<never, ConnectionTransientError>> = [];
@@ -58,14 +58,16 @@ const makeScriptedHarness = () => {
         return {
           client: fakeClient,
           connected: Effect.void,
+          probe: Effect.void,
           closed: Deferred.await(closed),
         } satisfies RpcSession;
       }),
   };
 
   const layer = connectionSupervisorLayer(CONNECTION).pipe(
-    Layer.provide(Socket.layerWebSocketConstructorGlobal),
     Layer.provide(Layer.succeed(RpcSessionFactory, factory)),
+    Layer.provide(connectivityLayer({ status: Effect.succeed("online"), changes: Stream.empty })),
+    Layer.provide(connectionWakeupsLayer({ changes: Stream.empty })),
   );
 
   const dropCurrent = () => {
@@ -133,8 +135,9 @@ describe("connection atoms", () => {
         ),
     };
     const layer = connectionSupervisorLayer(CONNECTION).pipe(
-      Layer.provide(Socket.layerWebSocketConstructorGlobal),
       Layer.provide(Layer.succeed(RpcSessionFactory, factory)),
+      Layer.provide(connectivityLayer({ status: Effect.succeed("online"), changes: Stream.empty })),
+      Layer.provide(connectionWakeupsLayer({ changes: Stream.empty })),
     );
     const atoms = createConnectionAtoms(Atom.runtime(layer));
     const registry = AtomRegistry.make();

@@ -69,7 +69,9 @@ renderer OtlpTracer
         → server.trace.ndjson
 ```
 
-`apps/web/src/observability/clientTracing.ts` configures the exporter against the resolved connection target, so the identical web build works in a plain browser tab and inside the Electron renderer (ADR-0004). Renderer spans carry `resourceAttributes["service.name"] = "throughline-web"`, and share a `traceId` with the server spans they triggered.
+`apps/web/src/observability/clientTracing.ts` configures the exporter against the resolved connection target, so the identical web build works in a plain browser tab and inside the Electron renderer (ADR-0004). Renderer spans carry `resourceAttributes["service.name"] = "throughline-web"`.
+
+Renderer and server spans land in the same file but do **not** share a `traceId`: the RPC server is built with `disableTracing: true`, so it neither opens a per-request span of its own nor adopts the client's propagated `traceId`/`spanId` as a parent. Server-side RPC work is traced by the handler wrappers in `apps/server/src/observability/RpcInstrumentation.ts` instead, which emit `ws.rpc.<method>` as roots. To follow one renderer action through to the server, match on the method name and timestamp rather than on `traceId`.
 
 Until the exporter finishes configuring, spans fall back to `NativeSpan` — they still nest correctly, they are just not exported. Tracing is never load-bearing.
 
@@ -204,7 +206,7 @@ Artifacts:
 - `APP_TRACE_FILE` — override the server's trace file path
 - `APP_TRACE_MAX_BYTES` — per-file rotation size, default `10485760`
 - `APP_TRACE_MAX_FILES` — rotated file count, default `10`
-- `APP_TRACE_BATCH_WINDOW_MS` — flush window, default `200`
+- `APP_TRACE_BATCH_WINDOW_MS` — flush window, default `1000`
 - `APP_TRACE_MIN_LEVEL` — minimum trace level, default `Info`
 - `APP_TRACE_TIMING_ENABLED` — timing metadata, default `true`
 

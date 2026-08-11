@@ -1,17 +1,11 @@
 /**
  * The shell's observability.
  *
- * Same model as the server (see `apps/server/src/observability`): pretty logs
- * to stdout for humans, `Logger.tracerLogger` so logs ride along as span events,
- * and a local file tracer that writes completed spans as NDJSON to
- * `logDir/desktop.trace.ndjson`, with an optional OTLP delegate.
- *
- * On top of that, the shell owns one artifact the server cannot write for
- * itself: `logDir/server-child.log`. The spawned backend's stdout/stderr is
- * piped here and recorded as NDJSON, which is the only evidence left when the
- * child dies before its own Effect runtime (and its own tracer) exists. In
- * development the raw chunk is also echoed to the shell's stdout, so the
- * terminal that ran `pnpm dev:desktop` still shows the server's output inline.
+ * The shell owns one artifact the server cannot write for itself:
+ * `logDir/server-child.log`. The spawned backend's stdout/stderr is buffered in
+ * memory for the lifetime of a run and written as NDJSON only when that run is
+ * reported as failed — which is the only evidence left when the child dies
+ * before its own Effect runtime (and its own tracer) exists.
  *
  * @module app/DesktopObservability
  */
@@ -37,7 +31,9 @@ import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
 const DESKTOP_LOG_FILE_MAX_BYTES = 10 * 1024 * 1024;
 const DESKTOP_LOG_FILE_MAX_FILES = 10;
-const DESKTOP_TRACE_BATCH_WINDOW_MS = 200;
+const DESKTOP_TRACE_BATCH_WINDOW_MS = 1_000;
+const DESKTOP_BACKEND_OUTPUT_BUFFER_MAX_BYTES = 1024 * 1024;
+const DESKTOP_BACKEND_OUTPUT_BUFFER_MAX_CHUNKS = 256;
 const DESKTOP_BACKEND_CHILD_LOG_FIBER_ID = "#backend-child";
 const BACKEND_CHILD_LOG_FILE_NAME = "server-child.log";
 const DESKTOP_TRACE_FILE_NAME = "desktop.trace.ndjson";
@@ -117,12 +113,11 @@ const refreshFileSize = (
  * An append-only file that rotates to `<path>.1 … <path>.N` once it would
  * exceed `maxBytes`.
  *
- * Uses Effect's `FileSystem` rather than the sync `RotatingFileSink` in
- * `@app/shared/logging`, because the shell writes child output from a fiber
- * draining a stream: a `Semaphore(1)` serializes writes, and every failure path
- * re-reads the real file size so a transient error (or an external truncate)
- * cannot wedge rotation. Write failures are swallowed — losing a log line must
- * never take the shell down.
+ * Writes come from a fiber draining the child's stdio stream, so a
+ * `Semaphore(1)` serializes them and every failure path re-reads the real file
+ * size — a transient error (or an external truncate) must not wedge rotation.
+ * Write failures are swallowed: losing a log line must never take the shell
+ * down.
  */
 const makeRotatingLogFileWriter = Effect.fn("makeRotatingLogFileWriter")(function* (input: {
   readonly filePath: string;
@@ -233,14 +228,14 @@ const makeRotatingLogFileWriter = Effect.fn("makeRotatingLogFileWriter")(functio
 // ── Backend child output log ────────────────────────────────────────────────
 
 export interface DesktopBackendOutputLogShape {
-  readonly writeSessionBoundary: (input: {
-    readonly phase: "START" | "END";
-    readonly details: string;
-  }) => Effect.Effect<void>;
+  readonly beginSession: (input: { readonly details: string }) => Effect.Effect<void>;
   readonly writeOutputChunk: (
     streamName: "stdout" | "stderr",
     chunk: Uint8Array,
   ) => Effect.Effect<void>;
+  readonly persistFailureSnapshot: (input: { readonly details: string }) => Effect.Effect<void>;
+  readonly persistFailure: (input: { readonly details: string }) => Effect.Effect<void>;
+  readonly discardSession: Effect.Effect<void>;
 }
 
 export class DesktopBackendOutputLog extends Context.Service<
@@ -266,9 +261,85 @@ const encodeDesktopBackendChildLogRecord = Schema.encodeEffect(
 );
 
 export const DesktopBackendOutputLogNoop: DesktopBackendOutputLogShape = {
-  writeSessionBoundary: () => Effect.void,
+  beginSession: () => Effect.void,
   writeOutputChunk: () => Effect.void,
+  persistFailureSnapshot: () => Effect.void,
+  persistFailure: () => Effect.void,
+  discardSession: Effect.void,
 };
+
+interface BufferedBackendOutputChunk {
+  readonly streamName: "stdout" | "stderr";
+  readonly chunk: Uint8Array;
+  readonly offset: number;
+}
+
+interface BackendOutputSession {
+  readonly runId: string;
+  readonly startDetails: string;
+  readonly chunks: ReadonlyArray<BufferedBackendOutputChunk>;
+  readonly byteLength: number;
+}
+
+/**
+ * Appends a chunk to the session's retained output, dropping the oldest bytes
+ * once the buffer would exceed the byte or chunk cap. The head chunk is trimmed
+ * by advancing an `offset` rather than by copying: a chatty child that keeps
+ * overflowing the buffer would otherwise re-copy a mebibyte per line.
+ */
+export function appendBoundedOutputChunk(
+  session: BackendOutputSession,
+  streamName: "stdout" | "stderr",
+  chunk: Uint8Array,
+): BackendOutputSession {
+  if (chunk.byteLength === 0) {
+    return session;
+  }
+
+  const retainedChunk =
+    chunk.byteLength > DESKTOP_BACKEND_OUTPUT_BUFFER_MAX_BYTES
+      ? chunk.slice(chunk.byteLength - DESKTOP_BACKEND_OUTPUT_BUFFER_MAX_BYTES)
+      : chunk.slice();
+  const chunks = [...session.chunks, { streamName, chunk: retainedChunk, offset: 0 }];
+  let byteLength = session.byteLength + retainedChunk.byteLength;
+  let overflow = Math.max(0, byteLength - DESKTOP_BACKEND_OUTPUT_BUFFER_MAX_BYTES);
+  let firstRetainedIndex = 0;
+
+  while (overflow > 0) {
+    const first = chunks[firstRetainedIndex];
+    if (!first) break;
+    const retainedByteLength = first.chunk.byteLength - first.offset;
+    if (retainedByteLength <= overflow) {
+      overflow -= retainedByteLength;
+      byteLength -= retainedByteLength;
+      firstRetainedIndex += 1;
+      continue;
+    }
+
+    chunks[firstRetainedIndex] = {
+      ...first,
+      offset: first.offset + overflow,
+    };
+    byteLength -= overflow;
+    overflow = 0;
+  }
+
+  const excessChunks = Math.max(
+    0,
+    chunks.length - firstRetainedIndex - DESKTOP_BACKEND_OUTPUT_BUFFER_MAX_CHUNKS,
+  );
+  for (let index = firstRetainedIndex; index < firstRetainedIndex + excessChunks; index += 1) {
+    const chunk = chunks[index];
+    byteLength -= chunk ? chunk.chunk.byteLength - chunk.offset : 0;
+  }
+  firstRetainedIndex += excessChunks;
+
+  return {
+    ...session,
+    chunks: chunks.slice(firstRetainedIndex),
+    byteLength,
+  };
+}
 
 const currentDesktopRunId = Effect.gen(function* () {
   const annotations = yield* References.CurrentLogAnnotations;
@@ -300,9 +371,8 @@ const writeBackendChildLogRecord = Effect.fn("desktop.observability.writeBackend
   },
 );
 
-// Dev only: echo the child's bytes to the shell's own streams so the terminal
-// running `pnpm dev:desktop` shows server output inline, exactly as it did when
-// the child inherited stdio.
+// Echoes the child's bytes to the shell's own streams so the terminal running
+// `pnpm dev:desktop` shows server output inline despite the piped stdio.
 const writeDevelopmentConsoleOutput = (
   streamName: "stdout" | "stderr",
   chunk: Uint8Array,
@@ -315,51 +385,103 @@ const writeDevelopmentConsoleOutput = (
 const makeBackendOutputLogShape = (
   environment: DesktopEnvironment.DesktopEnvironment["Service"],
   sink: Option.Option<RotatingLogFileWriter>,
-): DesktopBackendOutputLogShape =>
+): Effect.Effect<DesktopBackendOutputLogShape> =>
   Option.match(sink, {
     // A log file we could not open must not disable the dev terminal echo —
     // that is the one channel a developer is actually watching.
-    onNone: () => ({
-      writeSessionBoundary: () => Effect.void,
-      writeOutputChunk: (streamName, chunk) =>
-        environment.isDevelopment ? writeDevelopmentConsoleOutput(streamName, chunk) : Effect.void,
-    }),
+    onNone: () =>
+      Effect.succeed({
+        ...DesktopBackendOutputLogNoop,
+        writeOutputChunk: (streamName: "stdout" | "stderr", chunk: Uint8Array) =>
+          environment.isDevelopment
+            ? writeDevelopmentConsoleOutput(streamName, chunk)
+            : Effect.void,
+      } satisfies DesktopBackendOutputLogShape),
     onSome: (logFile) =>
-      ({
-        writeSessionBoundary: Effect.fn("desktop.observability.backendOutput.writeSessionBoundary")(
-          function* ({ phase, details }) {
-            const runId = yield* currentDesktopRunId;
+      Effect.gen(function* () {
+        const sessionRef = yield* Ref.make(Option.none<BackendOutputSession>());
+        const writeFailure = Effect.fn("desktop.observability.backendOutput.writeFailure")(
+          function* (session: BackendOutputSession, details: string) {
             yield* writeBackendChildLogRecord(logFile, {
-              message: `backend child process session ${phase.toLowerCase()}`,
-              level: "INFO",
+              message: "backend child process failure output start",
+              level: "ERROR",
               annotations: {
                 component: "desktop-backend-child",
-                runId,
-                phase,
+                runId: session.runId,
+                phase: "START",
+                details: session.startDetails,
+              },
+            });
+            for (const output of session.chunks) {
+              yield* writeBackendChildLogRecord(logFile, {
+                message: "backend child process output",
+                level: output.streamName === "stderr" ? "ERROR" : "INFO",
+                annotations: {
+                  component: "desktop-backend-child",
+                  runId: session.runId,
+                  stream: output.streamName,
+                  text: textDecoder.decode(output.chunk.subarray(output.offset)),
+                },
+              });
+            }
+            yield* writeBackendChildLogRecord(logFile, {
+              message: "backend child process failure output end",
+              level: "ERROR",
+              annotations: {
+                component: "desktop-backend-child",
+                runId: session.runId,
+                phase: "END",
                 details: sanitizeLogValue(details),
               },
             });
           },
-        ),
-        writeOutputChunk: Effect.fn("desktop.observability.backendOutput.writeOutputChunk")(
-          function* (streamName, chunk) {
+        );
+        return {
+          beginSession: Effect.fn("desktop.observability.backendOutput.beginSession")(function* ({
+            details,
+          }) {
+            const runId = yield* currentDesktopRunId;
+            yield* Ref.set(
+              sessionRef,
+              Option.some({
+                runId,
+                startDetails: sanitizeLogValue(details),
+                chunks: [],
+                byteLength: 0,
+              }),
+            );
+          }),
+          // Untraced: a span per stdout chunk would swamp the trace file with
+          // one record per line the child writes.
+          writeOutputChunk: Effect.fnUntraced(function* (streamName, chunk) {
             if (environment.isDevelopment) {
               yield* writeDevelopmentConsoleOutput(streamName, chunk);
             }
-            const runId = yield* currentDesktopRunId;
-            yield* writeBackendChildLogRecord(logFile, {
-              message: "backend child process output",
-              level: streamName === "stderr" ? "ERROR" : "INFO",
-              annotations: {
-                component: "desktop-backend-child",
-                runId,
-                stream: streamName,
-                text: textDecoder.decode(chunk),
-              },
-            });
-          },
-        ),
-      }) satisfies DesktopBackendOutputLogShape,
+            yield* Ref.update(
+              sessionRef,
+              Option.map((session) => appendBoundedOutputChunk(session, streamName, chunk)),
+            );
+          }),
+          // Keeps the session open, so a readiness failure is recorded without
+          // losing the output that follows it.
+          persistFailureSnapshot: Effect.fn(
+            "desktop.observability.backendOutput.persistFailureSnapshot",
+          )(function* ({ details }) {
+            const session = yield* Ref.get(sessionRef);
+            if (Option.isSome(session)) {
+              yield* writeFailure(session.value, details);
+            }
+          }),
+          persistFailure: Effect.fn("desktop.observability.backendOutput.persistFailure")(
+            function* ({ details }) {
+              const session = yield* Ref.modify(sessionRef, (current) => [current, Option.none()]);
+              if (Option.isNone(session)) return;
+              yield* writeFailure(session.value, details);
+            },
+          ),
+          discardSession: Ref.set(sessionRef, Option.none()),
+        } satisfies DesktopBackendOutputLogShape;
+      }),
   });
 
 const backendOutputLogLayer = Layer.effect(
@@ -369,7 +491,7 @@ const backendOutputLogLayer = Layer.effect(
     const sink = yield* makeRotatingLogFileWriter({
       filePath: environment.path.join(environment.logDir, BACKEND_CHILD_LOG_FILE_NAME),
     }).pipe(Effect.option);
-    return DesktopBackendOutputLog.of(makeBackendOutputLogShape(environment, sink));
+    return DesktopBackendOutputLog.of(yield* makeBackendOutputLogShape(environment, sink));
   }),
 );
 

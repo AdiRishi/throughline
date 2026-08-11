@@ -1,12 +1,8 @@
 /**
  * WebSocket RPC route + handler registration.
  *
- * `/ws` upgrades to the Effect RPC websocket protocol after a bearer-auth gate.
- * The `WsRpcGroup` methods are registered via `WsRpcGroup.toLayer`:
- *  - `server.getConfig` / `server.echo` (unary transport templates)
- *  - `server.subscribeTicks` (stream template)
- *  - `server.subscribeLifecycle` (stream, ordered push bus)
- *  - `notes.*` (the sample domain: unary mutations + a push-bus subscription)
+ * `/ws` upgrades to the Effect RPC websocket protocol after a bearer-auth gate,
+ * then serves the `WsRpcGroup` methods registered via `WsRpcGroup.toLayer`.
  *
  * @module ws
  */
@@ -30,6 +26,11 @@ import * as Auth from "./auth.ts";
 import * as ServerConfig from "./config.ts";
 import * as LifecycleEvents from "./lifecycleEvents.ts";
 import * as NotesStore from "./notes/NotesStore.ts";
+import {
+  observeRpcEffect,
+  observeRpcStream,
+  observeRpcStreamEffect,
+} from "./observability/RpcInstrumentation.ts";
 
 /**
  * Register the RPC handlers. `server.subscribeLifecycle` replays the retained
@@ -46,34 +47,50 @@ const makeWsRpcLayer = () =>
 
       return WsRpcGroup.of({
         [WS_METHODS.serverGetConfig]: () =>
-          Effect.succeed({
-            appName: config.appName,
-            version: config.version,
-            startedAt: config.startedAt,
-          }),
+          observeRpcEffect(
+            WS_METHODS.serverGetConfig,
+            Effect.succeed({
+              appName: config.appName,
+              version: config.version,
+              startedAt: config.startedAt,
+            }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverEcho]: (input) =>
-          DateTime.now.pipe(
-            Effect.map((receivedAt) => ({
-              message: input.message,
-              receivedAt,
-            })),
+          observeRpcEffect(
+            WS_METHODS.serverEcho,
+            DateTime.now.pipe(
+              Effect.map((receivedAt) => ({
+                message: input.message,
+                receivedAt,
+              })),
+            ),
+            { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverSubscribeTicks]: () =>
-          Stream.tick("1 second").pipe(
-            Stream.mapAccum(
-              () => 0,
-              (count, _void) => {
-                const next = count + 1;
-                return [next, [next]] as const;
-              },
+          observeRpcStream(
+            WS_METHODS.serverSubscribeTicks,
+            Stream.tick("1 second").pipe(
+              Stream.mapAccum(
+                () => 0,
+                (count, _void) => {
+                  const next = count + 1;
+                  return [next, [next]] as const;
+                },
+              ),
+              Stream.mapEffect((tick) =>
+                DateTime.now.pipe(Effect.map((at): TickEvent => ({ tick, at }))),
+              ),
             ),
-            Stream.mapEffect((tick) =>
-              DateTime.now.pipe(Effect.map((at): TickEvent => ({ tick, at }))),
-            ),
+            { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverSubscribeLifecycle]: () =>
-          Stream.unwrap(
+          observeRpcStreamEffect(
+            WS_METHODS.serverSubscribeLifecycle,
             Effect.gen(function* () {
+              // Buffering starts before the snapshot is read: an event published
+              // while that read is in flight would otherwise fall in the gap
+              // between the replay and the live subscription.
               const liveBuffer = yield* Queue.unbounded<ServerLifecycleStreamEvent>();
               yield* Effect.forkScoped(
                 lifecycleEvents.stream.pipe(
@@ -91,11 +108,24 @@ const makeWsRpcLayer = () =>
               );
               return Stream.concat(Stream.fromIterable(replay), live);
             }),
+            { "rpc.aggregate": "server" },
           ),
-        [WS_METHODS.notesCreate]: (input) => notes.create(input),
-        [WS_METHODS.notesUpdate]: (input) => notes.update(input),
-        [WS_METHODS.notesDelete]: (input) => notes.remove(input),
-        [WS_METHODS.notesSubscribe]: () => notes.changes,
+        [WS_METHODS.notesCreate]: (input) =>
+          observeRpcEffect(WS_METHODS.notesCreate, notes.create(input), {
+            "rpc.aggregate": "notes",
+          }),
+        [WS_METHODS.notesUpdate]: (input) =>
+          observeRpcEffect(WS_METHODS.notesUpdate, notes.update(input), {
+            "rpc.aggregate": "notes",
+          }),
+        [WS_METHODS.notesDelete]: (input) =>
+          observeRpcEffect(WS_METHODS.notesDelete, notes.remove(input), {
+            "rpc.aggregate": "notes",
+          }),
+        [WS_METHODS.notesSubscribe]: () =>
+          observeRpcStream(WS_METHODS.notesSubscribe, notes.changes, {
+            "rpc.aggregate": "notes",
+          }),
       });
     }),
   );
@@ -120,6 +150,9 @@ export const websocketRpcRouteLayer = HttpRouter.add(
       return HttpServerResponse.text("Unauthorized", { status: 401 });
     }
 
+    // The handlers carry their own `ws.rpc.<method>` spans (see
+    // observability/RpcInstrumentation), so RpcServer's per-request span would
+    // only duplicate them.
     const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
       disableTracing: true,
     }).pipe(Effect.provide(makeWsRpcLayer().pipe(Layer.provideMerge(RpcSerialization.layerJson))));

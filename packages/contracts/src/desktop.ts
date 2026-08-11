@@ -21,14 +21,20 @@ export const DesktopUpdateStatus = Schema.Literals([
 export type DesktopUpdateStatus = typeof DesktopUpdateStatus.Type;
 
 export const DesktopUpdateState = Schema.Struct({
+  enabled: Schema.Boolean,
   status: DesktopUpdateStatus,
   channel: DesktopUpdateChannel,
-  version: Schema.NullOr(Schema.String),
+  currentVersion: Schema.String,
+  availableVersion: Schema.NullOr(Schema.String),
+  downloadedVersion: Schema.NullOr(Schema.String),
+  downloadPercent: Schema.NullOr(Schema.Number),
+  checkedAt: Schema.NullOr(Schema.String),
   message: Schema.NullOr(Schema.String),
+  errorContext: Schema.NullOr(Schema.Literals(["check", "download", "install"])),
+  canRetry: Schema.Boolean,
 });
 export type DesktopUpdateState = typeof DesktopUpdateState.Type;
 
-/** Static app identity the renderer reads synchronously at boot (branding). */
 export const DesktopAppInfo = Schema.Struct({
   name: TrimmedNonEmptyString,
   version: TrimmedNonEmptyString,
@@ -37,11 +43,6 @@ export const DesktopAppInfo = Schema.Struct({
 });
 export type DesktopAppInfo = typeof DesktopAppInfo.Type;
 
-/**
- * Where the local server lives + how to reach it, handed from shell to
- * renderer. In-shell the renderer is served same-origin, but it still needs to
- * know the ws URL and (separately, via `getBearerToken`) how to authenticate.
- */
 export const DesktopServerBootstrap = Schema.Struct({
   httpBaseUrl: TrimmedNonEmptyString,
   wsBaseUrl: TrimmedNonEmptyString,
@@ -62,9 +63,8 @@ export interface ContextMenuItem<T extends string = string> {
   readonly children?: readonly ContextMenuItem<T>[];
 }
 
-// Recursive schemas need an explicit type annotation (`Schema.suspend` breaks
-// inference), so the schema is typed by the interface's default instantiation.
-// It keeps the `Schema` suffix because the interface owns the bare name.
+// `Schema.suspend` breaks inference, so a recursive schema needs the explicit
+// annotation.
 export const ContextMenuItemSchema: Schema.Codec<ContextMenuItem> = Schema.Struct({
   id: Schema.String,
   label: Schema.String,

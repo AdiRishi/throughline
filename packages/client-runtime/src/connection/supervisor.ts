@@ -3,6 +3,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -10,7 +11,6 @@ import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import type * as Socket from "effect/unstable/socket/Socket";
 
 import { findErrorTraceId } from "../errors/errorTrace.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
@@ -26,34 +26,26 @@ import {
 } from "./model.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
 
-/**
- * Capped exponential backoff. The first rung is deliberately not sub-second: a
- * server that is still starting is the common case, and hammering it at 1s only
- * makes the log noisier without connecting sooner.
- */
+// The first rung is deliberately not sub-second: a server that is still
+// starting is the common case, and hammering it at 1s only makes the log
+// noisier without connecting sooner.
 const RETRY_DELAYS_MS = [3_000, 4_000, 8_000, 16_000] as const;
 const MAX_RETRY_DELAY_MS = 16_000;
 
-/**
- * Bounds the whole establishment phase (connect + readiness probe). The socket
- * layer's own open-timeout only bounds the raw open; a socket that opens but
- * whose readiness probe hangs would otherwise freeze the loop forever.
- */
+// Bounds connect + readiness probe together. The socket layer's own
+// open-timeout only bounds the raw open, so a socket that opens but whose
+// readiness probe hangs would otherwise freeze the loop forever.
 const CONNECTION_ESTABLISHMENT_TIMEOUT = "15 seconds";
 
-/**
- * The failure counter resets only after a session survives this long. A server
- * that accepts sockets and then crashes keeps escalating backoff instead of
- * being reconnected at the first rung forever.
- */
+const CONNECTION_PROBE_TIMEOUT = "15 seconds";
+
+// A server that accepts sockets and then crashes must keep escalating backoff,
+// so the failure counter resets only after a session survives this long.
 const BACKOFF_RESET_AFTER_MS = 30_000;
 
-/**
- * Everything that can interrupt whatever the loop is currently waiting on. One
- * unbounded queue is the single wake-up channel: whichever part of the loop is
- * parked (establishing, connected, backing off, blocked, offline) is the one
- * taking from it, so a signal can never be delivered to two waiters or dropped.
- */
+// One unbounded queue is the loop's single wake-up channel: whichever part of
+// the loop is parked (establishing, connected, backing off, blocked, offline)
+// is its only taker, so a signal can never be delivered twice or dropped.
 type SupervisorSignal =
   | { readonly _tag: "RetryRequested" }
   | { readonly _tag: "NetworkChanged"; readonly network: NetworkStatus }
@@ -109,13 +101,6 @@ function connectingState(
   };
 }
 
-/**
- * Collapse a finished attempt into an outcome the loop can act on. A typed
- * failure passes through as-is — transient OR blocked. A pure interrupt means
- * something else already decided what happens next; an unexpected defect is
- * synthesized into a transient failure instead of killing the supervisor fiber
- * (defects are never blocking).
- */
 function failureFromExit<A>(
   connection: PreparedConnection,
   exit: Exit.Exit<A, ConnectionAttemptError>,
@@ -145,12 +130,7 @@ function failureFromExit<A>(
 /**
  * Supervises exactly one connection: connect → hold open until it drops → wait
  * (capped backoff) → reconnect, forever. A blocked failure parks the loop
- * instead: it publishes `blocked` and waits for a signal that whatever blocked
- * it may have changed. Consumers observe two `SubscriptionRef`s:
- *
- * - `state`: the coarse phase + attempt count + last failure the UI renders.
- * - `session`: `Some(session)` while a socket is live, `None` otherwise. RPC
- *   subscriptions watch this to auto-re-attach across reconnects (see `client.ts`).
+ * instead, until a signal reports that whatever blocked it may have changed.
  */
 export class ConnectionSupervisor extends Context.Service<
   ConnectionSupervisor,
@@ -158,25 +138,26 @@ export class ConnectionSupervisor extends Context.Service<
     readonly state: SubscriptionRef.SubscriptionRef<ConnectionState>;
     readonly session: SubscriptionRef.SubscriptionRef<Option.Option<RpcSession.RpcSession>>;
     /**
-     * Wake the supervisor for an immediate fresh attempt and reset the backoff
-     * ladder to its first rung — call it after whatever blocked or slowed the
-     * connection (credentials, configuration) has changed. It cuts an
-     * in-progress backoff sleep short instead of waiting it out.
+     * Start a fresh attempt immediately and reset the backoff ladder to its
+     * first rung, cutting an in-progress backoff sleep short.
      */
     readonly retryNow: Effect.Effect<void>;
   }
 >()("@app/client-runtime/connection/supervisor/ConnectionSupervisor") {}
 
 /**
- * Build a supervisor for one connection and fork its loop into the current
- * scope. The loop (and its socket) is torn down when the scope closes.
+ * Forks the reconnect loop into the current scope; the loop and its live socket
+ * are torn down when that scope closes.
  */
 export const start = (
   connection: PreparedConnection,
 ): Effect.Effect<
   ConnectionSupervisor["Service"],
   never,
-  Scope.Scope | Socket.WebSocketConstructor
+  | Connectivity.Connectivity
+  | ConnectionWakeups.ConnectionWakeups
+  | RpcSession.RpcSessionFactory
+  | Scope.Scope
 > =>
   Effect.gen(function* () {
     const connectivity = yield* Connectivity.Connectivity;
@@ -190,6 +171,10 @@ export const start = (
     const network = yield* Ref.make<NetworkStatus>(yield* connectivity.status);
     const signals = yield* Queue.unbounded<SupervisorSignal>();
     const resetRetryState = yield* Ref.make(false);
+    // Set when a foreground wake probe fails or times out: the user is actively
+    // returning to the app on a dead transport, so the follow-up reconnect skips
+    // the first backoff rung instead of sleeping.
+    const wakeProbeFailed = yield* Ref.make(false);
 
     const clearSession = SubscriptionRef.set(session, Option.none());
     const setState = (next: ConnectionState) => SubscriptionRef.set(state, next);
@@ -201,13 +186,9 @@ export const start = (
       return active;
     });
 
-    /**
-     * Signals that abandon an in-flight establishment. An explicit retry or a
-     * network loss makes the current attempt pointless; a resume-triggered
-     * wakeup additionally means the ladder should restart at rung one. Every
-     * other signal is consumed here on purpose, so it cannot leak into the next
-     * `Queue.take` and cut a later backoff short.
-     */
+    // Every signal that does not abandon the in-flight establishment is
+    // consumed here on purpose, so it cannot leak into the next `Queue.take`
+    // and cut a later backoff short.
     const waitForEstablishmentInterrupt = Effect.fnUntraced(function* () {
       for (;;) {
         const next = yield* Queue.take(signals);
@@ -228,8 +209,7 @@ export const start = (
       }
     });
 
-    /** The same triage while a session is live: which signals end this session. */
-    const monitorConnectedSession = Effect.fnUntraced(function* () {
+    const monitorConnectedSession = Effect.fnUntraced(function* (active: RpcSession.RpcSession) {
       for (;;) {
         const next = yield* Queue.take(signals);
         switch (next._tag) {
@@ -241,11 +221,67 @@ export const start = (
             }
             break;
           case "Wakeup":
-            // Operating systems commonly suspend sockets without delivering a
-            // close event. A long background resume deliberately replaces that
-            // session and starts a fresh attempt without backoff.
             if (next.reason === "application-active-reconnect") {
+              // Operating systems commonly suspend sockets without delivering a
+              // close event. A long background resume deliberately replaces that
+              // session and starts a fresh attempt without backoff.
               return true;
+            }
+            if (
+              next.reason === "application-active" ||
+              next.reason === "application-active-probe"
+            ) {
+              // A shorter absence only warrants a health check. The probe is
+              // forked so the queue keeps draining while it runs; a probe that
+              // answers leaves the session alone, one that fails or stalls ends
+              // it as a transient failure.
+              const probe = yield* active.probe.pipe(
+                Effect.timeoutOrElse({
+                  duration: CONNECTION_PROBE_TIMEOUT,
+                  orElse: () =>
+                    Effect.fail(
+                      new ConnectionTransientError({
+                        reason: "timeout",
+                        detail: `${connection.label} did not respond to a connection health check.`,
+                      }),
+                    ),
+                }),
+                Effect.forkChild,
+              );
+              for (;;) {
+                const probeEvent = yield* Effect.raceFirst(
+                  Fiber.await(probe).pipe(
+                    Effect.map((exit) => ({ _tag: "ProbeCompleted" as const, exit })),
+                  ),
+                  Queue.take(signals).pipe(
+                    Effect.map((signal) => ({ _tag: "Signal" as const, signal })),
+                  ),
+                );
+                if (probeEvent._tag === "ProbeCompleted") {
+                  if (Exit.isFailure(probeEvent.exit)) {
+                    yield* Ref.set(wakeProbeFailed, true);
+                  }
+                  yield* probeEvent.exit;
+                  break;
+                }
+                switch (probeEvent.signal._tag) {
+                  case "RetryRequested":
+                    yield* Fiber.interrupt(probe);
+                    return false;
+                  case "NetworkChanged":
+                    if (probeEvent.signal.network === "offline") {
+                      yield* Fiber.interrupt(probe);
+                      return false;
+                    }
+                    break;
+                  case "Wakeup":
+                    if (probeEvent.signal.reason === "application-active-reconnect") {
+                      yield* Fiber.interrupt(probe);
+                      return true;
+                    }
+                    break;
+                }
+              }
             }
             break;
         }
@@ -253,11 +289,7 @@ export const start = (
     });
 
     const runAttempt = Effect.fnUntraced(
-      function* (): Effect.fn.Return<
-        AttemptOutcome,
-        never,
-        Scope.Scope | Socket.WebSocketConstructor
-      > {
+      function* (): Effect.fn.Return<AttemptOutcome, never, Scope.Scope> {
         const establishment = yield* Effect.raceAllFirst([
           exitUnlessInterrupted(establish()).pipe(
             Effect.map((exit): EstablishmentEvent => ({ _tag: "Completed", exit })),
@@ -295,10 +327,9 @@ export const start = (
             !Cause.hasInterruptsOnly(cause) && !cause.reasons.some(Cause.isFailReason);
           const outcome = failureFromExit(connection, establishment.exit, false, false);
           if (isUnexpectedDefect) {
-            // `safeErrorLogAttributes` takes the defect, not the cause: these
-            // annotations are forwarded off-process as OTLP spans and written to
-            // `.logs`, so a raw `Cause.pretty` dump would leak whatever the
-            // defect happens to carry (tokens in URLs, payload fragments).
+            // These annotations are forwarded off-process as OTLP spans, so a
+            // raw `Cause.pretty` dump would leak whatever the defect happens to
+            // carry (tokens in URLs, payload fragments).
             const defect = cause.reasons.find(Cause.isDieReason)?.defect;
             yield* Effect.logError("Connection attempt failed with an unexpected defect.").pipe(
               Effect.annotateLogs({
@@ -316,11 +347,9 @@ export const start = (
         yield* SubscriptionRef.set(session, Option.some(active));
         yield* setState({ phase: "connected", attempt: 0, lastFailure: null });
 
-        // Hold here until the socket drops (`closed` fails with the reason) or a
-        // signal decides this session is over.
         const connectedExit = yield* Effect.raceFirst(
           active.closed,
-          monitorConnectedSession(),
+          monitorConnectedSession(active),
         ).pipe(exitUnlessInterrupted);
         const connectedForMs = (yield* Clock.currentTimeMillis) - connectedAt;
         if (Exit.isSuccess(connectedExit)) {
@@ -338,18 +367,14 @@ export const start = (
           connectedForMs >= BACKOFF_RESET_AFTER_MS,
         );
       },
-      // Whatever ends the attempt — a drop, a signal, an interrupt from the
-      // enclosing scope — the published session must not outlive it. Without
-      // this, an interrupt while connected leaves a dead session on the ref and
-      // `request()` dispatches into a torn-down RPC client instead of failing
-      // with `RpcUnavailableError`.
+      // Whatever ends the attempt, the published session must not outlive it:
+      // an interrupt while connected would otherwise leave a dead session on
+      // the ref, and `request` would dispatch into a torn-down RPC client
+      // instead of failing with `RpcUnavailableError`.
       Effect.ensuring(clearSession),
     );
 
-    /**
-     * Park until something happens. The boolean answers "should the retry ladder
-     * restart?" — only a user-visible return to the app earns a fresh rung.
-     */
+    /** Parks until a signal arrives; the boolean answers "restart the retry ladder?". */
     const waitForSignal = Queue.take(signals).pipe(
       Effect.map(
         (next) =>
@@ -357,7 +382,6 @@ export const start = (
       ),
     );
 
-    /** The backoff sleep, racing the signal queue so an explicit retry cuts it short. */
     const waitForRetrySignal = Effect.fnUntraced(function* (delayMs: number) {
       return yield* Effect.raceFirst(
         Effect.sleep(delayMs).pipe(Effect.as(false)),
@@ -407,12 +431,12 @@ export const start = (
         yield* setState(connectingState(everConnected, attempt, latestFailure));
 
         const outcome = yield* Effect.scoped(runAttempt());
+        // Consumed on every iteration so a stale marker can never leak into a
+        // later, unrelated failure.
+        const failedWakeProbe = yield* Ref.getAndSet(wakeProbeFailed, false);
         if (outcome.established) {
           everConnected = true;
           if (outcome.stable) {
-            // Backoff only resets after a *stable* session — a crash-flapping
-            // server (accepts the socket, dies moments later) keeps escalating
-            // toward the 16s cap instead of being hammered at the first rung.
             failureCount = 0;
             latestFailure = null;
           }
@@ -426,13 +450,20 @@ export const start = (
 
         latestFailure = outcome.failure;
         if (outcome.failure._tag === "ConnectionBlockedError") {
-          // A blocked failure never feeds the backoff schedule: publish
-          // `blocked` and park until an external signal reports that whatever
-          // blocked us may have changed.
           yield* setState({ phase: "blocked", attempt, lastFailure: outcome.failure });
           if (yield* waitForSignal) {
             failureCount = 0;
           }
+          continue;
+        }
+
+        if (failedWakeProbe) {
+          // The wake probe found a dead transport while the user is returning to
+          // the app, so reconnect immediately instead of sleeping the first
+          // backoff rung. Only this first attempt skips the ladder; if it fails
+          // too, normal backoff resumes.
+          failureCount = 0;
+          yield* setState(connectingState(everConnected, 1, outcome.failure));
           continue;
         }
 
@@ -472,18 +503,16 @@ export const start = (
     );
 
     // Shutting the queue down interrupts whichever `Queue.take` the loop is
-    // parked on, then the published session is cleared — teardown never leaves
-    // a dead session visible to `request`/`subscribe`.
+    // parked on, so teardown never leaves a dead session visible to callers.
     yield* Effect.addFinalizer(() => Queue.shutdown(signals).pipe(Effect.andThen(clearSession)));
 
     return ConnectionSupervisor.of({ state, session, retryNow });
   });
 
-/**
- * A `Layer` that supervises `connection` and provides `ConnectionSupervisor` to
- * the rest of the runtime — so `request`/`subscribe` resolve the same instance.
- */
 export const layer = (
   connection: PreparedConnection,
-): Layer.Layer<ConnectionSupervisor, never, Socket.WebSocketConstructor> =>
-  Layer.effect(ConnectionSupervisor, start(connection));
+): Layer.Layer<
+  ConnectionSupervisor,
+  never,
+  Connectivity.Connectivity | ConnectionWakeups.ConnectionWakeups | RpcSession.RpcSessionFactory
+> => Layer.effect(ConnectionSupervisor, start(connection));

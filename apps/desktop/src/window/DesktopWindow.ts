@@ -1,3 +1,4 @@
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -16,6 +17,12 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import { MENU_ACTION_CHANNEL } from "../ipc/channels.ts";
 
 const DEVELOPMENT_LOAD_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
+// Renderer crash (usually V8 OOM on long sessions) recovery: reload after a
+// short delay, at most MAX_ATTEMPTS times per rolling WINDOW so a renderer
+// that dies on boot cannot reload-loop forever.
+const RENDERER_RECOVERY_RELOAD_DELAY_MS = 500;
+const RENDERER_RECOVERY_MAX_ATTEMPTS = 3;
+const RENDERER_RECOVERY_WINDOW_MS = 60_000;
 const DEVELOPMENT_RETRYABLE_LOAD_ERROR_CODES = new Set([
   -2, // ERR_FAILED
   -7, // ERR_TIMED_OUT
@@ -25,11 +32,6 @@ const DEVELOPMENT_RETRYABLE_LOAD_ERROR_CODES = new Set([
   -106, // ERR_INTERNET_DISCONNECTED
   -118, // ERR_CONNECTION_TIMED_OUT
 ]);
-
-// Owns the main BrowserWindow: creates it with the hardened webPreferences,
-// loads the server (or dev) URL, and reveals it on `ready-to-show`. A
-// readiness latch (`backendReadyRef`) gates window creation until the backend
-// reports ready — set/cleared by the backend manager's onReady/onNotReady.
 
 type DesktopWindowRuntimeServices =
   | DesktopEnvironment.DesktopEnvironment
@@ -42,22 +44,15 @@ export type DesktopWindowError = ElectronWindow.ElectronWindowCreateError;
 export class DesktopWindow extends Context.Service<
   DesktopWindow,
   {
-    // Reveal the main window, creating it first if the backend is ready
-    // (macOS dock-click / second-instance behaviour).
     readonly activate: Effect.Effect<void, DesktopWindowError>;
-    // Marks the backend ready and opens the main window. Reports the resolved
-    // config for the readiness log; the renderer is served same-origin so the
-    // URL is derived from the environment, not this callback.
     readonly handleBackendReady: (
       config: DesktopBackendStartConfig,
     ) => Effect.Effect<void, DesktopWindowError>;
-    // Clears the latch so a dock-click while the backend is down can't open a
+    // Clears the latch so a dock click while the backend is down can't open a
     // window pointing at nothing.
     readonly handleBackendNotReady: Effect.Effect<void>;
     readonly dispatchMenuAction: (action: string) => Effect.Effect<void, DesktopWindowError>;
-    // Builds the native application menu and installs it. Call once, after the
-    // app is ready; menu clicks dispatch actions to the renderer.
-    readonly installApplicationMenu: Effect.Effect<void>;
+    readonly syncAppearance: Effect.Effect<void>;
   }
 >()("@app/desktop/window/DesktopWindow") {}
 
@@ -67,8 +62,32 @@ function initialBackgroundColor(shouldUseDarkColors: boolean): string {
   return shouldUseDarkColors ? "#0a0a0a" : "#ffffff";
 }
 
-// The renderer origin: the dev web server in development, otherwise the local
-// backend (which serves the built web app same-origin).
+function syncWindowAppearance(
+  window: Electron.BrowserWindow,
+  shouldUseDarkColors: boolean,
+): Effect.Effect<void> {
+  return Effect.sync(() => {
+    if (window.isDestroyed()) {
+      return;
+    }
+
+    window.setBackgroundColor(initialBackgroundColor(shouldUseDarkColors));
+  });
+}
+
+// The window is created with `show: false`, so a reveal trigger is the only
+// thing that ever makes it visible. Several triggers are bound on Linux, where
+// `ready-to-show` is unreliable, so the latch keeps the first one to fire the
+// only one that reveals.
+function makeFirstRevealTrigger(reveal: () => void): () => void {
+  let revealed = false;
+  return () => {
+    if (revealed) return;
+    revealed = true;
+    reveal();
+  };
+}
+
 function resolveApplicationUrl(
   environment: DesktopEnvironment.DesktopEnvironment["Service"],
 ): string {
@@ -128,43 +147,6 @@ export function isRetryableDevelopmentRendererLoadFailure(input: {
   );
 }
 
-// A minimal cross-platform application menu. The custom items dispatch string
-// actions to the renderer (received via preload's `onMenuAction`); everything
-// else uses Electron's built-in roles. This is the template the renderer's
-// menu-action handler is driven by — extend it with your own commands.
-function buildApplicationMenuTemplate(
-  appName: string,
-  platform: string,
-  onAction: (action: string) => void,
-): Electron.MenuItemConstructorOptions[] {
-  const isMac = platform === "darwin";
-  const template: Electron.MenuItemConstructorOptions[] = [];
-  if (isMac) {
-    template.push({ role: "appMenu" });
-  }
-  template.push(
-    {
-      label: "File",
-      submenu: [
-        {
-          label: "Preferences…",
-          accelerator: "CmdOrCtrl+,",
-          click: () => onAction("preferences"),
-        },
-        { type: "separator" },
-        isMac ? { role: "close" } : { role: "quit" },
-      ],
-    },
-    { role: "editMenu" },
-    { role: "viewMenu" },
-    {
-      label: "Help",
-      submenu: [{ label: `About ${appName}`, click: () => onAction("about") }],
-    },
-  );
-  return template;
-}
-
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const electronMenu = yield* ElectronMenu.ElectronMenu;
@@ -212,7 +194,6 @@ export const make = Effect.gen(function* () {
       },
     );
 
-    // Open http/https links externally instead of navigating the shell.
     yield* electronWindow.setWindowOpenHandler(window, ({ url }) => {
       if (Option.isSome(ElectronShell.parseSafeExternalUrl(url))) {
         void runPromise(electronShell.openExternal(url));
@@ -235,20 +216,70 @@ export const make = Effect.gen(function* () {
       }
     });
 
+    window.webContents.on("context-menu", (event, params) => {
+      event.preventDefault();
+
+      const menuTemplate: Electron.MenuItemConstructorOptions[] = [];
+
+      if (params.misspelledWord) {
+        for (const suggestion of params.dictionarySuggestions.slice(0, 5)) {
+          menuTemplate.push({
+            label: suggestion,
+            click: () => window.webContents.replaceMisspelling(suggestion),
+          });
+        }
+        if (params.dictionarySuggestions.length === 0) {
+          menuTemplate.push({ label: "No suggestions", enabled: false });
+        }
+        menuTemplate.push({ type: "separator" });
+      }
+
+      if (Option.isSome(ElectronShell.parseSafeExternalUrl(params.linkURL))) {
+        menuTemplate.push(
+          {
+            label: "Copy Link",
+            click: () => {
+              void runPromise(electronShell.copyText(params.linkURL));
+            },
+          },
+          { type: "separator" },
+        );
+      }
+
+      if (params.mediaType === "image") {
+        menuTemplate.push({
+          label: "Copy Image",
+          click: () => window.webContents.copyImageAt(params.x, params.y),
+        });
+        menuTemplate.push({ type: "separator" });
+      }
+
+      menuTemplate.push(
+        { role: "cut", enabled: params.editFlags.canCut },
+        { role: "copy", enabled: params.editFlags.canCopy },
+        { role: "paste", enabled: params.editFlags.canPaste },
+        { role: "selectAll", enabled: params.editFlags.canSelectAll },
+      );
+
+      void runPromise(electronMenu.popupTemplate({ window, template: menuTemplate }));
+    });
+
     window.on("page-title-updated", (event) => {
       event.preventDefault();
       window.setTitle(environment.displayName);
     });
 
-    yield* electronWindow.onReadyToShow(window, () => {
+    const fireReveal = makeFirstRevealTrigger(() => {
       void runPromise(electronWindow.reveal(window));
     });
-    yield* electronWindow.onClosed(window, () => {
-      void runPromise(electronWindow.clearMain(Option.some(window)));
-    });
+    yield* electronWindow.onReadyToShow(window, fireReveal);
+    if (environment.platform === "linux") {
+      window.webContents.once("did-finish-load", fireReveal);
+    }
 
     let developmentLoadRetryIndex = 0;
     let developmentLoadRetryFiber: Fiber.Fiber<void, never> | undefined;
+    let rendererRecoveryTimestamps: number[] = [];
     const clearDevelopmentLoadRetry = () => {
       if (developmentLoadRetryFiber === undefined) {
         return;
@@ -330,15 +361,49 @@ export const make = Effect.gen(function* () {
       },
     );
     window.webContents.on("render-process-gone", (_event, details) => {
-      void runPromise(
-        logWarning("main window render process gone", {
-          reason: details.reason,
-          exitCode: details.exitCode,
+      const recoverable =
+        details.reason === "crashed" ||
+        details.reason === "oom" ||
+        details.reason === "abnormal-exit";
+      // Long sessions can OOM the renderer (V8 heap exhaustion). Without a
+      // reload the user is left staring at a dead window, so recover by
+      // reloading — the renderer rehydrates from the backend, which is
+      // unaffected. Recovery attempts are bounded so a renderer that dies
+      // immediately on boot cannot reload-loop forever.
+      runFork(
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          rendererRecoveryTimestamps = rendererRecoveryTimestamps.filter(
+            (timestamp) => now - timestamp < RENDERER_RECOVERY_WINDOW_MS,
+          );
+          const shouldRecover =
+            recoverable &&
+            !window.isDestroyed() &&
+            rendererRecoveryTimestamps.length < RENDERER_RECOVERY_MAX_ATTEMPTS;
+          yield* logWarning("main window render process gone", {
+            reason: details.reason,
+            exitCode: details.exitCode,
+            recovering: shouldRecover,
+          });
+          if (!shouldRecover) {
+            return;
+          }
+          rendererRecoveryTimestamps.push(now);
+          yield* Effect.sleep(RENDERER_RECOVERY_RELOAD_DELAY_MS);
+          if (!window.isDestroyed()) {
+            loadApplication();
+          }
         }),
       );
     });
 
     loadApplication();
+
+    yield* electronWindow.onClosed(window, () => {
+      clearDevelopmentLoadRetry();
+      void runPromise(electronWindow.clearMain(Option.some(window)));
+    });
+
     return window;
   });
 
@@ -356,30 +421,29 @@ export const make = Effect.gen(function* () {
     yield* createMain;
   }).pipe(Effect.withSpan("desktop.window.createMainIfBackendReady"));
 
-  // Re-open the window first if it can point at a ready backend; if none exists
-  // (e.g. a menu click during startup) there is nothing to receive the action.
   const dispatchMenuAction = Effect.fn("desktop.window.dispatchMenuAction")(function* (
     action: string,
   ) {
     yield* createMainIfBackendReady;
     const window = yield* electronWindow.currentMainOrFirst;
     if (Option.isNone(window)) return;
-    yield* electronWindow.send(window.value, MENU_ACTION_CHANNEL, action);
-    yield* electronWindow.reveal(window.value);
-  });
+    const targetWindow = window.value;
 
-  // Menu clicks arrive as raw Electron callbacks, so bridge each back into the
-  // Effect world via `runPromise` (a dispatch failure is logged, not thrown).
-  const installApplicationMenu = Effect.gen(function* () {
-    const template = buildApplicationMenuTemplate(
-      environment.displayName,
-      environment.platform,
-      (action) => {
-        void runPromise(dispatchMenuAction(action).pipe(Effect.ignore({ log: true })));
-      },
-    );
-    yield* electronMenu.setApplicationMenu(template);
-  }).pipe(Effect.withSpan("desktop.window.installApplicationMenu"));
+    const send = () => {
+      if (targetWindow.isDestroyed()) return;
+      targetWindow.webContents.send(MENU_ACTION_CHANNEL, action);
+      void runPromise(electronWindow.reveal(targetWindow));
+    };
+
+    // The window may have just been created, so the preload/renderer has not
+    // attached its menu-action listener yet; sending now would drop the action.
+    if (targetWindow.webContents.isLoadingMainFrame()) {
+      targetWindow.webContents.once("did-finish-load", send);
+      return;
+    }
+
+    send();
+  });
 
   return DesktopWindow.of({
     activate: Effect.gen(function* () {
@@ -406,7 +470,12 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("desktop.window.handleBackendNotReady"),
     ),
     dispatchMenuAction,
-    installApplicationMenu,
+    syncAppearance: Effect.gen(function* () {
+      const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
+      yield* electronWindow.syncAllAppearance((window) =>
+        syncWindowAppearance(window, shouldUseDarkColors),
+      );
+    }).pipe(Effect.withSpan("desktop.window.syncAppearance")),
   });
 });
 

@@ -19,7 +19,11 @@ import {
   INITIAL_CONNECTION_STATE,
   type PreparedConnection,
 } from "@app/client-runtime/connection";
-import { request as rpcRequest, subscribe as rpcSubscribe } from "@app/client-runtime/rpc";
+import {
+  request as rpcRequest,
+  rpcSessionFactoryLayer,
+  subscribe as rpcSubscribe,
+} from "@app/client-runtime/rpc";
 import type { ServerConfig, ServerLifecyclePhase } from "@app/contracts";
 
 import { isElectron, resolveConnectionTargetResult } from "../env.ts";
@@ -29,11 +33,6 @@ import { browserConnectivityLayer, browserWakeupsLayer } from "./platformSignals
 
 const BOOTSTRAP_TOKEN = import.meta.env.VITE_BOOTSTRAP_TOKEN;
 
-/**
- * Obtain a bearer token (integration contract):
- * - In the shell: ask the bridge.
- * - In the browser: POST the bootstrap credential and read `access_token`.
- */
 function obtainBearerToken(httpBaseUrl: string): Effect.Effect<string, ConnectionAttemptError> {
   if (isElectron && window.desktopBridge) {
     const bridge = window.desktopBridge;
@@ -57,19 +56,17 @@ function obtainBearerToken(httpBaseUrl: string): Effect.Effect<string, Connectio
   );
 }
 
-/** Build the fully-formed WS URL, carrying the token as a query param. */
 function socketUrl(wsBaseUrl: string, token: string): string {
   const base = wsBaseUrl.replace(/\/$/, "");
   return `${base}/ws?access_token=${encodeURIComponent(token)}`;
 }
 
 /**
- * The connection layer: the supervisor (which owns the socket + reconnect
- * loop) over the one platform seam it needs — a browser WebSocket constructor.
- * The connection target and bearer token are resolved inside EVERY attempt, so
- * a bridge whose server bootstrap is not ready yet, or a failed mint, is just
- * another transient failure the supervisor backs off from and retries — while
- * a rejected credential (401/403) blocks the loop until it changes.
+ * The connection layer. The target and bearer token are resolved inside EVERY
+ * attempt, so a bridge whose server bootstrap is not ready yet, or a failed
+ * mint, is just another transient failure the supervisor backs off from and
+ * retries — while a rejected credential (401/403) blocks the loop until it
+ * changes.
  */
 export function makeConnectionLayer(): Layer.Layer<ConnectionSupervisor> {
   const connection: PreparedConnection = {
@@ -78,8 +75,7 @@ export function makeConnectionLayer(): Layer.Layer<ConnectionSupervisor> {
       // A target that cannot be parsed is broken configuration, not weather:
       // backing off would retry the same malformed URL forever, and letting the
       // throw escape would make it a defect that kills the runtime and every
-      // atom on it. Park instead, with the reason on the connection state where
-      // the UI already renders it.
+      // atom on it. Park instead, with the reason on the connection state.
       const targetRead = resolveConnectionTargetResult();
       if (targetRead._tag === "Failure") {
         return Effect.fail(
@@ -93,7 +89,7 @@ export function makeConnectionLayer(): Layer.Layer<ConnectionSupervisor> {
       return obtainBearerToken(target.httpBaseUrl).pipe(
         // The trace-ingest route is bearer-gated like `/ws`, so hand the
         // exporter the credential this attempt just minted. Tracing is not
-        // load-bearing: a failure here must never fail the connection.
+        // load-bearing, so a failure here must never fail the connection.
         Effect.tap((token) =>
           Effect.promise(() => configureClientTracing({ bearerToken: token })).pipe(Effect.ignore),
         ),
@@ -102,9 +98,9 @@ export function makeConnectionLayer(): Layer.Layer<ConnectionSupervisor> {
     }),
   };
   return connectionSupervisorLayer(connection).pipe(
-    Layer.provide(Socket.layerWebSocketConstructorGlobal),
-    // Without these the supervisor's platform seams stay at their no-op
-    // defaults, and a `blocked` connection has nothing that can wake it.
+    Layer.provide(
+      rpcSessionFactoryLayer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal)),
+    ),
     Layer.provide(browserConnectivityLayer),
     Layer.provide(browserWakeupsLayer),
     Layer.provideMerge(observabilityLayer),
@@ -112,15 +108,11 @@ export function makeConnectionLayer(): Layer.Layer<ConnectionSupervisor> {
 }
 
 /**
- * The renderer's observability, mirroring the server and shell: pretty logs to
- * the DevTools console, plus `Logger.tracerLogger` so logs emitted inside a
- * span become span events. The tracer exports those spans to the server, which
- * writes them into the same trace file it writes its own spans to — so a
- * renderer failure is readable without opening DevTools.
- *
+ * `Logger.tracerLogger` turns logs emitted inside a span into span events, so a
+ * renderer failure is readable in the trace files rather than only in DevTools.
  * `configureClientTracing` is kicked off when the layer is built rather than at
  * module load, because the export URL depends on the resolved connection
- * target. Until it completes, spans are local-only.
+ * target; until it completes, spans are local-only.
  */
 const observabilityLayer = Layer.mergeAll(
   Logger.layer([Logger.consolePretty(), Logger.tracerLogger], { mergeWithExisting: false }),
@@ -130,8 +122,8 @@ const observabilityLayer = Layer.mergeAll(
 
 /**
  * Build the app's atoms against an `AtomRuntime` that provides the supervisor.
- * A factory (rather than module-level atoms) so tests can instantiate the same
- * atoms over a scripted runtime.
+ * A factory rather than module-level atoms, so the same atoms can be built over
+ * a different runtime.
  */
 export function createConnectionAtoms<R, E>(
   runtime: Atom.AtomRuntime<ConnectionSupervisor | R, E>,
@@ -145,16 +137,15 @@ export function createConnectionAtoms<R, E>(
     { initialValue: INITIAL_CONNECTION_STATE },
   );
 
-  /** The coarse phase + attempt count the UI renders. Never empty. */
+  /** Never empty: an unresolved stream reads as the initial state. */
   const stateAtom = Atom.make((get) =>
     Option.getOrElse(AsyncResult.value(get(stateResultAtom)), () => INITIAL_CONNECTION_STATE),
   ).pipe(Atom.withLabel("connection-state"));
 
   /**
-   * Server config, re-fetched per session: every fresh session emits one
-   * `getConfig` result (the "first request doubles as initial sync" contract),
-   * and a drop clears it back to null. A failed fetch also yields null instead
-   * of killing the stream, so the next reconnect still re-syncs.
+   * Re-fetched per session: a drop clears the config back to null, and a failed
+   * fetch yields null instead of killing the stream so the next reconnect still
+   * re-syncs.
    */
   const serverConfigResultAtom = runtime.atom(
     Stream.unwrap(
@@ -183,9 +174,8 @@ export function createConnectionAtoms<R, E>(
     Option.getOrElse(AsyncResult.value(get(serverConfigResultAtom)), () => null),
   ).pipe(Atom.withLabel("server-config"));
 
-  // Live lifecycle stream. The client-runtime subscription watches the session
-  // ref and re-attaches across reconnects by itself, so the atom subscribes
-  // once for as long as it stays mounted.
+  // The subscription watches the session ref and re-attaches across reconnects
+  // by itself, so the atom subscribes once for as long as it stays mounted.
   const lifecycleResultAtom = runtime.atom(
     rpcSubscribe("server.subscribeLifecycle", {}).pipe(Stream.map((event) => event.phase)),
   );
@@ -201,7 +191,6 @@ export function createConnectionAtoms<R, E>(
   } as const;
 }
 
-/** The app's runtime + atoms. Components import these; tests build their own. */
 export const connectionRuntime: Atom.AtomRuntime<ConnectionSupervisor> =
   Atom.runtime(makeConnectionLayer());
 

@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - Resolves the oxlint bin off disk to spawn it directly.
+import * as NodeModule from "node:module";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Data from "effect/Data";
@@ -9,6 +12,14 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+
+// `node_modules/.bin/oxlint` is a package-manager shim (a POSIX shell script,
+// a .CMD on Windows), so resolve the package's own bin instead. Doing it at
+// module scope makes a broken install fail once with a resolution error rather
+// than as an opaque defect in every test.
+const oxlintPackageJsonPath = NodeModule.createRequire(import.meta.url).resolve(
+  "oxlint/package.json",
+);
 
 class OxlintFixtureFailure extends Data.TaggedError("OxlintFixtureFailure")<{
   readonly exitCode: number;
@@ -93,7 +104,7 @@ export const createOxlintRuleHarness = (
     const configPath = path.join(fixtureDir, ".oxlintrc.json");
     const sourcePath = path.join(fixtureDir, options.filename ?? "fixture.ts");
     const repoRoot = path.join(import.meta.dirname, "..", "..");
-    const oxlintBin = path.join(repoRoot, "node_modules", ".bin", "oxlint");
+    const oxlintBin = path.join(path.dirname(oxlintPackageJsonPath), "bin", "oxlint");
     const pluginPath = path.join(repoRoot, "oxlint-plugin-app", "index.ts");
 
     yield* fs.writeFileString(
@@ -105,8 +116,13 @@ export const createOxlintRuleHarness = (
     );
     yield* fs.writeFileString(sourcePath, source);
 
+    // Run through the current Node binary: oxlint's bin is an extensionless
+    // shebang script, which Windows cannot spawn directly and which would
+    // otherwise pick up whatever node is first on PATH.
     const output = yield* spawnAndCollectOutput(
-      ChildProcess.make(oxlintBin, ["--config", configPath, sourcePath], { cwd: repoRoot }),
+      ChildProcess.make(process.execPath, [oxlintBin, "--config", configPath, sourcePath], {
+        cwd: repoRoot,
+      }),
     );
 
     if (output.exitCode !== 0) {
