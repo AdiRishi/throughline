@@ -52,3 +52,28 @@ export type BearerSession = typeof BearerSession.Type;
  * explicitly on both ends.
  */
 export const BearerSessionJson = Schema.toCodecJson(BearerSession);
+
+/**
+ * Query parameter carrying the `/ws` upgrade ticket.
+ *
+ * A browser cannot set headers on a WebSocket handshake, so the credential has
+ * to travel in the URL — and a URL is the worst place to put a long-lived
+ * secret: it lands in server access logs, proxy logs, `Referer` headers and
+ * browser history. So what goes here is NOT the session bearer but a
+ * single-use, minutes-long ticket minted from it. Leaking the ticket costs one
+ * already-consumed connection; leaking the bearer costs the session.
+ */
+export const WS_TICKET_QUERY_PARAM = "wsTicket";
+
+/**
+ * Result of `POST /api/auth/websocket-ticket`. The ticket is valid once, for a
+ * few minutes — long enough to open a socket, short enough that a logged URL is
+ * worthless by the time anyone reads it.
+ */
+export const WebSocketTicket = Schema.Struct({
+  ticket: TrimmedNonEmptyString,
+  expires_at: Schema.DateTimeUtc,
+});
+export type WebSocketTicket = typeof WebSocketTicket.Type;
+
+export const WebSocketTicketJson = Schema.toCodecJson(WebSocketTicket);

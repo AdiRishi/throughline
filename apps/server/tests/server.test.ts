@@ -22,7 +22,9 @@ import * as Socket from "effect/unstable/socket/Socket";
 
 import {
   BearerSessionJson,
+  WebSocketTicketJson,
   WS_METHODS,
+  WS_TICKET_QUERY_PARAM,
   WsRpcGroup,
   type ServerLifecycleStreamEvent,
 } from "@app/contracts";
@@ -30,7 +32,12 @@ import type { TraceRecord } from "@app/shared/observability";
 
 import * as Auth from "../src/auth.ts";
 import * as ServerConfig from "../src/config.ts";
-import { AUTH_BOOTSTRAP_PATH, HEALTH_PATH, OTLP_TRACES_PROXY_PATH } from "../src/http.ts";
+import {
+  AUTH_BOOTSTRAP_PATH,
+  AUTH_WEBSOCKET_TICKET_PATH,
+  HEALTH_PATH,
+  OTLP_TRACES_PROXY_PATH,
+} from "../src/http.ts";
 import * as LifecycleEvents from "../src/lifecycleEvents.ts";
 import * as NotesStore from "../src/notes/NotesStore.ts";
 import * as BrowserTraceCollector from "../src/observability/BrowserTraceCollector.ts";
@@ -115,6 +122,7 @@ const appLayer = (options: HarnessOptions = {}) =>
   );
 
 const decodeBearerSession = Schema.decodeUnknownSync(BearerSessionJson);
+const decodeWebSocketTicket = Schema.decodeUnknownSync(WebSocketTicketJson);
 
 const postJson = (path: string, body: string) =>
   HttpClient.post(path, { body: HttpBody.text(body, "application/json") });
@@ -256,6 +264,72 @@ describe("bearer bootstrap exchange", () => {
     }).pipe(Effect.provide(appLayer())),
   );
 
+  // A WebSocket URL is logged by every proxy in the path and kept in browser
+  // history, so what travels there must be worth as little as possible.
+  it.effect("mints a single-use websocket ticket that is not the session bearer", () =>
+    Effect.gen(function* () {
+      const auth = yield* Auth.BearerSessionStore;
+      const minted = yield* auth.authenticateBootstrap(BOOTSTRAP_TOKEN);
+      const bearer = Option.getOrThrow(minted).token;
+
+      const issued = yield* auth.issueWebSocketTicket(bearer);
+      const ticket = Option.getOrThrow(issued).ticket;
+
+      assert.notEqual(ticket, bearer);
+      // A ticket is not a bearer and a bearer is not a ticket.
+      assert.isFalse(yield* auth.authenticateBearer(ticket));
+      assert.isFalse(yield* auth.redeemWebSocketTicket(bearer));
+
+      assert.isTrue(yield* auth.redeemWebSocketTicket(ticket));
+      // Consumed: a URL captured from a log cannot open a second socket.
+      assert.isFalse(yield* auth.redeemWebSocketTicket(ticket));
+    }).pipe(Effect.provide(appLayer())),
+  );
+
+  it.effect("expires a websocket ticket well before the session bearer", () =>
+    Effect.gen(function* () {
+      const auth = yield* Auth.BearerSessionStore;
+      const minted = yield* auth.authenticateBootstrap(BOOTSTRAP_TOKEN);
+      const bearer = Option.getOrThrow(minted).token;
+      const ticket = Option.getOrThrow(yield* auth.issueWebSocketTicket(bearer)).ticket;
+
+      yield* TestClock.adjust("6 minutes");
+
+      assert.isFalse(yield* auth.redeemWebSocketTicket(ticket));
+      // The session it was minted from is untouched.
+      assert.isTrue(yield* auth.authenticateBearer(bearer));
+    }).pipe(Effect.provide(appLayer())),
+  );
+
+  it.effect("refuses to mint a ticket without a live bearer", () =>
+    Effect.gen(function* () {
+      const auth = yield* Auth.BearerSessionStore;
+      assert.isTrue(Option.isNone(yield* auth.issueWebSocketTicket("not-a-session")));
+
+      const response = yield* HttpClient.post(AUTH_WEBSOCKET_TICKET_PATH, {
+        headers: { authorization: "Bearer not-a-session" },
+      });
+      assert.equal(response.status, 401);
+    }).pipe(Effect.provide(appLayer())),
+  );
+
+  it.effect("issues a ticket over HTTP for a live bearer", () =>
+    Effect.gen(function* () {
+      const auth = yield* Auth.BearerSessionStore;
+      const minted = yield* auth.authenticateBootstrap(BOOTSTRAP_TOKEN);
+      const bearer = Option.getOrThrow(minted).token;
+
+      const response = yield* HttpClient.post(AUTH_WEBSOCKET_TICKET_PATH, {
+        headers: { authorization: `Bearer ${bearer}` },
+      });
+      assert.equal(response.status, 200);
+
+      const issued = decodeWebSocketTicket(yield* response.json);
+      assert.match(issued.ticket, /^[0-9a-f]{64}$/);
+      assert.isTrue(yield* auth.redeemWebSocketTicket(issued.ticket));
+    }).pipe(Effect.provide(appLayer())),
+  );
+
   it.effect("rejects malformed bodies with 400", () =>
     Effect.gen(function* () {
       const empty = yield* postJson(AUTH_BOOTSTRAP_PATH, JSON.stringify({ credential: "  " }));
@@ -305,10 +379,16 @@ describe("websocket gate", () => {
           JSON.stringify({ credential: BOOTSTRAP_TOKEN }),
         );
         const session = decodeBearerSession(yield* response.json);
+        // The upgrade takes a single-use ticket, not the session bearer — the
+        // URL is the one place the long-lived credential must never appear.
+        const ticketResponse = yield* HttpClient.post(AUTH_WEBSOCKET_TICKET_PATH, {
+          headers: { authorization: `Bearer ${session.access_token}` },
+        });
+        const issued = decodeWebSocketTicket(yield* ticketResponse.json);
         const server = yield* HttpServer.HttpServer;
         const address = server.address;
         const port = typeof address === "string" || !("port" in address) ? 0 : address.port;
-        const wsUrl = `ws://127.0.0.1:${port}/ws?access_token=${encodeURIComponent(session.access_token)}`;
+        const wsUrl = `ws://127.0.0.1:${port}/ws?${WS_TICKET_QUERY_PARAM}=${encodeURIComponent(issued.ticket)}`;
 
         const events = yield* Effect.scoped(
           withWsRpcClient(wsUrl, (client) =>

@@ -8,7 +8,10 @@ import { FetchHttpClient } from "effect/unstable/http";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import * as Socket from "effect/unstable/socket/Socket";
 
-import { bootstrapRemoteBearerSession } from "@app/client-runtime/authorization";
+import {
+  bootstrapRemoteBearerSession,
+  issueRemoteWebSocketTicket,
+} from "@app/client-runtime/authorization";
 import {
   type ConnectionAttemptError,
   ConnectionBlockedError,
@@ -24,7 +27,11 @@ import {
   rpcSessionFactoryLayer,
   subscribe as rpcSubscribe,
 } from "@app/client-runtime/rpc";
-import type { ServerConfig, ServerLifecyclePhase } from "@app/contracts";
+import {
+  WS_TICKET_QUERY_PARAM,
+  type ServerConfig,
+  type ServerLifecyclePhase,
+} from "@app/contracts";
 
 import { isElectron, resolveConnectionTargetResult } from "../env.ts";
 import { errorMessage } from "../errors.ts";
@@ -56,9 +63,27 @@ function obtainBearerToken(httpBaseUrl: string): Effect.Effect<string, Connectio
   );
 }
 
-function socketUrl(wsBaseUrl: string, token: string): string {
+/**
+ * Trade the bearer for a single-use ticket to put in the socket URL.
+ *
+ * The bearer never goes in the URL: a WebSocket URL is logged by every proxy and
+ * server in the path and kept in browser history, and the bearer is good for 30
+ * days. The ticket is good for one connection and a few minutes.
+ */
+function obtainSocketTicket(
+  httpBaseUrl: string,
+  bearerToken: string,
+): Effect.Effect<string, ConnectionAttemptError> {
+  return issueRemoteWebSocketTicket({ httpBaseUrl, bearerToken }).pipe(
+    Effect.map((issued) => issued.ticket),
+    Effect.mapError(mapBearerBootstrapError),
+    Effect.provide(FetchHttpClient.layer),
+  );
+}
+
+function socketUrl(wsBaseUrl: string, ticket: string): string {
   const base = wsBaseUrl.replace(/\/$/, "");
-  return `${base}/ws?access_token=${encodeURIComponent(token)}`;
+  return `${base}/ws?${WS_TICKET_QUERY_PARAM}=${encodeURIComponent(ticket)}`;
 }
 
 /**
@@ -93,7 +118,13 @@ export function makeConnectionLayer(): Layer.Layer<ConnectionSupervisor> {
         Effect.tap((token) =>
           Effect.promise(() => configureClientTracing({ bearerToken: token })).pipe(Effect.ignore),
         ),
-        Effect.map((token) => socketUrl(target.wsBaseUrl, token)),
+        // Minted per attempt, like the bearer: a ticket is single-use, so a
+        // reconnect cannot replay the previous one.
+        Effect.flatMap((token) =>
+          obtainSocketTicket(target.httpBaseUrl, token).pipe(
+            Effect.map((ticket) => socketUrl(target.wsBaseUrl, ticket)),
+          ),
+        ),
       );
     }),
   };

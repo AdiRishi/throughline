@@ -24,6 +24,7 @@ import * as Auth from "./auth.ts";
 import * as ServerConfig from "./config.ts";
 import {
   authBootstrapRouteLayer,
+  authWebSocketTicketRouteLayer,
   corsLayer,
   healthRouteLayer,
   httpCompressionLayer,
@@ -49,6 +50,7 @@ const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 export const routesLayer = Layer.mergeAll(
   healthRouteLayer,
   authBootstrapRouteLayer,
+  authWebSocketTicketRouteLayer,
   otlpTracesRouteLayer,
   websocketRpcRouteLayer,
   staticAndDevRouteLayer,
