@@ -22,7 +22,7 @@ Any change that contradicts these documents is wrong until the documents are cha
 
 ## Debugging a running app
 
-Logs and traces from all three processes land in one directory — `<repo>/.logs` in dev (the dev runner prints it at startup), `<app-data>/throughline/logs` when packaged. Read [`docs/technical/06-observability.md`](./docs/technical/06-observability.md) before adding logging or hunting a runtime failure; it covers where renderer logs go (forwarded to the server as OTLP spans), where the server child's crash output goes (`server-child.log`), and the `jq` recipes for reading the trace files.
+Logs and traces from all three processes land in one directory — `<repo>/.logs` in dev (the dev runner prints it at startup), `<app-data>/throughline/logs` when packaged. Read the [`Observability Runbook`](./docs/technical/06-observability.md) before adding logging or hunting a runtime failure; it covers where renderer logs go (forwarded to the server as OTLP spans), where the server child's crash output goes (`server-child.log`), and the `jq` recipes for reading the trace files.
 
 ## Core Priorities
 
