@@ -11,6 +11,7 @@ import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import type * as Tracer from "effect/Tracer";
 
 import { findErrorTraceId } from "../errors/errorTrace.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
@@ -50,6 +51,18 @@ type SupervisorSignal =
   | { readonly _tag: "RetryRequested" }
   | { readonly _tag: "NetworkChanged"; readonly network: NetworkStatus }
   | { readonly _tag: "Wakeup"; readonly reason: ConnectionWakeups.ConnectionWakeup };
+
+/**
+ * What the *next* attempt needs in order to describe itself as a retry of the
+ * previous one. Carried across loop iterations rather than derived, because by
+ * the time the retry starts, the failed attempt's span has already ended.
+ */
+interface PendingRetryTrace {
+  readonly previousAttempt: Tracer.Span;
+  readonly failureCount: number;
+  readonly delayMs: number;
+  readonly reason: ConnectionAttemptError["reason"];
+}
 
 type AttemptOutcome =
   | {
@@ -414,10 +427,49 @@ export const start = (
       );
     });
 
+    /**
+     * One span per connection attempt, linked back to the attempt it is
+     * retrying.
+     *
+     * Each attempt is a *root* span rather than a child of the loop: the loop
+     * outlives the app's session, so nesting would produce one span that never
+     * ends and a trace no viewer can render. The retry relationship is carried
+     * by a span link instead, which is what makes "this reconnect storm is all
+     * one story" visible — along with how long each rung slept and why.
+     */
+    const tracedAttempt = (attempt: number, pendingRetry: Option.Option<PendingRetryTrace>) => {
+      const traced = Effect.gen(function* () {
+        const attemptSpan = yield* Effect.currentSpan.pipe(Effect.orDie);
+        yield* Effect.annotateCurrentSpan({
+          "connection.label": connection.label,
+          "connection.attempt": attempt,
+          "connection.retry.failure_count": Option.match(pendingRetry, {
+            onNone: () => 0,
+            onSome: (retry) => retry.failureCount,
+          }),
+        });
+        const outcome = yield* Effect.scoped(runAttempt());
+        yield* Effect.annotateCurrentSpan({ "connection.attempt.outcome": outcome._tag });
+        return { outcome, attemptSpan };
+      }).pipe(Effect.withSpan("connection.attempt", { root: true }));
+
+      return Option.match(pendingRetry, {
+        onNone: () => traced,
+        onSome: (retry) =>
+          traced.pipe(
+            Effect.linkSpans(retry.previousAttempt, {
+              "connection.retry.delay_ms": retry.delayMs,
+              "connection.retry.reason": retry.reason,
+            }),
+          ),
+      });
+    };
+
     const run = Effect.fnUntraced(function* () {
       let failureCount = 0;
       let everConnected = false;
       let latestFailure: ConnectionAttemptError | null = null;
+      let pendingRetry = Option.none<PendingRetryTrace>();
 
       for (;;) {
         if (yield* Ref.getAndSet(resetRetryState, false)) {
@@ -444,7 +496,10 @@ export const start = (
         // to "no error" the moment a retry starts.
         yield* setState(connectingState(everConnected, attempt, latestFailure));
 
-        const outcome = yield* Effect.scoped(runAttempt());
+        const { attemptSpan, outcome } = yield* tracedAttempt(attempt, pendingRetry);
+        // Every path below either sets a fresh link or ends the retry chain, so
+        // clear it here rather than in each branch.
+        pendingRetry = Option.none();
         // Consumed on every iteration so a stale marker can never leak into a
         // later, unrelated failure.
         const failedWakeProbe = yield* Ref.getAndSet(wakeProbeFailed, false);
@@ -483,6 +538,12 @@ export const start = (
 
         failureCount += 1;
         const delayMs = retryDelayMs(failureCount - 1);
+        pendingRetry = Option.some({
+          previousAttempt: attemptSpan,
+          failureCount,
+          delayMs,
+          reason: outcome.failure.reason,
+        });
         // `attempt` counts failures since the last *stable* session, so it is
         // published after the increment: a drop that follows a stable session
         // reads as attempt 1 even though it was the loop's tenth try.

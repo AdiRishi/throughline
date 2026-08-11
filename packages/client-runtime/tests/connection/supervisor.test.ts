@@ -9,6 +9,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
+import * as Tracer from "effect/Tracer";
 
 import * as Connectivity from "../../src/connection/connectivity.ts";
 import {
@@ -179,6 +180,52 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
   };
 });
 
+interface RecordedSpan {
+  readonly name: string;
+  readonly span: Tracer.Span;
+}
+
+/**
+ * A tracer that keeps every span it creates, so a test can assert on span links
+ * — which are set at creation time and are not observable any other way.
+ */
+function makeRecordingTracer(): {
+  readonly spans: Array<RecordedSpan>;
+  readonly layer: Layer.Layer<never>;
+} {
+  const spans: Array<RecordedSpan> = [];
+  let nextId = 0;
+
+  const tracer = Tracer.make({
+    span: (options) => {
+      nextId += 1;
+      const span: Tracer.Span = {
+        _tag: "Span",
+        name: options.name,
+        spanId: `span-${nextId}`,
+        traceId: `trace-${nextId}`,
+        parent: options.parent,
+        annotations: options.annotations,
+        status: { _tag: "Started", startTime: options.startTime },
+        attributes: new Map<string, unknown>(),
+        links: options.links,
+        sampled: options.sampled,
+        kind: options.kind,
+        end: () => {},
+        attribute: (key: string, value: unknown) => {
+          (span.attributes as Map<string, unknown>).set(key, value);
+        },
+        event: () => {},
+        addLinks: () => {},
+      } as unknown as Tracer.Span;
+      spans.push({ name: options.name, span });
+      return span;
+    },
+  });
+
+  return { spans, layer: Layer.succeed(Tracer.Tracer, tracer) };
+}
+
 describe("ConnectionSupervisor", () => {
   it.effect("keeps retrying when the credential mint fails, without freezing", () =>
     Effect.gen(function* () {
@@ -242,6 +289,44 @@ describe("ConnectionSupervisor", () => {
       }
 
       assert.equal(yield* Ref.get(harness.prepareCount), 7);
+    }).pipe(Effect.scoped),
+  );
+
+  // Without the link, a reconnect storm is N unrelated root spans and there is
+  // no way to see in a trace viewer that they are one story, or how long each
+  // rung slept before the next try.
+  it.effect("links each retry's span back to the attempt it is retrying", () =>
+    Effect.gen(function* () {
+      const tracer = makeRecordingTracer();
+      const harness = yield* makeHarness({ prepare: () => Effect.fail(transient()) });
+      const supervisor = yield* start(harness.connection).pipe(
+        Effect.provide(Layer.mergeAll(harness.dependencies, tracer.layer)),
+      );
+
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "backoff" && state.attempt === 1,
+      );
+      yield* TestClock.adjust(3_000);
+      yield* eventuallyState(
+        supervisor.state,
+        (state) => state.phase === "backoff" && state.attempt === 2,
+      );
+
+      const attempts = tracer.spans.filter((entry) => entry.name === "connection.attempt");
+      assert.isAtLeast(attempts.length, 2);
+
+      const [first, second] = attempts;
+      assert.isDefined(first);
+      assert.isDefined(second);
+      // The first attempt has nothing to retry, so it carries no link.
+      assert.deepEqual(first?.span.links ?? [], []);
+
+      const link = second?.span.links[0];
+      assert.isDefined(link, "the second attempt should link back to the first");
+      assert.equal(link?.span.spanId, first?.span.spanId);
+      assert.equal(link?.attributes["connection.retry.delay_ms"], 3_000);
+      assert.equal(link?.attributes["connection.retry.reason"], "transport");
     }).pipe(Effect.scoped),
   );
 
