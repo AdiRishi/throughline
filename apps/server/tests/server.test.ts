@@ -121,8 +121,7 @@ const postJson = (path: string, body: string) =>
 
 /**
  * POST as an authenticated client: mint a bearer off the bootstrap token first,
- * the way the renderer does, then present it. The OTLP ingest route is gated
- * exactly like the `/ws` upgrade.
+ * the way the renderer does, then present it.
  */
 const postJsonAuthenticated = (path: string, body: string) =>
   Effect.gen(function* () {
@@ -223,15 +222,11 @@ describe("bearer bootstrap exchange", () => {
       assert.equal(response.status, 200);
 
       const body: unknown = yield* response.json;
-      // Exact wire shape: the codec decodes it, and nothing extra rides along.
       const session = decodeBearerSession(body);
       assert.match(session.access_token, /^[0-9a-f]{64}$/);
-      // The session carries a real expiry, so the client can refresh ahead of
-      // it instead of discovering a dead credential mid-session.
       assert.isNotNull(session.expires_at);
       assert.deepEqual(Object.keys(body as object).toSorted(), ["access_token", "expires_at"]);
 
-      // The minted bearer is immediately valid for the WS gate.
       const auth = yield* Auth.BearerSessionStore;
       assert.isTrue(yield* auth.authenticateBearer(session.access_token));
     }).pipe(Effect.provide(appLayer())),
@@ -353,7 +348,6 @@ describe("static serving", () => {
 
   it.effect("never serves files outside the static root", () =>
     Effect.gen(function* () {
-      // Raw paths bypass fetch's URL normalization, so `..` reaches the server.
       const probes = [
         "/../secret.txt",
         "/%2e%2e/secret.txt",
@@ -386,6 +380,20 @@ describe("dev redirect", () => {
     }).pipe(Effect.provide(appLayer({ devWebUrl: new URL("http://127.0.0.1:5173") }))),
   );
 
+  it.effect("404s unrouted backend paths instead of answering them with the SPA shell", () =>
+    Effect.gen(function* () {
+      for (const path of ["/api/anything-unrouted", "/.well-known/app/nope"]) {
+        const response = yield* rawGet(path);
+        assert.equal(response.status, 404, path);
+        assert.notInclude(response.body, "INDEX_SENTINEL", path);
+      }
+    }).pipe(
+      Effect.provide(
+        appLayer({ devWebUrl: new URL("http://127.0.0.1:5173"), staticDir: STATIC_ROOT }),
+      ),
+    ),
+  );
+
   it.effect("still redirects app routes that merely share a reserved prefix", () =>
     Effect.gen(function* () {
       // A bare `startsWith("/api")` also swallows `/apifoo`, which is an
@@ -400,8 +408,7 @@ describe("dev redirect", () => {
 });
 
 // One resource span carrying one client span, in the wire shape the renderer's
-// `OtlpTracer` produces. Hand-authored rather than captured from a live
-// exporter so the test asserts the decode contract, not the exporter's timing.
+// `OtlpTracer` produces.
 const BROWSER_OTLP_PAYLOAD = {
   resourceSpans: [
     {
@@ -448,8 +455,6 @@ describe("browser OTLP trace ingest", () => {
       const record = traceRecords[0];
       assert.equal(record?.type, "otlp-span");
       assert.equal(record?.name, "clientRuntime.rpc.request");
-      // The traceId is what joins this renderer span to the server span it
-      // triggered, once both are in the same file.
       assert.equal(record?.traceId, "11111111111111111111111111111111");
       assert.equal(record?.parentSpanId, "3333333333333333");
       assert.equal(record?.kind, "client");
@@ -501,7 +506,6 @@ describe("browser OTLP trace ingest", () => {
 
   it.effect("swallows an undecodable OTLP payload rather than rejecting it", () =>
     Effect.gen(function* () {
-      // Telemetry must never be the thing that breaks the app reporting it.
       const traceRecords: Array<TraceRecord> = [];
 
       const response = yield* postJsonAuthenticated(

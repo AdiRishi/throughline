@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -8,14 +9,8 @@ import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { DesktopTheme, DesktopUpdateChannel } from "@app/contracts";
-import { writeFileStringAtomically } from "@app/shared/atomicWrite";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
-
-// Schema-validated, atomically-persisted settings store. Every field is
-// optional on disk (so an old settings file with missing keys still decodes)
-// and normalized back to defaults on load. Writes go through a temp-sibling +
-// rename so a crash mid-write can't corrupt the file.
 
 export interface DesktopSettings {
   readonly theme: DesktopTheme;
@@ -48,15 +43,25 @@ const settingsChange = (settings: DesktopSettings, changed: boolean): DesktopSet
   changed,
 });
 
+const DesktopSettingsWriteOperation = Schema.Literals([
+  "create-temporary-file-name",
+  "encode-document",
+  "create-directory",
+  "write-temporary-file",
+  "replace-settings-file",
+]);
+type DesktopSettingsWriteOperation = typeof DesktopSettingsWriteOperation.Type;
+
 export class DesktopSettingsWriteError extends Schema.TaggedError<DesktopSettingsWriteError>()(
   "DesktopSettingsWriteError",
   {
+    operation: DesktopSettingsWriteOperation,
     path: Schema.String,
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Failed to persist desktop settings at ${this.path}.`;
+    return `Desktop settings write failed during ${this.operation} at ${this.path}.`;
   }
 }
 
@@ -81,8 +86,8 @@ function normalizeDocument(parsed: DesktopSettingsDocument): DesktopSettings {
   };
 }
 
-// Only write the fields that diverge from defaults, so a settings file stays
-// minimal and forward-compatible with new default values.
+// Fields left at their default are omitted so a later change to a default value
+// still reaches users who never overrode it.
 function toDocument(settings: DesktopSettings, defaults: DesktopSettings): DesktopSettingsDocument {
   const document: Mutable<DesktopSettingsDocument> = {};
   if (settings.theme !== defaults.theme) document.theme = settings.theme;
@@ -122,10 +127,67 @@ function readSettings(
   );
 }
 
+// A crash mid-write must not corrupt the settings file, so the document lands
+// in an adjacent temp file and is renamed over the target.
+const writeSettings = Effect.fn("desktop.settings.writeSettings")(function* (input: {
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly path: Path.Path;
+  readonly settingsPath: string;
+  readonly settings: DesktopSettings;
+  readonly defaultSettings: DesktopSettings;
+  readonly suffix: string;
+}): Effect.fn.Return<void, DesktopSettingsWriteError> {
+  const directory = input.path.dirname(input.settingsPath);
+  const tempPath = `${input.settingsPath}.${input.suffix}.tmp`;
+  const encoded = yield* encodeDesktopSettingsJson(
+    toDocument(input.settings, input.defaultSettings),
+  ).pipe(
+    Effect.mapError(
+      (cause) =>
+        new DesktopSettingsWriteError({
+          operation: "encode-document",
+          path: input.settingsPath,
+          cause,
+        }),
+    ),
+  );
+  yield* input.fileSystem.makeDirectory(directory, { recursive: true }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new DesktopSettingsWriteError({
+          operation: "create-directory",
+          path: directory,
+          cause,
+        }),
+    ),
+  );
+  yield* input.fileSystem.writeFileString(tempPath, `${encoded}\n`).pipe(
+    Effect.mapError(
+      (cause) =>
+        new DesktopSettingsWriteError({
+          operation: "write-temporary-file",
+          path: tempPath,
+          cause,
+        }),
+    ),
+  );
+  yield* input.fileSystem.rename(tempPath, input.settingsPath).pipe(
+    Effect.mapError(
+      (cause) =>
+        new DesktopSettingsWriteError({
+          operation: "replace-settings-file",
+          path: input.settingsPath,
+          cause,
+        }),
+    ),
+  );
+});
+
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const crypto = yield* Crypto.Crypto;
   const settingsRef = yield* SynchronizedRef.make(environment.defaultDesktopSettings);
 
   const persist = (
@@ -136,28 +198,28 @@ export const make = Effect.gen(function* () {
       if (nextSettings === settings) {
         return Effect.succeed([settingsChange(settings, false), settings] as const);
       }
-      return Effect.gen(function* () {
-        const contents = yield* encodeDesktopSettingsJson(
-          toDocument(nextSettings, environment.defaultDesktopSettings),
-        );
-        yield* writeFileStringAtomically({
-          filePath: environment.desktopSettingsPath,
-          contents: `${contents}\n`,
-        });
-        return [settingsChange(nextSettings, true), nextSettings] as const;
-      }).pipe(
-        // Provide the closed-over platform services so the returned setter is
-        // `R = never` — the layer-construction context isn't ambient when a
-        // consumer calls `setTheme` later.
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
+
+      return crypto.randomUUIDv4.pipe(
+        Effect.map((uuid) => uuid.replace(/-/g, "")),
         Effect.mapError(
           (cause) =>
             new DesktopSettingsWriteError({
+              operation: "create-temporary-file-name",
               path: environment.desktopSettingsPath,
               cause,
             }),
         ),
+        Effect.flatMap((suffix) =>
+          writeSettings({
+            fileSystem,
+            path,
+            settingsPath: environment.desktopSettingsPath,
+            settings: nextSettings,
+            defaultSettings: environment.defaultDesktopSettings,
+            suffix,
+          }),
+        ),
+        Effect.as([settingsChange(nextSettings, true), nextSettings] as const),
       );
     });
 
@@ -182,8 +244,6 @@ export const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(DesktopAppSettings, make);
 
-// In-memory test layer: same setter semantics, no filesystem. Seed the initial
-// settings to exercise a specific configuration.
 export const layerTest = (initialSettings: DesktopSettings = DEFAULT_DESKTOP_SETTINGS) =>
   Layer.effect(
     DesktopAppSettings,

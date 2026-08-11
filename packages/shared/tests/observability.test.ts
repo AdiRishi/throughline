@@ -19,6 +19,7 @@ import {
   makeLocalFileTracer,
   makeTraceSink,
   type TraceRecord,
+  truncateTraceAttributes,
 } from "../src/observability.ts";
 
 describe("errorTag", () => {
@@ -109,6 +110,31 @@ const makeTestLayer = (tracePath: string) =>
 
 const nodeServicesIt = it.layer(NodeServices.layer);
 
+describe("truncateTraceAttributes", () => {
+  it("clamps oversized strings at any depth without mutating the input", () => {
+    const stack = "s".repeat(2_000);
+    const attributes = {
+      "db.query.text": "q".repeat(2_000),
+      short: "ok",
+      error: { name: "Error", stack, nested: ["a".repeat(2_000)] },
+    };
+    const truncated = truncateTraceAttributes(attributes);
+
+    assert.equal((truncated["db.query.text"] as string).length, 200 + "…[truncated]".length);
+    assert.equal(truncated["short"], "ok");
+    const error = truncated["error"] as { stack: string; nested: Array<string> };
+    assert.equal(error.stack.length, 500 + "…[truncated]".length);
+    assert.equal(error.nested[0]?.length, 500 + "…[truncated]".length);
+    // Input is untouched: the live span's attributes are shared.
+    assert.equal(attributes.error.stack, stack);
+  });
+
+  it("returns the same reference when nothing exceeds the limits", () => {
+    const attributes = { short: "ok", nested: { fine: "also ok" } };
+    assert.equal(truncateTraceAttributes(attributes), attributes);
+  });
+});
+
 describe("observability", () => {
   it("normalizes circular arrays, maps, and sets without recursing forever", () => {
     const array: Array<unknown> = ["alpha"];
@@ -153,7 +179,7 @@ describe("observability", () => {
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "app-trace-sink-" });
           const tracePath = path.join(tempDir, "shared.trace.ndjson");
 
           const sink = yield* makeTraceSink({
@@ -181,7 +207,7 @@ describe("observability", () => {
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "app-trace-sink-" });
           const tracePath = path.join(tempDir, "shared.trace.ndjson");
 
           const sink = yield* makeTraceSink({
@@ -286,7 +312,7 @@ describe("observability", () => {
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "app-trace-sink-" });
           const tracePath = path.join(tempDir, "shared.trace.ndjson");
 
           const sink = yield* makeTraceSink({
@@ -324,7 +350,9 @@ describe("observability", () => {
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-local-tracer-" });
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "app-local-tracer-",
+          });
           const tracePath = path.join(tempDir, "shared.trace.ndjson");
 
           yield* Effect.scoped(
@@ -382,7 +410,9 @@ describe("observability", () => {
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-local-tracer-" });
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "app-local-tracer-",
+          });
           const tracePath = path.join(tempDir, "shared.trace.ndjson");
 
           yield* Effect.scoped(

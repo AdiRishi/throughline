@@ -36,7 +36,6 @@ const environmentLayer = (input: { readonly logDir: string; readonly isDevelopme
           logLevel: Option.none(),
           otlpTracesUrl: Option.none(),
           otlpExportIntervalMs: Option.none(),
-          // `isDevelopment` is derived from having a dev server URL.
           configuredBackendPort: Option.none(),
           devServerUrl: input.isDevelopment
             ? Option.some(new URL("http://127.0.0.1:5173"))
@@ -53,6 +52,9 @@ const readRecords = (logPath: string): Array<Record<string, unknown>> =>
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 
+const annotationsOf = (record: Record<string, unknown> | undefined): Record<string, unknown> =>
+  (record?.["annotations"] as Record<string, unknown> | undefined) ?? {};
+
 const withOutputLog = <A, E>(
   input: { readonly logDir: string; readonly isDevelopment: boolean },
   use: (log: DesktopObservability.DesktopBackendOutputLogShape) => Effect.Effect<A, E>,
@@ -61,6 +63,7 @@ const withOutputLog = <A, E>(
     const log = yield* DesktopObservability.DesktopBackendOutputLog;
     return yield* use(log);
   }).pipe(
+    Effect.annotateLogs({ runId: "test-run" }),
     Effect.provide(
       DesktopObservability.layer.pipe(
         Layer.provideMerge(environmentLayer(input)),
@@ -70,43 +73,143 @@ const withOutputLog = <A, E>(
     ),
   );
 
-it.live("records the server child's output as NDJSON, tagged by stream", () =>
+it("advances a retained output offset instead of repeatedly copying a full head chunk", () => {
+  const maxBufferedBytes = 1024 * 1024;
+  const initial = DesktopObservability.appendBoundedOutputChunk(
+    {
+      runId: "test-run",
+      startDetails: "pid=123",
+      chunks: [],
+      byteLength: 0,
+    },
+    "stderr",
+    new Uint8Array(maxBufferedBytes),
+  );
+  const initialBackingBuffer = initial.chunks[0]?.chunk.buffer;
+
+  const next = DesktopObservability.appendBoundedOutputChunk(initial, "stderr", Uint8Array.of(1));
+
+  assert.equal(next.chunks[0]?.chunk.buffer, initialBackingBuffer);
+  assert.equal(next.chunks[0]?.offset, 1);
+  assert.equal(next.byteLength, maxBufferedBytes);
+});
+
+it.live("buffers the server child's output and persists it only on a reported failure", () =>
   Effect.gen(function* () {
     const logDir = NodePath.join(SCRATCH, "packaged");
+    const logPath = NodePath.join(logDir, "server-child.log");
     const encoder = new TextEncoder();
 
     yield* withOutputLog({ logDir, isDevelopment: false }, (log) =>
       Effect.gen(function* () {
-        yield* log.writeSessionBoundary({ phase: "START", details: "pid=4242 port=13773" });
+        yield* log.beginSession({ details: "pid=4242 port=13773 cwd=/repo" });
         yield* log.writeOutputChunk("stdout", encoder.encode("app server listening\n"));
         yield* log.writeOutputChunk("stderr", encoder.encode("something exploded\n"));
-        yield* log.writeSessionBoundary({ phase: "END", details: "code=1" });
+        assert.isFalse(NodeFS.existsSync(logPath));
+        yield* log.persistFailure({ details: "code=1" });
+        yield* log.beginSession({ details: "pid=4343" });
+        yield* log.writeOutputChunk("stdout", encoder.encode("normal shutdown\n"));
+        yield* log.discardSession;
+      }),
+    );
+
+    const records = readRecords(logPath);
+    assert.strictEqual(records.length, 4);
+
+    assert.strictEqual(records[0]?.["message"], "backend child process failure output start");
+    assert.strictEqual(records[0]?.["level"], "ERROR");
+    assert.strictEqual(annotationsOf(records[0])["runId"], "test-run");
+    assert.include(String(annotationsOf(records[0])["details"]), "pid=4242");
+    assert.strictEqual(records[3]?.["message"], "backend child process failure output end");
+    assert.strictEqual(annotationsOf(records[3])["details"], "code=1");
+
+    const stdout = records[1] as Record<string, unknown>;
+    const stderr = records[2] as Record<string, unknown>;
+    assert.strictEqual(stdout["level"], "INFO");
+    assert.strictEqual(annotationsOf(stdout)["stream"], "stdout");
+    assert.strictEqual(annotationsOf(stdout)["text"], "app server listening\n");
+    assert.strictEqual(stderr["level"], "ERROR");
+    assert.strictEqual(annotationsOf(stderr)["stream"], "stderr");
+
+    assert.isFalse(
+      records.some((record) => annotationsOf(record)["text"] === "normal shutdown\n"),
+      "a run that stopped on request must not be persisted",
+    );
+
+    // Buffering a chunk must not cost a span per line the child writes.
+    const traceRecords = readRecords(NodePath.join(logDir, "desktop.trace.ndjson"));
+    assert.isFalse(
+      traceRecords.some(
+        (record) => record["name"] === "desktop.observability.backendOutput.writeOutputChunk",
+      ),
+    );
+  }),
+);
+
+it.live("keeps buffering output after a non-terminal failure snapshot", () =>
+  Effect.gen(function* () {
+    const logDir = NodePath.join(SCRATCH, "snapshot");
+    const encoder = new TextEncoder();
+
+    yield* withOutputLog({ logDir, isDevelopment: false }, (log) =>
+      Effect.gen(function* () {
+        yield* log.beginSession({ details: "pid=123" });
+        yield* log.writeOutputChunk("stdout", encoder.encode("before timeout\n"));
+        yield* log.persistFailureSnapshot({ details: "readiness timeout" });
+        yield* log.writeOutputChunk("stderr", encoder.encode("after timeout\n"));
+        yield* log.persistFailure({ details: "code=1" });
       }),
     );
 
     const records = readRecords(NodePath.join(logDir, "server-child.log"));
-    assert.strictEqual(records.length, 4);
+    assert.isTrue(records.some((record) => annotationsOf(record)["text"] === "after timeout\n"));
+    assert.strictEqual(annotationsOf(records.at(-1))["details"], "code=1");
+  }),
+);
 
-    // Session boundaries bracket the run, carrying pid/port and the exit reason,
-    // so a crash loop is readable from this file alone.
-    assert.strictEqual(records[0]?.["message"], "backend child process session start");
-    assert.strictEqual(records[3]?.["message"], "backend child process session end");
-    const startAnnotations = records[0]?.["annotations"] as Record<string, unknown> | undefined;
-    const endAnnotations = records[3]?.["annotations"] as Record<string, unknown> | undefined;
-    assert.include(String(startAnnotations?.["details"]), "pid=4242");
-    assert.strictEqual(endAnnotations?.["details"], "code=1");
+it.live("retains only the last mebibyte of backend child output", () =>
+  Effect.gen(function* () {
+    const logDir = NodePath.join(SCRATCH, "bounded-bytes");
+    const maxBufferedBytes = 1024 * 1024;
+    const discardedPrefixBytes = 128;
+    const output = new Uint8Array(maxBufferedBytes + discardedPrefixBytes);
+    output.fill("x".charCodeAt(0));
+    output.fill("y".charCodeAt(0), 0, discardedPrefixBytes);
 
-    // stderr is recorded at ERROR so it stays distinguishable from stdout.
-    const stdout = records[1] as Record<string, unknown>;
-    const stderr = records[2] as Record<string, unknown>;
-    assert.strictEqual(stdout["level"], "INFO");
-    assert.strictEqual((stdout["annotations"] as Record<string, unknown>)["stream"], "stdout");
-    assert.strictEqual(
-      (stdout["annotations"] as Record<string, unknown>)["text"],
-      "app server listening\n",
+    yield* withOutputLog({ logDir, isDevelopment: false }, (log) =>
+      Effect.gen(function* () {
+        yield* log.beginSession({ details: "pid=123" });
+        yield* log.writeOutputChunk("stderr", output);
+        yield* log.persistFailure({ details: "code=1" });
+      }),
     );
-    assert.strictEqual(stderr["level"], "ERROR");
-    assert.strictEqual((stderr["annotations"] as Record<string, unknown>)["stream"], "stderr");
+
+    const records = readRecords(NodePath.join(logDir, "server-child.log"));
+    const text = annotationsOf(records[1])["text"];
+    assert.strictEqual(typeof text, "string");
+    if (typeof text !== "string") return;
+    assert.strictEqual(new TextEncoder().encode(text).byteLength, maxBufferedBytes);
+    assert.isFalse(text.includes("y"));
+  }),
+);
+
+it.live("bounds the number of retained backend child output chunks", () =>
+  Effect.gen(function* () {
+    const logDir = NodePath.join(SCRATCH, "bounded-chunks");
+
+    yield* withOutputLog({ logDir, isDevelopment: false }, (log) =>
+      Effect.gen(function* () {
+        yield* log.beginSession({ details: "pid=123" });
+        for (let index = 0; index < 300; index += 1) {
+          yield* log.writeOutputChunk("stderr", Uint8Array.of(index % 128));
+        }
+        yield* log.persistFailure({ details: "code=1" });
+      }),
+    );
+
+    const records = readRecords(NodePath.join(logDir, "server-child.log"));
+    // 256 retained chunks, bracketed by the failure start/end records.
+    assert.strictEqual(records.length, 258);
   }),
 );
 
@@ -115,8 +218,6 @@ it.live("echoes child output to the shell's own stdout in development", () =>
     const logDir = NodePath.join(SCRATCH, "dev");
     const written: string[] = [];
     const realWrite = process.stdout.write.bind(process.stdout);
-    // The dev terminal echo is the channel a developer is actually watching, so
-    // it is asserted rather than assumed.
     process.stdout.write = ((chunk: string | Uint8Array) => {
       written.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
       return true;
@@ -124,7 +225,11 @@ it.live("echoes child output to the shell's own stdout in development", () =>
 
     yield* Effect.ensuring(
       withOutputLog({ logDir, isDevelopment: true }, (log) =>
-        log.writeOutputChunk("stdout", new TextEncoder().encode("hello from server\n")),
+        Effect.gen(function* () {
+          yield* log.beginSession({ details: "pid=123" });
+          yield* log.writeOutputChunk("stdout", new TextEncoder().encode("hello from server\n"));
+          yield* log.persistFailure({ details: "code=1" });
+        }),
       ),
       Effect.sync(() => {
         process.stdout.write = realWrite;
@@ -132,10 +237,8 @@ it.live("echoes child output to the shell's own stdout in development", () =>
     );
 
     assert.include(written.join(""), "hello from server");
-    // And it is still recorded, so a packaged run loses nothing the dev run showed.
     const records = readRecords(NodePath.join(logDir, "server-child.log"));
-    const annotations = records[0]?.["annotations"] as Record<string, unknown> | undefined;
-    assert.strictEqual(annotations?.["text"], "hello from server\n");
+    assert.strictEqual(annotationsOf(records[1])["text"], "hello from server\n");
   }),
 );
 
@@ -143,12 +246,9 @@ it.live("writes completed shell spans to desktop.trace.ndjson", () =>
   Effect.gen(function* () {
     const logDir = NodePath.join(SCRATCH, "tracing");
 
-    yield* Effect.gen(function* () {
-      yield* Effect.logInfo("inside the span").pipe(
-        Effect.annotateLogs({ component: "test" }),
-        Effect.withSpan("desktop.observability.test"),
-      );
-    }).pipe(
+    yield* Effect.logInfo("inside the span").pipe(
+      Effect.annotateLogs({ component: "test" }),
+      Effect.withSpan("desktop.observability.test"),
       Effect.provide(
         DesktopObservability.layer.pipe(
           Layer.provideMerge(environmentLayer({ logDir, isDevelopment: false })),
@@ -158,14 +258,14 @@ it.live("writes completed shell spans to desktop.trace.ndjson", () =>
       ),
     );
 
-    // The sink batches; give its flush window time to land.
-    yield* Effect.sleep("400 millis");
+    // The sink batches; the layer's teardown flush is what lands the file.
+    yield* Effect.sleep("100 millis");
 
     const records = readRecords(NodePath.join(logDir, "desktop.trace.ndjson"));
     const span = records.find((record) => record["name"] === "desktop.observability.test");
     assert.isDefined(span);
 
-    // `Logger.tracerLogger` is what persists a log: it rides the span as an event.
+    // A log is persisted only by riding its enclosing span as an event.
     const events = span?.["events"] as Array<Record<string, unknown>>;
     const logEvent = events.find(
       (event) => (event["attributes"] as Record<string, unknown>)["effect.logLevel"] === "INFO",

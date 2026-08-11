@@ -5,12 +5,6 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Electron from "electron";
 
-// ── Tier-1 Electron wrapper ──
-// Every raw `Electron.app` call is wrapped in `Effect.try`/`Effect.tryPromise`
-// producing a `Schema.TaggedError`. `Desktop*` services depend on this
-// wrapper and never touch `electron` directly, which is what keeps the shell's
-// logic testable.
-
 export interface ElectronAppMetadata {
   readonly appVersion: string;
   readonly appPath: string;
@@ -52,7 +46,15 @@ export class ElectronApp extends Context.Service<
       name: Parameters<Electron.App["setPath"]>[0],
       path: string,
     ) => Effect.Effect<void>;
+    readonly setName: (name: string) => Effect.Effect<void>;
+    readonly setAboutPanelOptions: (
+      options: Electron.AboutPanelOptionsOptions,
+    ) => Effect.Effect<void>;
+    readonly setAppUserModelId: (id: string) => Effect.Effect<void>;
     readonly requestSingleInstanceLock: Effect.Effect<boolean>;
+    readonly onBeforeQuitForUpdate: (
+      listener: () => void,
+    ) => Effect.Effect<void, never, Scope.Scope>;
     readonly on: <Args extends ReadonlyArray<unknown>>(
       eventName: string,
       listener: (...args: Args) => void,
@@ -106,7 +108,29 @@ export const make = ElectronApp.of({
     Effect.sync(() => {
       Electron.app.setPath(name, path);
     }),
+  setName: (name) =>
+    Effect.sync(() => {
+      Electron.app.setName(name);
+    }),
+  setAboutPanelOptions: (options) =>
+    Effect.sync(() => {
+      Electron.app.setAboutPanelOptions(options);
+    }),
+  setAppUserModelId: (id) =>
+    Effect.sync(() => {
+      Electron.app.setAppUserModelId(id);
+    }),
   requestSingleInstanceLock: Effect.sync(() => Electron.app.requestSingleInstanceLock()),
+  onBeforeQuitForUpdate: (listener) =>
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        Electron.autoUpdater.on("before-quit-for-update", listener);
+      }),
+      () =>
+        Effect.sync(() => {
+          Electron.autoUpdater.removeListener("before-quit-for-update", listener);
+        }),
+    ).pipe(Effect.asVoid),
   on: addScopedAppListener,
 });
 

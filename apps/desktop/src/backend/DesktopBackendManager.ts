@@ -39,6 +39,7 @@ const READINESS_TIMEOUT = Duration.minutes(1);
 const READINESS_INTERVAL = Duration.millis(100);
 const READINESS_REQUEST_TIMEOUT = Duration.seconds(1);
 const TERMINATE_GRACE = Duration.seconds(2);
+const OUTPUT_DRAIN_TIMEOUT = Duration.seconds(5);
 const HEALTH_PATH = "/.well-known/app/health";
 
 const encodeBootstrapEnvelopeJson = Schema.encodeEffect(
@@ -109,10 +110,8 @@ interface DesktopBackendReadyCallbacks {
 }
 
 /**
- * Drain one of the child's output streams into the shell's backend output log,
- * which records it to `server-child.log` and (in development) echoes it to the
- * shell's own stdout/stderr. Failures are ignored: a broken log must never take
- * the backend down with it.
+ * Drain one of the child's output streams into the shell's backend output log.
+ * Failures are ignored: a broken log must never take the backend down with it.
  */
 function drainBackendOutput(
   streamName: "stdout" | "stderr",
@@ -141,6 +140,11 @@ interface ActiveRun {
   readonly scope: Scope.Closeable;
   readonly fiber: Option.Option<Fiber.Fiber<void, never>>;
   readonly pid: Option.Option<number>;
+  // Set once the child's exit has been observed, and once `stop` has asked for
+  // the run to go away. Together they tell the finalize path whether this was a
+  // crash worth persisting or an orderly shutdown worth discarding.
+  readonly exitObserved: boolean;
+  readonly stopRequested: boolean;
 }
 
 interface ManagerState {
@@ -163,8 +167,29 @@ const initialState: ManagerState = {
   nextRunId: 1,
 };
 
+const withActiveRun =
+  (runId: number, f: (run: ActiveRun) => ActiveRun) =>
+  (state: ManagerState): ManagerState => ({
+    ...state,
+    active: Option.map(state.active, (run) => (run.id === runId ? f(run) : run)),
+  });
+
 const calculateRestartDelay = (attempt: number): Duration.Duration =>
   Duration.min(Duration.times(INITIAL_RESTART_DELAY, 2 ** attempt), MAX_RESTART_DELAY);
+
+// Closing the run scope SIGTERMs the child and force-kills it after the grace
+// window; the run fiber is then awaited so the finalize path has completed
+// before the caller inspects state.
+const closeRun = (run: ActiveRun): Effect.Effect<void> =>
+  Scope.close(run.scope, Exit.void).pipe(
+    Effect.andThen(
+      Option.match(run.fiber, {
+        onNone: () => Effect.void,
+        onSome: (fiber) => Fiber.await(fiber).pipe(Effect.asVoid),
+      }),
+    ),
+    Effect.ignore,
+  );
 
 type ManagerServices =
   | DesktopBackendConfiguration.DesktopBackendConfiguration
@@ -177,8 +202,6 @@ type ManagerServices =
 
 const { logInfo, logWarning, logError } = makeComponentLogger("desktop-backend");
 
-// Resolve the backend port: the configured/default port when free on both
-// loopback stacks, otherwise a fresh ephemeral loopback port.
 const resolvePort = Effect.fn("desktop.backend.resolvePort")(function* (
   net: NetService["Service"],
   configuredPort: Option.Option<number>,
@@ -188,12 +211,12 @@ const resolvePort = Effect.fn("desktop.backend.resolvePort")(function* (
   return yield* net.findAvailablePort(preferredPort);
 });
 
-// Spawn the child + probe readiness (in a forked fiber), then wait for exit.
-const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(function* (
+export const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(function* (
   config: DesktopBackendStartConfig,
   backendOutputLog: DesktopObservability.DesktopBackendOutputLogShape,
   callbacks: {
     readonly onStarted: (pid: number) => Effect.Effect<void>;
+    readonly onExitObserved: Effect.Effect<void>;
     readonly onReady: Effect.Effect<void>;
     readonly onReadinessFailure: (error: DesktopBackendReadinessError) => Effect.Effect<void>;
   },
@@ -238,14 +261,17 @@ const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(functio
         (cause) => new BackendProcessSpawnError({ executablePath: config.executablePath, cause }),
       ),
     );
+  const outputFibers: Array<Fiber.Fiber<void, never>> = [];
+
   yield* callbacks.onStarted(handle.pid);
 
-  // Both drains live for this run's scope and die with it.
-  yield* drainBackendOutput("stdout", handle.stdout, backendOutputLog.writeOutputChunk).pipe(
-    Effect.forkScoped,
-  );
-  yield* drainBackendOutput("stderr", handle.stderr, backendOutputLog.writeOutputChunk).pipe(
-    Effect.forkScoped,
+  outputFibers.push(
+    yield* drainBackendOutput("stdout", handle.stdout, backendOutputLog.writeOutputChunk).pipe(
+      Effect.forkScoped,
+    ),
+    yield* drainBackendOutput("stderr", handle.stderr, backendOutputLog.writeOutputChunk).pipe(
+      Effect.forkScoped,
+    ),
   );
 
   yield* waitForHttpReady({
@@ -266,15 +292,18 @@ const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(functio
     Effect.forkScoped,
   );
 
-  // Block on the child's exit. When it resolves the run scope closes and the
-  // finalize path decides whether to restart, with the exit code (or kill
-  // signal) carried in the restart reason.
-  return describeProcessExit(yield* Effect.result(handle.exitCode));
+  const result = yield* Effect.result(handle.exitCode);
+  yield* callbacks.onExitObserved;
+  // The exit is observed first, then the trailing output is drained: the last
+  // bytes the child wrote (the stack trace that explains a crash) have to land
+  // in `server-child.log` before the run scope closes and interrupts the drains.
+  yield* Effect.forEach(outputFibers, Fiber.await, {
+    concurrency: "unbounded",
+    discard: true,
+  }).pipe(Effect.timeout(OUTPUT_DRAIN_TIMEOUT), Effect.ignore);
+  return describeProcessExit(result);
 });
 
-// Builds a backend manager bound to the given readiness callbacks. `layer`
-// supplies the window's onReady/onNotReady hooks. Exported for tests, which
-// drive it with scripted spawner/net/http services and recording callbacks.
 export const makeManager = (
   callbacks: DesktopBackendReadyCallbacks,
 ): Effect.Effect<DesktopBackendManagerShape, never, ManagerServices | Scope.Scope> =>
@@ -352,6 +381,15 @@ export const makeManager = (
         Effect.gen(function* () {
           const current = yield* Ref.get(state);
           if (Option.isSome(current.active)) {
+            // A run is still in state — either healthy, or being torn down by
+            // `stop`. Record the intent so the teardown path restarts it
+            // instead of spawning a second child alongside the dying one.
+            if (!current.desiredRunning) {
+              yield* Ref.update(state, (latest) => ({
+                ...latest,
+                desiredRunning: true,
+              }));
+            }
             return;
           }
 
@@ -369,6 +407,9 @@ export const makeManager = (
             Effect.option,
           );
           if (Option.isNone(config)) {
+            if (current.desiredRunning) {
+              yield* scheduleRestart("failed to resolve backend configuration");
+            }
             return;
           }
 
@@ -398,6 +439,8 @@ export const makeManager = (
                 scope: runScope,
                 fiber: Option.none<Fiber.Fiber<void, never>>(),
                 pid: Option.none<number>(),
+                exitObserved: false,
+                stopRequested: false,
               } satisfies ActiveRun),
               nextRunId: latest.nextRunId + 1,
             },
@@ -406,27 +449,75 @@ export const makeManager = (
           const finalizeRun = Effect.fn("desktop.backend.finalizeRun")(function* (reason: string) {
             yield* mutex.withPermits(1)(
               Effect.gen(function* () {
-                const isCurrentRun = yield* Ref.modify(state, (latest) => {
-                  const run = Option.getOrUndefined(latest.active);
-                  if (run?.id !== runId) {
-                    return [false, latest] as const;
-                  }
-                  return [
-                    true,
-                    {
-                      ...latest,
-                      active: Option.none<ActiveRun>(),
-                      ready: false,
+                const { isCurrentRun, nextState, pid, exitObserved, stopRequested, wasReady } =
+                  yield* Ref.modify(
+                    state,
+                    (
+                      latest,
+                    ): readonly [
+                      {
+                        readonly isCurrentRun: boolean;
+                        readonly nextState: ManagerState;
+                        readonly pid: Option.Option<number>;
+                        readonly exitObserved: boolean;
+                        readonly stopRequested: boolean;
+                        readonly wasReady: boolean;
+                      },
+                      ManagerState,
+                    ] => {
+                      const run = Option.getOrUndefined(latest.active);
+                      if (run?.id !== runId) {
+                        return [
+                          {
+                            isCurrentRun: false,
+                            nextState: latest,
+                            pid: Option.none<number>(),
+                            exitObserved: false,
+                            stopRequested: false,
+                            wasReady: false,
+                          },
+                          latest,
+                        ] as const;
+                      }
+                      const next = {
+                        ...latest,
+                        active: Option.none<ActiveRun>(),
+                        ready: false,
+                      };
+                      return [
+                        {
+                          isCurrentRun: true,
+                          nextState: next,
+                          pid: run.pid,
+                          exitObserved: run.exitObserved,
+                          stopRequested: run.stopRequested,
+                          wasReady: latest.ready,
+                        },
+                        next,
+                      ] as const;
                     },
-                  ] as const;
-                });
+                  );
+
                 if (isCurrentRun) {
-                  yield* backendOutputLog.writeSessionBoundary({ phase: "END", details: reason });
-                  yield* callbacks.onNotReady;
-                  const latest = yield* Ref.get(state);
-                  if (latest.desiredRunning) {
-                    yield* scheduleRestart(reason);
+                  if (Option.isSome(pid)) {
+                    // A child that died on its own is a crash: keep its buffered
+                    // output on disk. One we asked to stop is not, so its
+                    // session is dropped instead of persisted.
+                    if (exitObserved && !stopRequested) {
+                      yield* backendOutputLog.persistFailure({
+                        details: `pid=${pid.value} ${reason}`,
+                      });
+                    } else {
+                      yield* backendOutputLog.discardSession;
+                    }
                   }
+                  if (wasReady) {
+                    yield* callbacks.onNotReady;
+                  }
+                }
+
+                if (isCurrentRun && nextState.desiredRunning) {
+                  yield* scheduleRestart(reason);
                 }
               }),
             );
@@ -435,14 +526,14 @@ export const makeManager = (
           const program = runBackendProcess(config.value, backendOutputLog, {
             onStarted: (pid) =>
               Effect.gen(function* () {
-                yield* Ref.update(state, (latest) => ({
-                  ...latest,
-                  active: Option.map(latest.active, (run) =>
-                    run.id === runId ? { ...run, pid: Option.some(pid) } : run,
-                  ),
-                }));
-                yield* backendOutputLog.writeSessionBoundary({
-                  phase: "START",
+                yield* Ref.update(
+                  state,
+                  withActiveRun(runId, (run) => ({
+                    ...run,
+                    pid: Option.some(pid),
+                  })),
+                );
+                yield* backendOutputLog.beginSession({
                   details: `pid=${pid} port=${config.value.port} cwd=${config.value.cwd}`,
                 });
                 yield* logInfo("backend started", {
@@ -450,6 +541,10 @@ export const makeManager = (
                   port: config.value.port,
                 });
               }),
+            onExitObserved: Ref.update(
+              state,
+              withActiveRun(runId, (run) => ({ ...run, exitObserved: true })),
+            ),
             onReady: Effect.gen(function* () {
               const isCurrentRun = yield* Ref.modify(state, (latest) => {
                 const run = Option.getOrUndefined(latest.active);
@@ -467,8 +562,11 @@ export const makeManager = (
               yield* callbacks.onReady(config.value);
             }),
             onReadinessFailure: (error) =>
-              logWarning("backend readiness check failed", {
-                error: error.message,
+              Effect.gen(function* () {
+                yield* logWarning("backend readiness check failed", {
+                  error: error.message,
+                });
+                yield* backendOutputLog.persistFailureSnapshot({ details: error.message });
               }),
           }).pipe(
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -483,30 +581,43 @@ export const makeManager = (
           );
 
           const fiber = yield* Effect.forkIn(program, parentScope);
-          yield* Ref.update(state, (latest) => ({
-            ...latest,
-            active: Option.map(latest.active, (run) =>
-              run.id === runId ? { ...run, fiber: Option.some(fiber) } : run,
-            ),
-          }));
+          yield* Ref.update(
+            state,
+            withActiveRun(runId, (run) => ({ ...run, fiber: Option.some(fiber) })),
+          );
         }),
       ),
     ).pipe(Effect.withSpan("desktop.backend.start"));
 
     const stop = Effect.gen(function* () {
-      const { active, restartFiber } = yield* mutex.withPermits(1)(
-        Ref.modify(state, (latest) => [
-          { active: latest.active, restartFiber: latest.restartFiber },
-          {
-            ...latest,
-            desiredRunning: false,
-            ready: false,
-            active: Option.none<ActiveRun>(),
-            restartFiber: Option.none<Fiber.Fiber<void, never>>(),
-          },
-        ]),
+      // The run stays in state while it is torn down — only flagged as
+      // stop-requested — so a `start` landing during the teardown window still
+      // sees an active run.
+      const { active, restartFiber, notifyShutdown } = yield* mutex.withPermits(1)(
+        Ref.modify(state, (latest) => {
+          const active = Option.map(latest.active, (run) =>
+            run.exitObserved ? run : { ...run, stopRequested: true },
+          );
+          return [
+            {
+              active,
+              restartFiber: latest.restartFiber,
+              notifyShutdown: latest.ready,
+            },
+            {
+              ...latest,
+              desiredRunning: false,
+              ready: false,
+              active,
+              restartFiber: Option.none<Fiber.Fiber<void, never>>(),
+            },
+          ] as const;
+        }),
       );
 
+      if (notifyShutdown) {
+        yield* callbacks.onNotReady;
+      }
       yield* Option.match(restartFiber, {
         onNone: () => Effect.void,
         onSome: (fiber) => Fiber.interrupt(fiber).pipe(Effect.asVoid),
@@ -514,18 +625,47 @@ export const makeManager = (
       yield* Option.match(active, {
         onNone: () => Effect.void,
         onSome: (run) =>
-          // Closing the run scope tears down the ChildProcessSpawner handle,
-          // which sends SIGTERM and force-kills after the grace window.
-          Scope.close(run.scope, Exit.void)
-            .pipe(
-              Effect.andThen(
-                Option.match(run.fiber, {
-                  onNone: () => Effect.void,
-                  onSome: (fiber) => Fiber.await(fiber).pipe(Effect.asVoid),
-                }),
+          Effect.gen(function* () {
+            yield* closeRun(run);
+            const cleanup = yield* mutex.withPermits(1)(
+              Ref.modify(
+                state,
+                (
+                  latest,
+                ): readonly [
+                  { readonly needsCleanup: boolean; readonly shouldStart: boolean },
+                  ManagerState,
+                ] => {
+                  const current = Option.getOrUndefined(latest.active);
+                  if (current?.id !== run.id) {
+                    // The run finalized itself while the scope was closing, so
+                    // it has already cleared `active` and decided about its
+                    // session.
+                    return [
+                      {
+                        needsCleanup: false,
+                        shouldStart:
+                          latest.desiredRunning &&
+                          Option.isNone(latest.active) &&
+                          Option.isNone(latest.restartFiber),
+                      },
+                      latest,
+                    ] as const;
+                  }
+                  return [
+                    { needsCleanup: true, shouldStart: latest.desiredRunning },
+                    { ...latest, active: Option.none<ActiveRun>() },
+                  ] as const;
+                },
               ),
-            )
-            .pipe(Effect.ignore),
+            );
+            if (cleanup.needsCleanup) {
+              yield* backendOutputLog.discardSession;
+            }
+            if (cleanup.shouldStart) {
+              yield* start;
+            }
+          }),
       });
     }).pipe(Effect.withSpan("desktop.backend.stop"));
 
@@ -538,9 +678,8 @@ export const makeManager = (
     } satisfies DesktopBackendManagerShape;
   });
 
-// Wires the manager into the window's readiness callbacks. `onReady` reveals the
-// main window; `onNotReady` clears the latch so a dock-click while the backend
-// is down doesn't strand a window pointing at nothing.
+// `onNotReady` clears the window's readiness latch so a dock-click while the
+// backend is down doesn't strand a window pointing at nothing.
 export const layer: Layer.Layer<
   DesktopBackendManager,
   never,

@@ -10,17 +10,12 @@ import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import { installDesktopIpcHandlers } from "../ipc/DesktopIpcHandlers.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopUpdater from "../updates/DesktopUpdater.ts";
-import * as DesktopWindow from "../window/DesktopWindow.ts";
+import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopLifecycle from "./DesktopLifecycle.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as DesktopState from "./DesktopState.ts";
-
-// The application program. It is `Effect.scoped`: `startup` brings the app up,
-// then it blocks on `shutdown.awaitRequest`. When shutdown fires (all windows
-// closed / before-quit), the scope closes and the finalizer stops the backend
-// child. A fatal error during startup/bootstrap shows an error box and quits.
 
 const { logInfo: logStartupInfo, logError: logStartupError } =
   makeComponentLogger("desktop-startup");
@@ -70,11 +65,22 @@ const startup = Effect.gen(function* () {
   const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
   const settings = yield* DesktopAppSettings.DesktopAppSettings;
   const updater = yield* DesktopUpdater.DesktopUpdater;
-  const window = yield* DesktopWindow.DesktopWindow;
+  const applicationMenu = yield* DesktopApplicationMenu.DesktopApplicationMenu;
   const electronTheme = yield* ElectronTheme.ElectronTheme;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
 
-  yield* electronApp.setPath("userData", environment.baseDir);
+  yield* electronApp.setPath(
+    "userData",
+    environment.path.join(environment.appDataDirectory, environment.userDataDirName),
+  );
+  yield* electronApp.setName(environment.displayName);
+  yield* electronApp.setAboutPanelOptions({
+    applicationName: environment.displayName,
+    applicationVersion: environment.appVersion,
+  });
+  if (environment.platform === "win32") {
+    yield* electronApp.setAppUserModelId(environment.appUserModelId);
+  }
 
   const loaded = yield* settings.load;
   yield* electronTheme.setSource(loaded.theme).pipe(Effect.ignore({ log: true }));
@@ -89,7 +95,7 @@ const startup = Effect.gen(function* () {
   yield* logStartupInfo("app ready");
 
   yield* updater.configure;
-  yield* window.installApplicationMenu;
+  yield* applicationMenu.configure;
   yield* bootstrap.pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
 }).pipe(Effect.withSpan("desktop.startup"));
 

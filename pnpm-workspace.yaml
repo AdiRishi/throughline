@@ -6,7 +6,7 @@ packages:
 
 allowBuilds:
   electron: true
-  electron-winstaller: true
+  electron-winstaller: false
   msgpackr-extract: true
 
 overrides:

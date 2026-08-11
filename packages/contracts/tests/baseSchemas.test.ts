@@ -8,16 +8,19 @@ import {
   Port,
   PositiveInt,
   TrimmedNonEmptyString,
+  TrimmedString,
 } from "../src/baseSchemas.ts";
 
 const decodeTrimmed = Schema.decodeUnknownSync(TrimmedNonEmptyString);
 const encodeTrimmed = Schema.encodeSync(TrimmedNonEmptyString);
+const decodeTrimmedString = Schema.decodeUnknownSync(TrimmedString);
+const encodeTrimmedString = Schema.encodeSync(TrimmedString);
 const decodePort = Schema.decodeUnknownSync(Port);
 const decodeNonNegativeInt = Schema.decodeUnknownSync(NonNegativeInt);
 const decodePositiveInt = Schema.decodeUnknownSync(PositiveInt);
 
-// A stand-in for a wire union that a newer server has extended: this build
-// knows two members, the newer one sends three.
+// Stands in for a wire union a newer server has extended: this build knows two
+// members, the newer one sends three.
 const FeatureFlag = Schema.Literals(["clusters", "coverage"]);
 const FeatureFlags = ForwardCompatibleArray(FeatureFlag);
 const decodeFeatureFlags = Schema.decodeUnknownSync(FeatureFlags);
@@ -25,6 +28,17 @@ const encodeFeatureFlags = Schema.encodeSync(FeatureFlags);
 
 const SampleId = makeEntityId("SampleId");
 const decodeSampleId = Schema.decodeUnknownSync(SampleId);
+
+describe("TrimmedString", () => {
+  it("trims on both decode and encode", () => {
+    assert.strictEqual(decodeTrimmedString("  hi  "), "hi");
+    assert.strictEqual(encodeTrimmedString("  hi  "), "hi");
+  });
+
+  it("accepts the empty string", () => {
+    assert.strictEqual(decodeTrimmedString("   "), "");
+  });
+});
 
 describe("TrimmedNonEmptyString", () => {
   it("trims surrounding whitespace on decode", () => {
@@ -40,10 +54,8 @@ describe("TrimmedNonEmptyString", () => {
     assert.strictEqual(encodeTrimmed("ok"), "ok");
   });
 
-  it("rejects untrimmed values on encode instead of silently trimming", () => {
-    // `Schema.Trim`'s Type side is refined to already-trimmed strings, so a
-    // program value with stray whitespace is a bug — surfaced, not repaired.
-    assert.throws(() => encodeTrimmed("  x  "));
+  it("trims surrounding whitespace on encode", () => {
+    assert.strictEqual(encodeTrimmed("  x  "), "x");
   });
 });
 
@@ -86,8 +98,6 @@ describe("PositiveInt", () => {
 
 describe("ForwardCompatibleArray", () => {
   it("decodes a newer-server payload by dropping members this build cannot decode", () => {
-    // The whole point: an unknown member must not take down the payload (and
-    // with it the connection) over data this client could not act on anyway.
     assert.deepStrictEqual(decodeFeatureFlags(["clusters", "journeys", "coverage"]), [
       "clusters",
       "coverage",

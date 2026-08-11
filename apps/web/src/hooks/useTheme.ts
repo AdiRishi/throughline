@@ -1,21 +1,40 @@
 import { useCallback, useSyncExternalStore } from "react";
 
+import { safeErrorLogAttributes } from "@app/client-runtime/errors";
 import type { DesktopTheme } from "@app/contracts";
 
-import { localApi, THEME_STORAGE_KEY } from "../localApi.ts";
+import {
+  clearThemeStorageReadFailure,
+  DEFAULT_THEME,
+  DesktopThemeSyncError,
+  isDesktopThemeSyncError,
+  isThemeStorageError,
+  readLatchedThemePreference,
+  syncDesktopThemePreference,
+  THEME_STORAGE_KEY,
+  ThemeStorageError,
+  writeThemePreference,
+} from "../localApi.ts";
 
 const MEDIA_QUERY = "(prefers-color-scheme: dark)";
-const DEFAULT_THEME: DesktopTheme = "system";
 
-function readStored(): DesktopTheme {
-  if (typeof window === "undefined") return DEFAULT_THEME;
-  try {
-    const raw = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (raw === "light" || raw === "dark" || raw === "system") return raw;
-  } catch {
-    // ignore
-  }
-  return DEFAULT_THEME;
+const listeners = new Set<() => void>();
+let lastSnapshot: DesktopTheme | null = null;
+let snapshotStale = true;
+
+function emit(): void {
+  snapshotStale = true;
+  for (const listener of listeners) listener();
+}
+
+function getStored(): DesktopTheme {
+  return readLatchedThemePreference((error) => {
+    console.error(error.message, {
+      operation: error.operation,
+      storageKey: error.storageKey,
+      ...safeErrorLogAttributes(error),
+    });
+  });
 }
 
 function systemDark(): boolean {
@@ -26,52 +45,113 @@ function systemDark(): boolean {
   );
 }
 
-/** Toggle the `.dark` class on <html> to match the effective theme. */
 function applyTheme(theme: DesktopTheme): void {
   if (typeof document === "undefined") return;
   const isDark = theme === "dark" || (theme === "system" && systemDark());
   document.documentElement.classList.toggle("dark", isDark);
 }
 
-const listeners = new Set<() => void>();
-
-function emit(): void {
-  for (const listener of listeners) listener();
+function handleSystemAppearanceChange(): void {
+  if (getStored() === "system") applyTheme("system");
+  emit();
 }
 
-function subscribe(onChange: () => void): () => void {
-  listeners.add(onChange);
-  const mq =
-    typeof window !== "undefined" && typeof window.matchMedia === "function"
-      ? window.matchMedia(MEDIA_QUERY)
-      : null;
-  const onSystemChange = () => {
-    if (readStored() === "system") applyTheme("system");
-    onChange();
-  };
-  mq?.addEventListener("change", onSystemChange);
+function handleStorageChange(event: StorageEvent): void {
+  // A `null` key means the whole store was cleared, so the preference went with
+  // it. Anything else is another key's business.
+  if (event.key !== THEME_STORAGE_KEY && event.key !== null) return;
+  clearThemeStorageReadFailure();
+  applyTheme(getStored());
+  emit();
+}
+
+let removeWindowListeners: (() => void) | null = null;
+
+function subscribe(listener: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  listeners.add(listener);
+
+  // The system-preference and cross-window listeners are shared by all
+  // subscribers; each event applies the theme once and notifies everyone.
+  if (!removeWindowListeners) {
+    const mq = typeof window.matchMedia === "function" ? window.matchMedia(MEDIA_QUERY) : null;
+    mq?.addEventListener("change", handleSystemAppearanceChange);
+    window.addEventListener("storage", handleStorageChange);
+    removeWindowListeners = () => {
+      mq?.removeEventListener("change", handleSystemAppearanceChange);
+      window.removeEventListener("storage", handleStorageChange);
+    };
+  }
+
   return () => {
-    listeners.delete(onChange);
-    mq?.removeEventListener("change", onSystemChange);
+    listeners.delete(listener);
+    if (listeners.size === 0) {
+      removeWindowListeners?.();
+      removeWindowListeners = null;
+    }
   };
 }
 
 function getSnapshot(): DesktopTheme {
-  return readStored();
+  if (typeof window === "undefined") return DEFAULT_THEME;
+  // Reading the preference hits localStorage, so only recompute after a
+  // change was signalled; useTheme consumers call this on every render.
+  if (!snapshotStale && lastSnapshot !== null) return lastSnapshot;
+  snapshotStale = false;
+  lastSnapshot = getStored();
+  return lastSnapshot;
+}
+
+function getServerSnapshot(): DesktopTheme {
+  return DEFAULT_THEME;
 }
 
 /**
- * Theme state wired through `LocalApi.setTheme`, so a change persists to
- * localStorage (browser) AND syncs to the shell (bridge). Returns the stored
- * preference and a setter; the effective light/dark is applied to `<html>`.
+ * The stored preference, plus a setter that returns whether the preference was
+ * recorded.
  */
 export function useTheme() {
-  const theme = useSyncExternalStore(subscribe, getSnapshot, () => DEFAULT_THEME);
+  const theme = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
-  const setTheme = useCallback((next: DesktopTheme) => {
-    void localApi().setTheme(next);
+  const setTheme = useCallback((next: DesktopTheme): boolean => {
+    if (typeof window === "undefined") return false;
+    // Write first and abort on failure: applying a theme the store cannot hold
+    // leaves `<html>` on one theme and every reader on the other.
+    try {
+      writeThemePreference(next);
+    } catch (cause) {
+      const error = isThemeStorageError(cause)
+        ? cause
+        : new ThemeStorageError({
+            operation: "write",
+            storageKey: THEME_STORAGE_KEY,
+            theme: next,
+            cause,
+          });
+      console.error(error.message, {
+        operation: error.operation,
+        storageKey: error.storageKey,
+        theme: next,
+        ...safeErrorLogAttributes(error),
+      });
+      return false;
+    }
+
+    // The shell handoff is cosmetic; a refused IPC call is reported rather than
+    // left as an unhandled rejection.
+    void syncDesktopThemePreference(next).catch((cause: unknown) => {
+      const error = isDesktopThemeSyncError(cause)
+        ? cause
+        : new DesktopThemeSyncError({ theme: next, cause });
+      console.error(error.message, {
+        theme: error.theme,
+        ...safeErrorLogAttributes(error),
+      });
+    });
+
     applyTheme(next);
     emit();
+    return true;
   }, []);
 
   return { theme, setTheme } as const;

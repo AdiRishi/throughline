@@ -1,17 +1,6 @@
 /**
  * Renderer tracing.
  *
- * The renderer is the one surface with no terminal and no filesystem, so it
- * reaches the log/trace artifacts the same way everything else does: as spans.
- * An `OtlpTracer` exports to the server's `/api/observability/v1/traces`, where
- * `BrowserTraceCollector` pushes the decoded records into the very sink the
- * server's own tracer writes to. Renderer and server spans then sit in one file
- * and correlate by `traceId`.
- *
- * Because `Logger.tracerLogger` is installed in the renderer runtime too, an
- * `Effect.log*` inside a span rides along as a span event — which is how a
- * renderer log ends up somewhere other than DevTools.
- *
  * The `Tracer.Tracer` provided here is a stable indirection over a delegate
  * that is configured asynchronously: the export URL depends on the resolved
  * connection target, which is not known at module load. Until the delegate
@@ -28,7 +17,11 @@ import * as Tracer from "effect/Tracer";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { OtlpExporter, OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 
+import { safeErrorLogAttributes } from "@app/client-runtime/errors";
+
 import { isElectron, resolveConnectionTargetResult } from "../env.ts";
+import { errorMessage } from "../errors.ts";
+import { settleAsyncResult, squashAtomCommandFailure } from "../state/asyncResult.ts";
 
 export const OTLP_TRACES_PATH = "/api/observability/v1/traces";
 
@@ -102,7 +95,10 @@ async function applyClientTracingConfig(config: ClientTracingConfig): Promise<vo
   // skipped, leaving spans local-only (`NativeSpan`), and the next call retries.
   const targetRead = resolveConnectionTargetResult();
   if (targetRead._tag === "Failure") {
-    console.warn("Failed to resolve the connection target for client tracing", targetRead.cause);
+    console.warn("Failed to resolve the connection target for client tracing", {
+      detail: errorMessage(targetRead.cause),
+      ...safeErrorLogAttributes(targetRead.cause),
+    });
     return;
   }
 
@@ -133,24 +129,34 @@ async function applyClientTracingConfig(config: ClientTracingConfig): Promise<vo
   const runtime = ManagedRuntime.make(delegateRuntimeLayer);
   const scope = runtime.runSync(Scope.make());
 
-  const delegateExit = await runtime.runPromiseExit(
-    Scope.provide(scope)(
-      OtlpTracer.make({
-        url: otlpTracesUrl,
-        exportInterval: `${exportIntervalMs} millis`,
-        resource: CLIENT_TRACING_RESOURCE,
-        ...(config.bearerToken === undefined
-          ? {}
-          : { headers: { authorization: `Bearer ${config.bearerToken}` } }),
-      }),
+  const delegateResult = await settleAsyncResult(() =>
+    runtime.runPromiseExit(
+      Scope.provide(scope)(
+        OtlpTracer.make({
+          url: otlpTracesUrl,
+          exportInterval: `${exportIntervalMs} millis`,
+          resource: CLIENT_TRACING_RESOURCE,
+          ...(config.bearerToken === undefined
+            ? {}
+            : { headers: { authorization: `Bearer ${config.bearerToken}` } }),
+        }),
+      ),
     ),
   );
 
-  if (Exit.isFailure(delegateExit)) {
+  if (delegateResult._tag === "Failure") {
     await disposeTracerRuntime(runtime, scope);
     if (generation === configurationGeneration) {
-      // Tracing is not load-bearing: report and carry on with NativeSpan.
-      console.warn("Failed to configure client tracing exporter", { otlpTracesUrl });
+      // The URL is reported in parts because the bearer travels alongside it.
+      const error = squashAtomCommandFailure(delegateResult);
+      const tracesUrl = new URL(otlpTracesUrl);
+      console.warn("Failed to configure client tracing exporter", {
+        scheme: tracesUrl.protocol.replace(/:$/, ""),
+        host: tracesUrl.hostname,
+        port: tracesUrl.port || undefined,
+        exportIntervalMs,
+        ...safeErrorLogAttributes(error),
+      });
     }
     return;
   }
@@ -160,7 +166,7 @@ async function applyClientTracingConfig(config: ClientTracingConfig): Promise<vo
     return;
   }
 
-  activeDelegate = delegateExit.value;
+  activeDelegate = delegateResult.value;
   activeRuntime = runtime;
   activeScope = scope;
 }
@@ -172,11 +178,10 @@ async function disposeTracerRuntime(
   if (runtime === null || scope === null) {
     return;
   }
-  await runtime.runPromiseExit(Scope.close(scope, Exit.void));
+  await settleAsyncResult(() => runtime.runPromiseExit(Scope.close(scope, Exit.void)));
   runtime.dispose();
 }
 
-/** Test seam: drop the active delegate and its runtime. */
 export async function __resetClientTracingForTests(): Promise<void> {
   configurationGeneration++;
   activeConfigKey = null;

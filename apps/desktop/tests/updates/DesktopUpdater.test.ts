@@ -9,29 +9,23 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 
 import * as DesktopEnvironment from "../../src/app/DesktopEnvironment.ts";
+import * as DesktopBackendManager from "../../src/backend/DesktopBackendManager.ts";
 import * as ElectronUpdater from "../../src/electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../../src/electron/ElectronWindow.ts";
 import { UPDATE_STATE_CHANNEL } from "../../src/ipc/channels.ts";
 import * as DesktopAppSettings from "../../src/settings/DesktopAppSettings.ts";
 import * as DesktopUpdater from "../../src/updates/DesktopUpdater.ts";
 
-// This is the payoff of the two-tier split: DesktopUpdater depends only on the
-// Electron* wrapper interfaces, so a test provides fake wrappers in place of
-// real Electron and asserts on the logic — no window, no autoUpdater.
-
 interface Push {
   readonly channel: string;
   readonly args: ReadonlyArray<unknown>;
 }
 
-// A recording fake for the ElectronWindow wrapper. Only `sendAll` matters here;
-// the rest are inert stubs that satisfy the interface.
 const fakeElectronWindowLayer = (pushes: Array<Push>) =>
   Layer.succeed(
     ElectronWindow.ElectronWindow,
     ElectronWindow.ElectronWindow.of({
       create: () => Effect.die("ElectronWindow.create unused in this test"),
-      loadUrl: () => Effect.void,
       currentMainOrFirst: Effect.succeed(Option.none()),
       focusedMainOrFirst: Effect.succeed(Option.none()),
       setMain: () => Effect.void,
@@ -42,27 +36,72 @@ const fakeElectronWindowLayer = (pushes: Array<Push>) =>
         Effect.sync(() => {
           pushes.push({ channel, args });
         }),
+      destroyAll: Effect.void,
+      syncAllAppearance: () => Effect.void,
       onReadyToShow: () => Effect.void,
       onClosed: () => Effect.void,
       setWindowOpenHandler: () => Effect.void,
     }),
   );
 
-// An inert fake for the electron-updater wrapper — not exercised while disabled.
-const fakeElectronUpdaterLayer = (overrides?: { readonly checkForUpdates?: Effect.Effect<void> }) =>
-  Layer.succeed(
+interface ChannelCall {
+  readonly channel: string;
+  readonly allowPrerelease: boolean;
+  readonly allowDowngrade: boolean;
+  readonly fullChangelog: boolean;
+}
+
+const fakeElectronUpdaterLayer = (
+  overrides?: {
+    readonly checkForUpdates?: Effect.Effect<void>;
+  },
+  channelCalls?: Array<ChannelCall>,
+) =>
+  Layer.effect(
     ElectronUpdater.ElectronUpdater,
-    ElectronUpdater.ElectronUpdater.of({
-      setFeedURL: () => Effect.void,
-      setAutoDownload: () => Effect.void,
-      setAutoInstallOnAppQuit: () => Effect.void,
-      setChannel: () => Effect.void,
-      checkForUpdates: overrides?.checkForUpdates ?? Effect.void,
-      downloadUpdate: Effect.void,
-      quitAndInstall: () => Effect.void,
-      on: () => Effect.void,
+    Effect.gen(function* () {
+      const pending = yield* Ref.make<Partial<ChannelCall>>({});
+      const record = (patch: Partial<ChannelCall>) =>
+        Ref.update(pending, (current) => {
+          const next = { ...current, ...patch };
+          if (
+            next.channel !== undefined &&
+            next.allowPrerelease !== undefined &&
+            next.allowDowngrade !== undefined &&
+            next.fullChangelog !== undefined
+          ) {
+            channelCalls?.push(next as ChannelCall);
+            return {};
+          }
+          return next;
+        });
+
+      return ElectronUpdater.ElectronUpdater.of({
+        setFeedURL: () => Effect.void,
+        setAutoDownload: () => Effect.void,
+        setAutoInstallOnAppQuit: () => Effect.void,
+        setChannel: (channel) => record({ channel }),
+        setAllowPrerelease: (allowPrerelease) => record({ allowPrerelease }),
+        allowDowngrade: Effect.succeed(false),
+        setAllowDowngrade: (allowDowngrade) => record({ allowDowngrade }),
+        setFullChangelog: (fullChangelog) => record({ fullChangelog }),
+        setDisableDifferentialDownload: () => Effect.void,
+        checkForUpdates: overrides?.checkForUpdates ?? Effect.void,
+        downloadUpdate: Effect.void,
+        quitAndInstall: () => Effect.void,
+        on: () => Effect.void,
+      });
     }),
   );
+
+const fakeBackendManagerLayer = Layer.succeed(
+  DesktopBackendManager.DesktopBackendManager,
+  DesktopBackendManager.DesktopBackendManager.of({
+    start: Effect.void,
+    stop: Effect.void,
+    currentConfig: Effect.succeed(Option.none()),
+  }),
+);
 
 const environmentLayer = (isPackaged: boolean) =>
   Layer.effect(
@@ -92,17 +131,15 @@ const environmentLayer = (isPackaged: boolean) =>
     ),
   ).pipe(Layer.provide(Path.layer));
 
-// The updater reads `app-update.yml` to decide whether a release feed exists;
-// the fake reports one so `enabled` is driven purely by `isPackaged`.
 const fakeFileSystemLayer = (hasUpdateFeed: boolean) =>
   FileSystem.layerNoop({ exists: () => Effect.succeed(hasUpdateFeed) });
 
-// `provideMerge` so the test can also reach DesktopAppSettings to assert on it.
 const testLayer = (
   isPackaged: boolean,
   pushes: Array<Push>,
   updaterOverrides?: Parameters<typeof fakeElectronUpdaterLayer>[0],
   hasUpdateFeed = true,
+  channelCalls?: Array<ChannelCall>,
 ) =>
   DesktopUpdater.layer.pipe(
     Layer.provideMerge(
@@ -110,7 +147,8 @@ const testLayer = (
         environmentLayer(isPackaged),
         DesktopAppSettings.layerTest(),
         fakeElectronWindowLayer(pushes),
-        fakeElectronUpdaterLayer(updaterOverrides),
+        fakeElectronUpdaterLayer(updaterOverrides, channelCalls),
+        fakeBackendManagerLayer,
         fakeFileSystemLayer(hasUpdateFeed),
       ),
     ),
@@ -124,7 +162,6 @@ describe("DesktopUpdater", () => {
 
       assert.equal((yield* updater.getState).status, "disabled");
 
-      // The action methods are no-ops while disabled: state never leaves it.
       yield* updater.check;
       yield* updater.download;
       yield* updater.install;
@@ -137,8 +174,6 @@ describe("DesktopUpdater", () => {
     return Effect.gen(function* () {
       const updater = yield* DesktopUpdater.DesktopUpdater;
 
-      // A build with no `publish` config ships no feed; driving electron-updater
-      // there would throw "Please define publish configuration".
       assert.equal((yield* updater.getState).status, "disabled");
       yield* updater.check;
       assert.equal((yield* updater.getState).status, "disabled");
@@ -154,9 +189,7 @@ describe("DesktopUpdater", () => {
       const next = yield* updater.setChannel("nightly");
       assert.equal(next.channel, "nightly");
 
-      // Persisted through the settings store...
       assert.equal((yield* settings.get).updateChannel, "nightly");
-      // ...and pushed to the renderer over the update-state channel.
       const last = pushes.at(-1);
       assert.equal(last?.channel, UPDATE_STATE_CHANNEL);
     }).pipe(Effect.provide(testLayer(false, pushes)));
@@ -183,11 +216,9 @@ describe("DesktopUpdater", () => {
           }
         });
 
-        // A second action while the check is in flight is dropped...
         yield* updater.download;
         assert.equal((yield* updater.getState).status, "checking");
 
-        // ...and a channel switch fails with the typed in-progress error.
         const error = yield* Effect.flip(updater.setChannel("nightly"));
         assert.instanceOf(error, DesktopUpdater.DesktopUpdateActionInProgressError);
         assert.equal(error.action, "check");
@@ -195,10 +226,61 @@ describe("DesktopUpdater", () => {
         yield* Deferred.succeed(release, undefined);
         yield* Fiber.join(checkFiber);
 
-        // Once the action completes the channel can change again.
         const next = yield* updater.setChannel("nightly");
         assert.equal(next.channel, "nightly");
       }).pipe(Effect.provide(layer));
     }),
   );
+
+  it.effect("selecting nightly allows prereleases, downgrades and the full changelog", () => {
+    const pushes: Array<Push> = [];
+    const channelCalls: Array<ChannelCall> = [];
+    return Effect.gen(function* () {
+      const updater = yield* DesktopUpdater.DesktopUpdater;
+
+      yield* updater.setChannel("nightly");
+      assert.deepEqual(channelCalls, [
+        {
+          channel: "nightly",
+          allowPrerelease: true,
+          allowDowngrade: true,
+          fullChangelog: true,
+        },
+      ]);
+
+      yield* updater.setChannel("latest");
+      assert.deepEqual(channelCalls.at(-1), {
+        channel: "latest",
+        allowPrerelease: false,
+        allowDowngrade: false,
+        fullChangelog: false,
+      });
+    }).pipe(Effect.provide(testLayer(true, pushes, undefined, true, channelCalls)));
+  });
+
+  it("broadcasts download progress only on a 10% step change or at completion", () => {
+    const downloading = {
+      enabled: true,
+      status: "downloading",
+      channel: "latest",
+      currentVersion: "1.0.0",
+      availableVersion: "1.1.0",
+      downloadedVersion: null,
+      downloadPercent: 41,
+      checkedAt: null,
+      message: null,
+      errorContext: null,
+      canRetry: false,
+    } as const;
+
+    assert.isFalse(DesktopUpdater.shouldBroadcastDownloadProgress(downloading, 42));
+    assert.isTrue(DesktopUpdater.shouldBroadcastDownloadProgress(downloading, 50));
+    assert.isTrue(DesktopUpdater.shouldBroadcastDownloadProgress(downloading, 100));
+    assert.isTrue(
+      DesktopUpdater.shouldBroadcastDownloadProgress({ ...downloading, downloadPercent: null }, 1),
+    );
+    assert.isTrue(
+      DesktopUpdater.shouldBroadcastDownloadProgress({ ...downloading, status: "available" }, 1),
+    );
+  });
 });

@@ -87,10 +87,6 @@ export const corsLayer = Layer.unwrap(
   }),
 );
 
-/**
- * Global response compression. The SPA's JS/CSS bundles and every JSON response
- * go through this router, so leaving it off ships every byte uncompressed.
- */
 export const httpCompressionLayer = HttpRouter.middleware(HttpMiddleware.compression(), {
   global: true,
 });
@@ -183,7 +179,11 @@ export const otlpTracesRouteLayer = HttpRouter.add(
     const httpClient = yield* HttpClient.HttpClient;
     // OTLP payloads are validated by `decodeOtlpTraceRecords` below, not by the
     // JSON reader, so the shape is asserted rather than parsed here.
-    const bodyJson = (yield* request.json) as unknown as OtlpTracer.TraceData;
+    const body = yield* request.json.pipe(Effect.option);
+    if (Option.isNone(body)) {
+      return HttpServerResponse.text("Bad Request", { status: 400 });
+    }
+    const bodyJson = body.value as unknown as OtlpTracer.TraceData;
 
     yield* Effect.try({
       try: () => decodeOtlpTraceRecords(bodyJson),
@@ -206,10 +206,7 @@ export const otlpTracesRouteLayer = HttpRouter.add(
       ),
       Effect.orElseSucceed(() => HttpServerResponse.text("Trace export failed.", { status: 502 })),
     );
-  }).pipe(
-    // A malformed body is the client's problem, not a reason to 500.
-    Effect.orElseSucceed(() => HttpServerResponse.text("Bad Request", { status: 400 })),
-  ),
+  }),
 );
 
 /** `GET *` — SPA static serving with `index.html` fallback, plus dev redirect. */
@@ -225,18 +222,24 @@ export const staticAndDevRouteLayer = HttpRouter.add(
 
     const config = yield* ServerConfig.ServerConfig;
 
-    // Dev: 302-redirect navigations (not reserved paths) to the Vite dev server.
-    if (
-      config.devWebUrl &&
-      !isReservedPath(url.value.pathname) &&
-      isLoopbackHostname(url.value.hostname)
-    ) {
+    // Dev: a backend prefix Vite proxies here has no route left to match, so it
+    // is a genuine 404. Answering it with the SPA shell would turn a renamed
+    // backend route into a 200 that only fails later, at JSON parse.
+    if (config.devWebUrl && isReservedPath(url.value.pathname)) {
+      return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+
+    if (config.devWebUrl && isLoopbackHostname(url.value.hostname)) {
       return HttpServerResponse.redirect(resolveDevRedirectUrl(config.devWebUrl, url.value), {
         status: 302,
       });
     }
 
-    const staticDir = config.staticDir ?? (yield* ServerConfig.resolveStaticDir());
+    // The filesystem probe only runs in dev, where the built web app moves
+    // around. A packaged server with no `staticDir` answers 503 immediately
+    // instead of probing the disk on every unmatched GET.
+    const staticDir =
+      config.staticDir ?? (config.devWebUrl ? yield* ServerConfig.resolveStaticDir() : undefined);
     if (!staticDir) {
       return HttpServerResponse.text("No static directory configured and no dev URL set.", {
         status: 503,
@@ -282,7 +285,6 @@ export const staticAndDevRouteLayer = HttpRouter.add(
 
     const info = yield* fileSystem.stat(filePath).pipe(Effect.orElseSucceed(() => null));
     if (!info || info.type !== "File") {
-      // SPA fallback: serve index.html for unknown routes.
       const indexData = yield* fileSystem
         .readFile(path.resolve(staticRoot, "index.html"))
         .pipe(Effect.orElseSucceed(() => null));

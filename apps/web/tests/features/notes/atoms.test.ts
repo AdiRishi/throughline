@@ -5,12 +5,13 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
-import * as Socket from "effect/unstable/socket/Socket";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   ConnectionTransientError,
   connectionSupervisorLayer,
+  connectivityLayer,
+  connectionWakeupsLayer,
   type PreparedConnection,
 } from "@app/client-runtime/connection";
 import {
@@ -84,7 +85,6 @@ const CONNECTION: PreparedConnection = {
   prepareSocketUrl: Effect.succeed("ws://127.0.0.1:0/ws"),
 };
 
-/** Scripted supervisor harness — same shape as state/connection.test.ts. */
 const makeScriptedHarness = (events: ReadonlyArray<NotesStreamEvent>) => {
   const created: Array<string> = [];
 
@@ -104,14 +104,16 @@ const makeScriptedHarness = (events: ReadonlyArray<NotesStreamEvent>) => {
         return {
           client: fakeClient,
           connected: Effect.void,
+          probe: Effect.void,
           closed: Deferred.await(closed),
         } satisfies RpcSession;
       }),
   };
 
   const layer = connectionSupervisorLayer(CONNECTION).pipe(
-    Layer.provide(Socket.layerWebSocketConstructorGlobal),
     Layer.provide(Layer.succeed(RpcSessionFactory, factory)),
+    Layer.provide(connectivityLayer({ status: Effect.succeed("online"), changes: Stream.empty })),
+    Layer.provide(connectionWakeupsLayer({ changes: Stream.empty })),
   );
 
   return { layer, created };

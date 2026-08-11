@@ -54,7 +54,6 @@ export const routesLayer = Layer.mergeAll(
   staticAndDevRouteLayer,
 ).pipe(Layer.provide(corsLayer), Layer.provide(httpCompressionLayer));
 
-/** Application services shared across routes and lifecycle. */
 const RuntimeServicesLive = Layer.mergeAll(
   Auth.layer,
   LifecycleEvents.layer,
@@ -79,7 +78,6 @@ export const makeServerLayer = Layer.unwrap(
       websocket: { perMessageDeflate: true },
     });
 
-    // Publish `starting` immediately as the runtime spins up.
     const startingLayer = Layer.effectDiscard(
       Effect.gen(function* () {
         const lifecycle = yield* LifecycleEvents.ServerLifecycleEvents;
@@ -122,7 +120,10 @@ export const makeServerLayer = Layer.unwrap(
     );
 
     const applicationLayer = Layer.mergeAll(
-      HttpRouter.serve(routesLayer),
+      // The per-request "Sent HTTP response" log is a dev affordance: packaged,
+      // this router serves the whole SPA bundle plus the shell's health polling,
+      // and every one of those would land in the shared log directory.
+      HttpRouter.serve(routesLayer, { disableLogger: config.devWebUrl === undefined }),
       startingLayer,
       readyLayer,
     );
@@ -134,17 +135,14 @@ export const makeServerLayer = Layer.unwrap(
       // file tracer, and the browser trace collector. Installed here (rather
       // than around the CLI) because it is built from `ServerConfig`.
       Layer.provideMerge(ObservabilityLive),
-      // The stack's only HttpClient (NodeServices does not bundle one).
-      // Nothing consumes it yet; it is pre-wired for handlers that make
-      // outbound requests. Global fetch, not the undici-based Node client:
-      // the shell spawns this server under Electron's bundled Node (v20.18),
-      // where npm undici@8 crashes at load (`webidl.util.markAsUncloneable`).
+      // The stack's only HttpClient (NodeServices does not bundle one). Global
+      // fetch, not the undici-based Node client: the shell spawns this server
+      // under Electron's bundled Node (v20.18), where npm undici@8 crashes at
+      // load (`webidl.util.markAsUncloneable`).
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provideMerge(NodeServices.layer),
     );
   }),
 );
 
-// Important: only `ServerConfig` should be provided by the CLI layer. Keep other
-// requirements out of the launch layer.
 export const runServer = Layer.launch(makeServerLayer);

@@ -1,14 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off
-import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
-
-import * as Crypto from "effect/Crypto";
-import * as DateTime from "effect/DateTime";
-import * as Effect from "effect/Effect";
-import * as LogLevel from "effect/LogLevel";
-import * as Option from "effect/Option";
-import { Flag } from "effect/unstable/cli";
-
 /**
  * CLI → ServerConfig resolution.
  *
@@ -19,11 +8,23 @@ import { Flag } from "effect/unstable/cli";
  *
  * @module cli/config
  */
+import * as Config from "effect/Config";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import type * as LogLevel from "effect/LogLevel";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import { Flag } from "effect/unstable/cli";
+
 import { Port } from "@app/contracts";
 import { HostProcessEnvironment } from "@app/shared/hostProcess";
 
 import { type BootstrapEnvelope, readBootstrapEnvelope } from "../bootstrap.ts";
 import * as ServerConfig from "../config.ts";
+import { resolveBaseDir, resolveOverridePath } from "../os-jank.ts";
 
 export const portFlag = Flag.integer("port").pipe(
   Flag.withSchema(Port),
@@ -35,6 +36,7 @@ export const hostFlag = Flag.string("host").pipe(
   Flag.optional,
 );
 export const devWebUrlFlag = Flag.string("dev-web-url").pipe(
+  Flag.withSchema(Schema.URLFromString),
   Flag.withDescription("Dev web URL to redirect navigations to (equivalent to APP_DEV_WEB_URL)."),
   Flag.optional,
 );
@@ -53,63 +55,65 @@ export const sharedServerCommandFlags = {
 export interface CliServerFlags {
   readonly port: Option.Option<number>;
   readonly host: Option.Option<string>;
-  readonly devWebUrl: Option.Option<string>;
+  readonly devWebUrl: Option.Option<URL>;
   readonly bootstrapFd: Option.Option<number>;
 }
 
-const parseUrlOption = (value: string | undefined): URL | undefined => {
-  if (value === undefined || value.trim().length === 0) return undefined;
-  try {
-    return new URL(value);
-  } catch {
-    return undefined;
-  }
-};
-
-// Bounds match the contracts `Port` schema (1–65535); port 0 would bind an
-// ephemeral port that no client could discover.
-const parsePortOption = (value: string | undefined): number | undefined => {
-  if (value === undefined) return undefined;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535 ? parsed : undefined;
-};
-
-const parsePositiveIntOption = (value: string | undefined): number | undefined => {
-  if (value === undefined) return undefined;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isInteger(parsed) && parsed >= 1 ? parsed : undefined;
-};
-
-const parseBooleanOption = (value: string | undefined): boolean | undefined => {
-  if (value === undefined) return undefined;
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "1" || normalized === "true" || normalized === "yes") return true;
-  if (normalized === "0" || normalized === "false" || normalized === "no") return false;
-  return undefined;
-};
-
 /**
- * Case-insensitive `LogLevel` parse. An unrecognized value falls back rather
- * than failing: a typo in an env var must not stop the server from booting, and
- * the fallback is always at least as verbose.
+ * Every environment input the server accepts, declared once. A malformed value
+ * fails startup with a typed `ConfigError` rather than being silently replaced
+ * by its default.
  */
-const parseLogLevel = (
-  value: string | undefined,
-  fallback: LogLevel.LogLevel,
-): LogLevel.LogLevel => {
-  if (value === undefined) return fallback;
-  const normalized = value.trim().toLowerCase();
-  return LogLevel.values.find((level) => level.toLowerCase() === normalized) ?? fallback;
-};
+const EnvServerConfig = Config.all({
+  logLevel: Config.logLevel("APP_LOG_LEVEL").pipe(Config.withDefault("Info")),
+  traceMinLevel: Config.logLevel("APP_TRACE_MIN_LEVEL").pipe(Config.withDefault("Info")),
+  traceTimingEnabled: Config.boolean("APP_TRACE_TIMING_ENABLED").pipe(Config.withDefault(true)),
+  traceFile: Config.string("APP_TRACE_FILE").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  traceMaxBytes: Config.int("APP_TRACE_MAX_BYTES").pipe(
+    Config.withDefault(ServerConfig.DEFAULT_TRACE_MAX_BYTES),
+  ),
+  traceMaxFiles: Config.int("APP_TRACE_MAX_FILES").pipe(
+    Config.withDefault(ServerConfig.DEFAULT_TRACE_MAX_FILES),
+  ),
+  traceBatchWindowMs: Config.int("APP_TRACE_BATCH_WINDOW_MS").pipe(
+    Config.withDefault(ServerConfig.DEFAULT_TRACE_BATCH_WINDOW_MS),
+  ),
+  otlpTracesUrl: Config.url("APP_OTLP_TRACES_URL").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+  otlpMetricsUrl: Config.url("APP_OTLP_METRICS_URL").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+  otlpExportIntervalMs: Config.int("APP_OTLP_EXPORT_INTERVAL_MS").pipe(
+    Config.withDefault(ServerConfig.DEFAULT_OTLP_EXPORT_INTERVAL_MS),
+  ),
+  otlpServiceName: Config.string("APP_OTLP_SERVICE_NAME").pipe(
+    Config.withDefault(ServerConfig.DEFAULT_OTLP_SERVICE_NAME),
+  ),
+  port: Config.port("APP_SERVER_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  host: Config.string("APP_SERVER_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  dataDir: Config.string("APP_DATA_DIR").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  logDir: Config.string("APP_LOG_DIR").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  devWebUrl: Config.url("APP_DEV_WEB_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  bootstrapToken: Config.string("APP_BOOTSTRAP_TOKEN").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+});
 
 /** Resolve the full server config from flags + bootstrap envelope + env. */
 export const resolveServerConfig = Effect.fn("cli.resolveServerConfig")(function* (
   flags: CliServerFlags,
+  cliLogLevel: Option.Option<LogLevel.LogLevel>,
   options?: {
     timeoutMs?: number;
   },
 ) {
-  const env = yield* HostProcessEnvironment;
+  const path = yield* Path.Path;
+  const processEnv = yield* HostProcessEnvironment;
+  const env = yield* EnvServerConfig.parse(ConfigProvider.fromEnvRecord(processEnv));
   const crypto = yield* Crypto.Crypto;
   const startedAt = yield* DateTime.now;
 
@@ -121,28 +125,23 @@ export const resolveServerConfig = Effect.fn("cli.resolveServerConfig")(function
   const bootstrap = Option.getOrUndefined(bootstrapEnvelope);
 
   const port =
-    Option.getOrUndefined(flags.port) ??
-    bootstrap?.port ??
-    parsePortOption(env["APP_SERVER_PORT"]) ??
-    ServerConfig.DEFAULT_PORT;
+    Option.getOrUndefined(flags.port) ?? bootstrap?.port ?? env.port ?? ServerConfig.DEFAULT_PORT;
 
-  const host =
-    Option.getOrUndefined(flags.host) ?? env["APP_SERVER_HOST"] ?? ServerConfig.DEFAULT_HOST;
+  const host = Option.getOrUndefined(flags.host) ?? env.host ?? ServerConfig.DEFAULT_HOST;
 
-  const devWebUrl =
-    parseUrlOption(Option.getOrUndefined(flags.devWebUrl)) ??
-    parseUrlOption(env["APP_DEV_WEB_URL"]);
+  const devWebUrl = Option.getOrUndefined(flags.devWebUrl) ?? env.devWebUrl;
 
-  // No dev URL → resolve built static assets (undefined until the web is built).
   const staticDir = devWebUrl ? undefined : yield* ServerConfig.resolveStaticDir();
 
   // Same directory the desktop shell uses as its app-data base, so the server
   // persists to one place whether it was spawned by the shell or standalone.
-  const dataDir = env["APP_DATA_DIR"] ?? NodePath.join(NodeOS.homedir(), ".throughline");
-  const logDir = env["APP_LOG_DIR"] ?? NodePath.join(dataDir, "logs");
+  const dataDir = yield* resolveBaseDir(env.dataDir);
+  const logDir = yield* resolveOverridePath(env.logDir, () => path.join(dataDir, "logs"));
+  const serverTracePath = yield* resolveOverridePath(env.traceFile, () =>
+    path.join(logDir, ServerConfig.TRACE_FILE_NAME),
+  );
 
-  // Bootstrap token precedence: envelope → env → generated (dev convenience).
-  let bootstrapToken = bootstrap?.desktopBootstrapToken ?? env["APP_BOOTSTRAP_TOKEN"];
+  let bootstrapToken = bootstrap?.desktopBootstrapToken ?? env.bootstrapToken;
   if (bootstrapToken === undefined || bootstrapToken.trim().length === 0) {
     const bytes = yield* crypto.randomBytes(32).pipe(Effect.orDie);
     bootstrapToken = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
@@ -162,22 +161,16 @@ export const resolveServerConfig = Effect.fn("cli.resolveServerConfig")(function
     bootstrapToken,
     dataDir,
     logDir,
-    serverTracePath: env["APP_TRACE_FILE"] ?? NodePath.join(logDir, ServerConfig.TRACE_FILE_NAME),
-    logLevel: parseLogLevel(env["APP_LOG_LEVEL"], "Info"),
-    traceMinLevel: parseLogLevel(env["APP_TRACE_MIN_LEVEL"], "Info"),
-    traceTimingEnabled: parseBooleanOption(env["APP_TRACE_TIMING_ENABLED"]) ?? true,
-    traceBatchWindowMs:
-      parsePositiveIntOption(env["APP_TRACE_BATCH_WINDOW_MS"]) ??
-      ServerConfig.DEFAULT_TRACE_BATCH_WINDOW_MS,
-    traceMaxBytes:
-      parsePositiveIntOption(env["APP_TRACE_MAX_BYTES"]) ?? ServerConfig.DEFAULT_TRACE_MAX_BYTES,
-    traceMaxFiles:
-      parsePositiveIntOption(env["APP_TRACE_MAX_FILES"]) ?? ServerConfig.DEFAULT_TRACE_MAX_FILES,
-    otlpTracesUrl: parseUrlOption(env["APP_OTLP_TRACES_URL"])?.href,
-    otlpMetricsUrl: parseUrlOption(env["APP_OTLP_METRICS_URL"])?.href,
-    otlpExportIntervalMs:
-      parsePositiveIntOption(env["APP_OTLP_EXPORT_INTERVAL_MS"]) ??
-      ServerConfig.DEFAULT_OTLP_EXPORT_INTERVAL_MS,
-    otlpServiceName: env["APP_OTLP_SERVICE_NAME"] ?? ServerConfig.DEFAULT_OTLP_SERVICE_NAME,
+    serverTracePath,
+    logLevel: Option.getOrElse(cliLogLevel, () => env.logLevel),
+    traceMinLevel: env.traceMinLevel,
+    traceTimingEnabled: env.traceTimingEnabled,
+    traceBatchWindowMs: env.traceBatchWindowMs,
+    traceMaxBytes: env.traceMaxBytes,
+    traceMaxFiles: env.traceMaxFiles,
+    otlpTracesUrl: env.otlpTracesUrl?.href,
+    otlpMetricsUrl: env.otlpMetricsUrl?.href,
+    otlpExportIntervalMs: env.otlpExportIntervalMs,
+    otlpServiceName: env.otlpServiceName,
   });
 });

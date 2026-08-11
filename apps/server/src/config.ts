@@ -27,7 +27,7 @@ export const APP_NAME = "Throughline";
 export const TRACE_FILE_NAME = "server.trace.ndjson";
 export const DEFAULT_TRACE_MAX_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_TRACE_MAX_FILES = 10;
-export const DEFAULT_TRACE_BATCH_WINDOW_MS = 200;
+export const DEFAULT_TRACE_BATCH_WINDOW_MS = 1_000;
 export const DEFAULT_OTLP_EXPORT_INTERVAL_MS = 10_000;
 export const DEFAULT_OTLP_SERVICE_NAME = "throughline-server";
 /** Single-sourced from package.json so `--version` can't drift from the manifest. */

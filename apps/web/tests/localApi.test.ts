@@ -46,6 +46,15 @@ function makeBridge(overrides?: Partial<DesktopBridge>): DesktopBridge {
   } as DesktopBridge;
 }
 
+function captureThrow(run: () => unknown): unknown {
+  try {
+    run();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
 async function loadLocalApi(windowStub: object) {
   vi.resetModules();
   (globalThis as MutableGlobal).window = windowStub;
@@ -90,17 +99,99 @@ describe("localApi in the shell (bridge present)", () => {
     );
   });
 
-  it("still syncs the theme to the shell when localStorage throws (private mode)", async () => {
+  it("fails the theme change closed when localStorage throws (private mode)", async () => {
+    const cause = new Error("QuotaExceededError");
     const bridge = makeBridge();
     const storage = makeStorage({
       setItem: () => {
-        throw new Error("QuotaExceededError");
+        throw cause;
       },
     });
-    const { localApi } = await loadLocalApi({ desktopBridge: bridge, localStorage: storage });
+    const { localApi, isThemeStorageError } = await loadLocalApi({
+      desktopBridge: bridge,
+      localStorage: storage,
+    });
 
-    await localApi().setTheme("light");
-    expect(bridge.setTheme).toHaveBeenCalledWith("light");
+    const error: unknown = await localApi()
+      .setTheme("light")
+      .then(
+        () => undefined,
+        (failure: unknown) => failure,
+      );
+
+    expect(isThemeStorageError(error)).toBe(true);
+    expect(error).toMatchObject({
+      operation: "write",
+      storageKey: "app:theme",
+      theme: "light",
+      cause,
+    });
+    // A preference the store could not hold is never announced to the shell;
+    // the two would otherwise disagree until the next reload.
+    expect(bridge.setTheme).not.toHaveBeenCalled();
+  });
+
+  it("wraps a refused bridge handoff in DesktopThemeSyncError", async () => {
+    const cause = new Error("desktop IPC unavailable");
+    const bridge = makeBridge({
+      setTheme: vi.fn<DesktopBridge["setTheme"]>(() => Promise.reject(cause)),
+    });
+    const { localApi, isDesktopThemeSyncError } = await loadLocalApi({
+      desktopBridge: bridge,
+      localStorage: makeStorage(),
+    });
+
+    const error: unknown = await localApi()
+      .setTheme("dark")
+      .then(
+        () => undefined,
+        (failure: unknown) => failure,
+      );
+
+    expect(isDesktopThemeSyncError(error)).toBe(true);
+    expect(error).toMatchObject({ theme: "dark", cause });
+  });
+});
+
+describe("theme storage primitives", () => {
+  it("preserves the exact cause and operation context", async () => {
+    const readCause = new Error("storage read blocked");
+    const writeCause = new Error("storage quota exceeded");
+    const { readThemePreference, writeThemePreference, ThemeStorageError } = await loadLocalApi({
+      localStorage: makeStorage({
+        getItem: () => {
+          throw readCause;
+        },
+        setItem: () => {
+          throw writeCause;
+        },
+      }),
+    });
+
+    expect(() => readThemePreference()).toThrow(ThemeStorageError);
+    expect(() => writeThemePreference("dark")).toThrow(ThemeStorageError);
+
+    // The exact cause survives, so a private-mode failure is still readable in
+    // the log the caller writes.
+    expect(captureThrow(() => readThemePreference())).toMatchObject({
+      operation: "read",
+      storageKey: "app:theme",
+      cause: readCause,
+    });
+    expect(captureThrow(() => writeThemePreference("dark"))).toMatchObject({
+      operation: "write",
+      storageKey: "app:theme",
+      theme: "dark",
+      cause: writeCause,
+    });
+  });
+
+  it("falls back to the default preference for an unknown stored value", async () => {
+    const storage = makeStorage();
+    storage.setItem("app:theme", "chartreuse");
+    const { readThemePreference } = await loadLocalApi({ localStorage: storage });
+
+    expect(readThemePreference()).toBe("system");
   });
 });
 
@@ -123,8 +214,6 @@ describe("localApi in a plain browser (no bridge)", () => {
     expect(await api.confirm("sure?")).toBe(false);
     expect(confirm).toHaveBeenCalledWith("sure?");
 
-    // No native affordances in a browser: folder picker degrades to null and
-    // menu subscriptions are inert.
     expect(await api.pickFolder()).toBeNull();
     const unsubscribe = api.onMenuAction(() => {});
     expect(unsubscribe).toBeTypeOf("function");

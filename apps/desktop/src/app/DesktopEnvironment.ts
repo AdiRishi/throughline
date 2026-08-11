@@ -10,21 +10,15 @@ import type { DesktopAppInfo } from "@app/contracts";
 
 import type { DesktopSettings } from "../settings/DesktopAppSettings.ts";
 import { DEFAULT_DESKTOP_SETTINGS } from "../settings/DesktopAppSettings.ts";
-
-// All the derived, environment-dependent facts the rest of the shell reads:
-// paths, dev-vs-prod, branding, and where the server entry lives. It is built
-// once in `main.ts` from injected Electron metadata + host process values, so
-// every consumer sees the same resolved values and nothing downstream touches
-// `process`/`__dirname` directly.
+import { resolveDesktopStateDir } from "./DesktopStatePaths.ts";
 
 const APP_BASE_NAME = "Throughline";
+const APP_BASE_ID = "com.arsoftware.throughline";
 const DEFAULT_BACKEND_PORT = 13773;
 const DEFAULT_OTLP_EXPORT_INTERVAL_MS = 10_000;
 
-/**
- * Case-insensitive `LogLevel` parse. An unrecognized value falls back rather
- * than failing: a typo in an env var must not stop the shell from booting.
- */
+// An unrecognized value falls back rather than failing: a typo in an env var
+// must not stop the shell from booting.
 function parseLogLevel(value: string | undefined, fallback: LogLevel.LogLevel): LogLevel.LogLevel {
   if (value === undefined) return fallback;
   const normalized = value.trim().toLowerCase();
@@ -40,23 +34,14 @@ export interface MakeDesktopEnvironmentInput {
   readonly appPath: string;
   readonly isPackaged: boolean;
   readonly resourcesPath: string;
-  /** `APPDATA`, if set (Windows roaming config root). */
   readonly appDataDirectory: Option.Option<string>;
-  /** `XDG_CONFIG_HOME`, if set (Linux config root). */
   readonly xdgConfigHome: Option.Option<string>;
-  /** `APP_SERVER_ENTRY` override, if set. */
   readonly serverEntryOverride: Option.Option<string>;
-  /** `APP_LOG_DIR` override, if set. Shared with the spawned server child. */
   readonly logDirOverride: Option.Option<string>;
-  /** `APP_LOG_LEVEL`, if set. */
   readonly logLevel: Option.Option<string>;
-  /** `APP_OTLP_TRACES_URL`, if set. Local tracing works regardless. */
   readonly otlpTracesUrl: Option.Option<string>;
-  /** `APP_OTLP_EXPORT_INTERVAL_MS`, if set. */
   readonly otlpExportIntervalMs: Option.Option<number>;
-  /** `APP_SERVER_PORT`, if set. */
   readonly configuredBackendPort: Option.Option<number>;
-  /** `APP_DEV_WEB_URL` dev-server URL, if set (renderer served here in dev). */
   readonly devServerUrl: Option.Option<URL>;
 }
 
@@ -71,14 +56,10 @@ export class DesktopEnvironment extends Context.Service<
     readonly appPath: string;
     readonly resourcesPath: string;
     readonly homeDirectory: string;
-    /**
-     * Base app-data dir under the platform's config root (AppData/Roaming,
-     * Library/Application Support, XDG config) — settings + logs live under
-     * here, and the spawned server child is pointed at it via APP_DATA_DIR.
-     */
+    readonly appDataDirectory: string;
     readonly baseDir: string;
+    readonly stateDir: string;
     readonly desktopSettingsPath: string;
-    /** Holds `desktop.trace.ndjson`, `server-child.log`, and the server's own artifacts. */
     readonly logDir: string;
     readonly logLevel: LogLevel.LogLevel;
     readonly otlpTracesUrl: Option.Option<string>;
@@ -90,16 +71,15 @@ export class DesktopEnvironment extends Context.Service<
      * absence is what tells the updater it has no feed to talk to.
      */
     readonly appUpdateYmlPath: string;
-    /** Absolute path to the server entry to spawn. */
     readonly backendEntryPath: string;
-    /** cwd for the spawned server child. */
     readonly backendCwd: string;
     readonly defaultBackendPort: number;
     readonly configuredBackendPort: Option.Option<number>;
     readonly devServerUrl: Option.Option<URL>;
-    /** Static identity handed to the renderer at boot. */
     readonly appInfo: DesktopAppInfo;
     readonly displayName: string;
+    readonly userDataDirName: string;
+    readonly appUserModelId: string;
     readonly defaultDesktopSettings: DesktopSettings;
   }
 >()("@app/desktop/app/DesktopEnvironment") {}
@@ -110,8 +90,6 @@ function normalizePlatform(platform: NodeJS.Platform): DesktopAppInfo["platform"
   return "linux";
 }
 
-// The Path service is taken explicitly so this builder stays pure and
-// testable — the `layer` below wires the real `Path.Path` in.
 export function makeWith(
   input: MakeDesktopEnvironmentInput,
   path: Path.Path,
@@ -129,21 +107,16 @@ export function makeWith(
         ? path.join(input.homeDirectory, "Library", "Application Support")
         : Option.getOrElse(input.xdgConfigHome, () => path.join(input.homeDirectory, ".config"));
   const baseDir = path.join(appDataDirectory, "throughline");
+  const stateDir = resolveDesktopStateDir({ baseDir, isDevelopment, joinPath: path.join });
   // `APP_LOG_DIR` wins so a dev checkout can keep its artifacts in one known
-  // place; the shell hands the same resolved value to the server child.
-  const logDir = Option.getOrElse(input.logDirOverride, () => path.join(baseDir, "logs"));
-  const desktopSettingsPath = path.join(baseDir, "desktop-settings.json");
+  // place; the same resolved value is handed to the spawned server child.
+  const logDir = Option.getOrElse(input.logDirOverride, () => path.join(stateDir, "logs"));
+  const desktopSettingsPath = path.join(stateDir, "desktop-settings.json");
   const preloadPath = path.join(input.dirname, "preload.cjs");
   const appUpdateYmlPath = input.isPackaged
     ? path.join(input.resourcesPath, "app-update.yml")
     : path.join(input.appPath, "dev-app-update.yml");
 
-  // Resolve the server entry to spawn. Priority:
-  //   1. APP_SERVER_ENTRY override (used by the dev runner).
-  //   2. Packaged: the bundled server under Electron's app path.
-  //   3. Dev default: the server's built dist relative to this monorepo.
-  // The dev runner points APP_SERVER_ENTRY at the server's src/bin.ts (run via
-  // tsx) or its built dist/bin.mjs, so most local setups exercise branch (1).
   const backendEntryPath = Option.match(input.serverEntryOverride, {
     onSome: (override) => override,
     onNone: () =>
@@ -169,7 +142,9 @@ export function makeWith(
     appPath: input.appPath,
     resourcesPath: input.resourcesPath,
     homeDirectory: input.homeDirectory,
+    appDataDirectory,
     baseDir,
+    stateDir,
     desktopSettingsPath,
     logDir,
     logLevel: parseLogLevel(Option.getOrUndefined(input.logLevel), "Info"),
@@ -187,12 +162,12 @@ export function makeWith(
     devServerUrl: input.devServerUrl,
     appInfo,
     displayName,
+    userDataDirName: isDevelopment ? "throughline-dev" : "throughline",
+    appUserModelId: isDevelopment ? `${APP_BASE_ID}.dev` : APP_BASE_ID,
     defaultDesktopSettings: DEFAULT_DESKTOP_SETTINGS,
   });
 }
 
-// Reads the `APP_SERVER_ENTRY` / `APP_SERVER_PORT` / `APP_DEV_WEB_URL` env
-// config (via Effect's Config, so it's overridable in tests) and builds it.
 export function layer(
   metadata: Pick<
     MakeDesktopEnvironmentInput,
@@ -235,8 +210,10 @@ export function layer(
         },
         path,
       );
+    }).pipe(
       // A malformed env value (e.g. a non-URL APP_DEV_WEB_URL) is a startup
       // misconfiguration; die rather than thread ConfigError through the graph.
-    }).pipe(Effect.orDie),
+      Effect.orDie,
+    ),
   ).pipe(Layer.provide(Path.layer));
 }

@@ -1,5 +1,5 @@
 // Electron's postinstall does not reliably produce a working runtime, and
-// `pnpm rebuild electron` inherits both failure modes (verified on CI):
+// `pnpm rebuild electron` inherits both failure modes:
 //
 // - On Node >= 24.16 / >= 26.1, electron's install.js exits 0 without
 //   installing: its extract-zip dependency never settles its promise, the
@@ -11,9 +11,9 @@
 // Anything that loads the `electron` package then throws "Electron failed to
 // install correctly" — including unit tests that merely import a module which
 // imports `electron`. So the runtime is verified (and repaired from GitHub
-// releases, bypassing install.js) instead of assumed; same approach as T3
-// Code's ensure-electron-runtime script. Deletable once the upstream installer
-// is fixed and the workspace floor is past the broken Node range.
+// releases, bypassing install.js) instead of assumed. Deletable once the
+// upstream installer is fixed and the workspace floor is past the broken Node
+// range.
 
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
@@ -31,6 +31,8 @@ function getPlatformPath() {
   switch (hostPlatform) {
     case "darwin":
       return "Electron.app/Contents/MacOS/Electron";
+    case "freebsd":
+    case "openbsd":
     case "linux":
       return "electron";
     case "win32":
