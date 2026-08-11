@@ -24,6 +24,10 @@
       "types": "./src/Net.ts",
       "import": "./src/Net.ts"
     },
+    "./shell": {
+      "types": "./src/shell.ts",
+      "import": "./src/shell.ts"
+    },
     "./atomicWrite": {
       "types": "./src/atomicWrite.ts",
       "import": "./src/atomicWrite.ts"
