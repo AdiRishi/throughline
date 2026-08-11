@@ -58,6 +58,15 @@ export class DesktopWindow extends Context.Service<
     readonly handleBackendNotReady: Effect.Effect<void>;
     readonly dispatchMenuAction: (action: string) => Effect.Effect<void, DesktopWindowError>;
     readonly syncAppearance: Effect.Effect<void>;
+    /**
+     * Cancels any pending debounced geometry write, persists the window's
+     * current bounds, and completes only once that write has landed on disk.
+     *
+     * The shutdown path awaits this. `window.on("close")` alone is not enough:
+     * it fires a write that is still in flight when the process exits, so the
+     * last move or resize before a quit is lost.
+     */
+    readonly flushMainWindowBounds: Effect.Effect<void>;
   }
 >()("@app/desktop/window/DesktopWindow") {}
 
@@ -198,6 +207,10 @@ export const make = Effect.gen(function* () {
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
   const runFork = Effect.runForkWith(context);
   const runPromise = Effect.runPromiseWith(context);
+  // Rebound by `createWindow` to the live window's flush. Stays `Effect.void`
+  // until a window exists, so a shutdown before first paint is a no-op rather
+  // than a failure.
+  let flushMainWindowBounds: Effect.Effect<void> = Effect.void;
 
   const createWindow = Effect.fn("desktop.window.createWindow")(function* () {
     const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
@@ -351,12 +364,16 @@ export const make = Effect.gen(function* () {
       });
     };
 
-    const persistCurrentBounds = () => {
-      if (!boundsPersistenceEnabled) return;
+    // Returns the fiber doing the write so `flushBoundsPersist` can join it.
+    // Without that handle the caller has no way to know the settings file has
+    // actually been updated, which is the whole point of flushing on quit.
+    let pendingBoundsPersistFiber: Fiber.Fiber<void, never> | undefined;
+    const persistCurrentBounds = (): Fiber.Fiber<void, never> | undefined => {
+      if (!boundsPersistenceEnabled) return pendingBoundsPersistFiber;
       const bounds = readPersistableBounds();
-      if (bounds === null) return;
+      if (bounds === null) return pendingBoundsPersistFiber;
       const isMaximized = window.isMaximized();
-      runFork(
+      pendingBoundsPersistFiber = runFork(
         desktopSettings.setMainWindowBounds(bounds, isMaximized).pipe(
           Effect.asVoid,
           Effect.catch((error) =>
@@ -364,6 +381,7 @@ export const make = Effect.gen(function* () {
           ),
         ),
       );
+      return pendingBoundsPersistFiber;
     };
 
     const scheduleBoundsPersist = () => {
@@ -379,18 +397,35 @@ export const make = Effect.gen(function* () {
       );
     };
 
+    const clearBoundsPersist = () => {
+      if (boundsPersistFiber === undefined) return;
+      const fiber = boundsPersistFiber;
+      boundsPersistFiber = undefined;
+      runFork(Fiber.interrupt(fiber));
+    };
+
+    // Cancel the debounce, write, and *wait* for the write. Electron's "close"
+    // handler cannot await, so it only starts this; the shutdown path calls the
+    // same effect and joins it, which is what makes the write durable.
+    const flushBoundsPersist = Effect.sync(() => {
+      clearBoundsPersist();
+      return persistCurrentBounds();
+    }).pipe(
+      Effect.flatMap((fiber) =>
+        fiber === undefined ? Effect.void : Fiber.join(fiber).pipe(Effect.asVoid),
+      ),
+    );
+
     window.on("resize", scheduleBoundsPersist);
     window.on("move", scheduleBoundsPersist);
     window.on("maximize", scheduleBoundsPersist);
     window.on("unmaximize", scheduleBoundsPersist);
     // The debounce would lose the last change on a quick close, so flush.
     window.on("close", () => {
-      if (boundsPersistFiber !== undefined) {
-        runFork(Fiber.interrupt(boundsPersistFiber));
-        boundsPersistFiber = undefined;
-      }
-      persistCurrentBounds();
+      runFork(flushBoundsPersist);
     });
+
+    flushMainWindowBounds = flushBoundsPersist;
 
     const fireReveal = makeFirstRevealTrigger(() => {
       if (restoredPersistedBounds && persistedSettings.mainWindowMaximized) {
@@ -596,6 +631,11 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("desktop.window.handleBackendNotReady"),
     ),
     dispatchMenuAction,
+    // Suspended so the shutdown path picks up whatever window exists at the
+    // time it runs, not the `Effect.void` captured when the service was built.
+    flushMainWindowBounds: Effect.suspend(() => flushMainWindowBounds).pipe(
+      Effect.withSpan("desktop.window.flushMainWindowBounds"),
+    ),
     syncAppearance: Effect.gen(function* () {
       const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
       yield* electronWindow.syncAllAppearance((window) =>
