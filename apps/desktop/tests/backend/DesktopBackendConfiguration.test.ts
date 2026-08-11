@@ -129,6 +129,8 @@ describe("DesktopBackendConfiguration", () => {
         "start",
         "--bootstrap-fd",
         "3",
+        "--parent-lifetime-fd",
+        "4",
       ]);
       assert.equal(config.env.ELECTRON_RUN_AS_NODE, "1");
       // Every server-read APP_* var is cleared so a developer shell cannot

@@ -25,6 +25,7 @@ const baseFlags: CliServerFlags = {
   host: Option.none(),
   devWebUrl: Option.some(new URL("http://127.0.0.1:5173")),
   bootstrapFd: Option.none(),
+  parentLifetimeFd: Option.none(),
 };
 
 function withBootstrapFd<A, E, R>(

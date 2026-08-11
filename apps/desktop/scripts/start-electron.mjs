@@ -5,53 +5,11 @@
 // plain Node.
 
 import * as NodeChildProcess from "node:child_process";
-import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
-import * as NodeURL from "node:url";
 
-import { ensureElectronRuntime } from "./ensure-electron-runtime.mjs";
-
-const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
-const desktopDir = NodePath.resolve(__dirname, "..");
-// oxlint-disable-next-line app/no-global-process-runtime -- Standalone launcher script has no Effect runtime.
-const hostPlatform = NodeOS.platform();
+import { desktopDir, hostPlatform, resolveElectronLaunchCommand } from "./electron-launcher.mjs";
 
 const forcedShutdownTimeoutMs = 1_500;
 const childTreeGracePeriodMs = 1_200;
-
-function isLinuxSetuidSandboxConfigured(electronBinaryPath) {
-  if (hostPlatform !== "linux") {
-    return true;
-  }
-
-  const sandboxPath = NodePath.join(NodePath.dirname(electronBinaryPath), "chrome-sandbox");
-  try {
-    const sandboxStat = NodeFS.statSync(sandboxPath);
-    return sandboxStat.uid === 0 && (sandboxStat.mode & 0o4777) === 0o4755;
-  } catch {
-    return false;
-  }
-}
-
-function resolveLinuxSandboxArgs(electronBinaryPath) {
-  if (isLinuxSetuidSandboxConfigured(electronBinaryPath)) {
-    return [];
-  }
-
-  console.warn(
-    "[desktop-launcher] Electron chrome-sandbox is not root-owned with mode 4755; launching local Electron with --no-sandbox.",
-  );
-  return ["--no-sandbox"];
-}
-
-function resolveElectronLaunchCommand(args = []) {
-  const electronPath = ensureElectronRuntime();
-  return {
-    electronPath,
-    args: [...resolveLinuxSandboxArgs(electronPath), ...args],
-  };
-}
 
 function killChildTreeByPid(pid, signal) {
   if (hostPlatform === "win32" || typeof pid !== "number") {

@@ -375,6 +375,10 @@ export const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(
         type: "input",
         stream: Stream.encodeText(Stream.make(`${bootstrapJson}\n`)),
       },
+      fd4: {
+        type: "input",
+        stream: Stream.never,
+      },
     },
   });
 

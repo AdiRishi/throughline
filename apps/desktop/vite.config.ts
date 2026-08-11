@@ -44,7 +44,7 @@ function electronEntryConfig(input: {
       },
       outDir: "dist-electron",
       sourcemap: true,
-      emptyOutDir: input.emptyOutDir,
+      emptyOutDir: input.emptyOutDir && process.env["APP_DESKTOP_BUILD_WATCH"] !== "1",
       minify: false,
       target: "node22",
       rollupOptions: {
