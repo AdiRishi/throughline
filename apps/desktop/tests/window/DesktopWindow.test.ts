@@ -16,6 +16,7 @@ import * as ElectronMenu from "../../src/electron/ElectronMenu.ts";
 import * as ElectronShell from "../../src/electron/ElectronShell.ts";
 import * as ElectronTheme from "../../src/electron/ElectronTheme.ts";
 import * as ElectronWindow from "../../src/electron/ElectronWindow.ts";
+import * as DesktopAppSettings from "../../src/settings/DesktopAppSettings.ts";
 import * as DesktopWindow from "../../src/window/DesktopWindow.ts";
 
 const decodeBootstrapEnvelope = Schema.decodeUnknownSync(ServerBootstrapEnvelope);
@@ -107,6 +108,10 @@ const desktopEnvironmentLayer = (devServerUrl: Option.Option<URL> = Option.none(
           otlpExportIntervalMs: Option.none(),
           configuredBackendPort: Option.none(),
           devServerUrl,
+          processArch: "arm64",
+          runningUnderArm64Translation: false,
+          appImagePath: Option.none(),
+          disableAutoUpdate: false,
         },
         path,
       ),
@@ -142,6 +147,7 @@ function makeTestLayer(input: {
     send: () => Effect.void,
     sendAll: () => Effect.void,
     destroyAll: Effect.void,
+    allDisplayBounds: Effect.succeed([]),
     syncAllAppearance: (sync) => sync(input.window),
     onReadyToShow: () => Effect.void,
     onClosed: () => Effect.void,
@@ -152,6 +158,7 @@ function makeTestLayer(input: {
     Layer.provide(
       Layer.mergeAll(
         desktopEnvironmentLayer(Option.fromNullishOr(input.devServerUrl ?? null)),
+        DesktopAppSettings.layerTest(),
         electronMenuLayer,
         Layer.succeed(ElectronShell.ElectronShell, {
           openExternal: (url) =>

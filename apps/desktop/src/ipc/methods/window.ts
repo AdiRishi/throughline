@@ -110,10 +110,11 @@ export const pickFolder = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.window.pickFolder")(function* (options) {
     const dialog = yield* ElectronDialog.ElectronDialog;
     const electronWindow = yield* ElectronWindow.ElectronWindow;
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
     const owner = yield* electronWindow.focusedMainOrFirst;
     const selected = yield* dialog.pickFolder({
       owner,
-      defaultPath: Option.fromNullishOr(options?.defaultPath),
+      defaultPath: environment.resolvePickFolderDefaultPath(options?.defaultPath),
       title: Option.fromNullishOr(options?.title),
     });
     return Option.getOrNull(selected);

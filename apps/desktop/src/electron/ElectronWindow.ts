@@ -12,10 +12,13 @@ const ElectronWindowCreateOptions = Schema.Struct({
   title: Schema.NullOr(Schema.String),
   width: Schema.NullOr(Schema.Number),
   height: Schema.NullOr(Schema.Number),
+  minWidth: Schema.NullOr(Schema.Number),
+  minHeight: Schema.NullOr(Schema.Number),
   show: Schema.NullOr(Schema.Boolean),
   backgroundColor: Schema.NullOr(Schema.String),
   webPreferences: Schema.Struct({
     preload: Schema.NullOr(Schema.String),
+    backgroundThrottling: Schema.NullOr(Schema.Boolean),
     sandbox: Schema.NullOr(Schema.Boolean),
     contextIsolation: Schema.NullOr(Schema.Boolean),
     nodeIntegration: Schema.NullOr(Schema.Boolean),
@@ -42,7 +45,11 @@ export class ElectronWindowCreateError extends Schema.TaggedError<ElectronWindow
 ) {
   override get message(): string {
     const title = this.options.title === null ? "" : ` "${this.options.title}"`;
-    return `Failed to create Electron BrowserWindow${title}.`;
+    const dimensions =
+      this.options.width === null || this.options.height === null
+        ? ""
+        : ` (${this.options.width}x${this.options.height})`;
+    return `Failed to create Electron BrowserWindow${title}${dimensions}.`;
   }
 }
 
@@ -58,7 +65,8 @@ export class ElectronWindowOperationError extends Schema.TaggedError<ElectronWin
 ) {
   override get message(): string {
     const window = this.windowId === null ? "" : ` for window ${this.windowId}`;
-    return `Electron window operation ${JSON.stringify(this.operation)} failed${window} on ${this.platform}.`;
+    const channel = this.channel === null ? "" : ` on channel ${JSON.stringify(this.channel)}`;
+    return `Electron window operation ${JSON.stringify(this.operation)} failed${window}${channel} on ${this.platform}.`;
   }
 }
 
@@ -80,6 +88,11 @@ export class ElectronWindow extends Context.Service<
     ) => Effect.Effect<void>;
     readonly sendAll: (channel: string, ...args: readonly unknown[]) => Effect.Effect<void>;
     readonly destroyAll: Effect.Effect<void>;
+    /**
+     * Work areas of every connected display. Used to decide whether persisted
+     * window geometry still lands somewhere the user can see.
+     */
+    readonly allDisplayBounds: Effect.Effect<readonly Electron.Rectangle[]>;
     readonly syncAllAppearance: <E, R>(
       sync: (window: Electron.BrowserWindow) => Effect.Effect<void, E, R>,
     ) => Effect.Effect<void, E, R>;
@@ -169,10 +182,13 @@ export const make = Effect.gen(function* () {
         title: options.title ?? null,
         width: options.width ?? null,
         height: options.height ?? null,
+        minWidth: options.minWidth ?? null,
+        minHeight: options.minHeight ?? null,
         show: options.show ?? null,
         backgroundColor: options.backgroundColor ?? null,
         webPreferences: {
           preload: webPreferences?.preload ?? null,
+          backgroundThrottling: webPreferences?.backgroundThrottling ?? null,
           sandbox: webPreferences?.sandbox ?? null,
           contextIsolation: webPreferences?.contextIsolation ?? null,
           nodeIntegration: webPreferences?.nodeIntegration ?? null,
@@ -257,6 +273,12 @@ export const make = Effect.gen(function* () {
         }).pipe(Effect.orDie);
       }
     }),
+    // A display query that throws leaves us with no displays, which the caller
+    // reads as "persisted bounds do not fit" and falls back to the default
+    // size — the safe answer.
+    allDisplayBounds: Effect.sync(() =>
+      Electron.screen.getAllDisplays().map((display) => display.workArea),
+    ).pipe(Effect.orElseSucceed(() => [] as readonly Electron.Rectangle[])),
     syncAllAppearance: Effect.fn("desktop.electron.window.syncAllAppearance")(function* <E, R>(
       sync: (window: Electron.BrowserWindow) => Effect.Effect<void, E, R>,
     ) {
