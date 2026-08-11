@@ -13,17 +13,17 @@ This file is the map. Each area has its own document in [`docs/technical/`](./te
 
 ## Commitments that bind every document
 
-- **Local-first, credentials-last.** No Throughline cloud. GitHub access rides the reviewer's `gh` login; analysis rides their own agent-harness logins (Codex, Claude). The app ships no model and holds no secrets of its own.
+- **Local-first, credentials-last.** No Throughline cloud. GitHub access rides the reviewer's `gh` login; analysis rides their own agent-harness logins (Codex, Claude). The app ships no model and stores no third-party credential; its own bootstrap, bearer, and WebSocket-ticket credentials are random, local, and in-memory.
 - **The guarantees are checked, not prompted.** Coverage, evidence resolution, and resurfacing rules are pure validators (`@app/journey`) the server enforces before persisting; the agent's freedom is bounded to refining a deterministic seed partition. "The agent always commits" is implemented as validate → repair → deterministic completion, so a valid journey always exists.
-- **The server owns everything durable and slow**; the renderer is rebuildable from the wire; the shell stays a host. Immutable artifacts travel as unary RPCs, changing state as snapshot-then-live streams. Durable state lives in one SQLite database (`@effect/sql-sqlite-node` on `node:sqlite`); bulk run artifacts and clone workspaces stay on disk beside it.
+- **The server owns durable Throughline domain state and slow work**; the renderer is rebuildable from the wire; the shell stays a host. Immutable artifacts travel as unary RPCs, changing state as snapshot-then-live streams. Domain state lives in one SQLite database (`@effect/sql-sqlite-node` on `node:sqlite`); bulk run artifacts and clone workspaces stay on disk beside it. Host state stays with its host: the shell owns window/update settings and native-theme synchronization, while the browser side of `LocalApi` owns its portable preferences.
 - **External services are behind single choke points.** One `GitHub` module (semaphored, cached, parked on rate limits, retries bounded to transport failures); one `AnalysisHarness` seam (read-only enforced by sandbox/allowlist, scope-owned subprocesses).
 - **Rendering is not reinvented.** Every diff surface is `@pierre/diffs`, every tree `@pierre/trees`; Throughline's frontend work is the journey, not diff plumbing.
-- **The starter's shape stands** — the shell supervises the server process, one local trust level authorized at the WS upgrade, exactly one component reconnects, one web build runs in both hosts, workspace packages ship raw TypeScript source, and Electron's runtime pins the build shape.
+- **The T3-aligned starter's shape stands** — the shell supervises the server and binds the child's lifetime to its own, one local trust level is authorized once per WebSocket, exactly one component reconnects, one web build runs in both hosts, workspace packages ship raw TypeScript source, and Electron's runtime pins the build shape.
 
 ## Known build-time risks
 
 Named here so they are spiked early, not discovered late:
 
 - **Emphasis/dimming inside Pierre diffs** — the cluster boundary's visual carrier rides `@pierre/diffs`' CSS/annotation seams; mechanism must be proven against a real `CodeView` first ([05](./technical/05-frontend.md)).
-- **Packaged-app harness SDKs** — both SDKs spawn bundled platform binaries and must stay external to the server bundle under Electron's Node (verify against a packaged app, [01](./technical/01-architecture.md)).
+- **Packaged harness execution** — the current server is a single-file bundle with no staged server dependencies. The Codex and Claude process adapters must be spiked under Electron's Node, inherited login-shell environment, cancellation, and packaged-app layout before their transport is fixed. A runtime package or bundled binary is externalized and staged only if that spike proves it necessary ([01](./technical/01-architecture.md), [04](./technical/04-analysis.md)).
 - **Plan quality at 40k lines** — the pipeline's stage split and disk-materialized inputs are designed for it, but prompt and stage tuning against real large PRs is expected iteration, not a risk to the architecture ([04](./technical/04-analysis.md)).

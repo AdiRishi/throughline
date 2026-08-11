@@ -23,7 +23,7 @@ Ingestion takes real time on real PRs, and the wait is a designed experience, no
 
 - **It narrates what is actually happening** — cloning the repository, reading the change, constructing the journey — as a sequence the reviewer can follow, with animation that is beautiful, clean, and calm. Delight here sets the tone for the whole product.
 - **It is honest.** The stages shown are the stages happening. No invented progress bars, no fake percentages.
-- **It is leavable.** On a huge PR the reviewer should feel free to walk away; the journey opens (or waits) when they come back.
+- **It is leavable while Throughline remains running.** On a huge PR the reviewer can navigate elsewhere, reload the renderer, minimize the app, or simply walk away; the journey opens (or waits) when they come back. Quitting Throughline ends an in-progress run; on the next launch the PR remains not-ingested and can be started again. V1 does not pretend jobs survive the local server that owns them.
 
 ## Freshness
 

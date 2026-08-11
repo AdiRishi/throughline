@@ -33,7 +33,7 @@ Read them in that order; where they conflict, the vision wins.
 - **[`@pierre/diffs`](https://diffs.com) and [`@pierre/trees`](https://trees.software)** — the rendering foundations for every diff surface and file tree. Throughline's job is the journey, not reinventing diff viewers.
 - **GitHub CLI (`gh`)** — authentication and PR access ride on your existing login.
 
-> **Status:** early. The documentation leads; the app code is still the starter scaffold Throughline will be built into.
+> **Status:** early. The documentation leads; the app code is the T3-aligned Effect/Electron starter scaffold Throughline will be built into. Its process, transport, host, and packaging boundaries are foundations for the product plan rather than temporary scaffolding to replace.
 
 ## Development
 

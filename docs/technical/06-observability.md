@@ -6,7 +6,7 @@ Throughline has one observability model, shared by all three processes:
 - completed spans go to a local NDJSON trace file
 - traces and metrics can also be exported over OTLP to a real backend like Grafana LGTM
 
-The local trace files are the persisted source of truth. There is no separate persisted log file for the server or the shell.
+The local trace files are the persisted source of truth for application telemetry. There is no separate persisted application log file for the server or the shell; `server-child.log` is a bounded failure diagnostic for crashes that may happen before tracing starts.
 
 ## Where To Find Things
 
@@ -24,13 +24,13 @@ Every artifact lands in one directory, shared by the shell and the server it spa
 
 ### Files
 
-| File                   | Written by | Contents                                                            |
-| ---------------------- | ---------- | ------------------------------------------------------------------- |
-| `server.trace.ndjson`  | server     | completed server spans, **plus renderer spans forwarded over OTLP** |
-| `desktop.trace.ndjson` | shell      | completed shell spans                                               |
-| `server-child.log`     | shell      | the spawned server's raw stdout/stderr, as NDJSON records           |
+| File                   | Written by | Contents                                                                         |
+| ---------------------- | ---------- | -------------------------------------------------------------------------------- |
+| `server.trace.ndjson`  | server     | completed server spans, **plus renderer spans forwarded over OTLP**              |
+| `desktop.trace.ndjson` | shell      | completed shell spans                                                            |
+| `server-child.log`     | shell      | bounded stdout/stderr tails from failed server-child sessions, encoded as NDJSON |
 
-All three rotate: `<name>.1` … `<name>.10`, 10 MB each.
+Each file rotates when written: `<name>.1` … `<name>.10`, 10 MB each. `server-child.log` may not exist after successful runs because orderly sessions are discarded without writing it.
 
 ### Logs
 
@@ -77,7 +77,7 @@ Until the exporter finishes configuring, spans fall back to `NativeSpan` — the
 
 ### Where the server child's crash output goes
 
-The shell always pipes the spawned server's stdout/stderr rather than inheriting it, and records every chunk into `server-child.log` with a `stream: "stdout" | "stderr"` annotation, bracketed by `START` / `END` session boundaries carrying the pid, port, and exit reason.
+The shell always pipes the spawned server's stdout/stderr rather than inheriting it. During a child session it retains only the newest 1 MiB and at most 256 chunks in memory. An unexpected exit writes that retained tail to `server-child.log` with a `stream: "stdout" | "stderr"` annotation, bracketed by `START` / `END` records carrying the run and failure details. A readiness failure writes a snapshot without closing the buffer so later crash output can still be captured. Requested stops and orderly shutdowns discard the buffer.
 
 This is the only evidence that survives when the child dies _before_ its own Effect runtime exists — a Node-level module-load failure under Electron's bundled Node, for example, which never reaches `server.trace.ndjson`.
 
@@ -133,7 +133,7 @@ jq -r 'select(.traceId == "TRACE_ID_HERE") | [
 ] | @tsv' "$TRACE_FILE"
 ```
 
-The server child's output:
+The failed server child's retained output, when the file exists:
 
 ```bash
 jq -r 'select(.annotations.stream) | "\(.timestamp) \(.annotations.stream) \(.annotations.text)"' \
@@ -222,4 +222,4 @@ If the OTLP URLs are unset, local tracing still works and metrics stay in-proces
 
 - logs emitted outside a span are not persisted
 - metrics are not snapshotted locally; OTLP export is the only way to see them
-- `server-child.log` is raw child output, not structured application logs — the server's own records are in `server.trace.ndjson`
+- `server-child.log` contains only a bounded tail from failed child sessions, not a complete process log or structured application telemetry — the server's own records are in `server.trace.ndjson`

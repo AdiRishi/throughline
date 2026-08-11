@@ -104,9 +104,9 @@ ReadState {
 
 Progress is derived by `@app/journey/progress`, never stored: a cluster's progress is homed-hunks-in-read-files over homed-hunks; the journey's progress aggregates across clusters; resurfaced hunks count nowhere but home. `journeyId` pairing makes reanalysis-resets automatic — a new journey simply has no read state yet.
 
-## Welcome-screen local state and settings
+## Server-owned local state and analysis settings
 
-Two small stores of local verbs and preferences — all invisible to GitHub:
+Two small stores of Throughline domain verbs and analysis preferences live on the server — all invisible to GitHub:
 
 ```ts
 LocalPrState {
@@ -120,13 +120,15 @@ Settings {
 }
 ```
 
+Host preferences do not belong in this schema or database. The shell already persists window bounds, maximized state, update channel, and the native theme preference in its settings document. The identical web build persists its theme preference through `LocalApi`/`localStorage` and synchronizes it to the shell when the bridge exists. Keeping host state at the host boundary avoids turning a renderer preference into server domain state.
+
 ## Persistence
 
 One SQLite database, owned by `JourneyStore`, under a server-owned data root (passed by the shell from Electron's `userData`; a per-checkout default in dev). The driver is **`@effect/sql-sqlite-node`** — it ships at the same pinned Effect version and sits on Node's built-in `node:sqlite`, so there is no native module to rebuild and it is verified working under Electron's bundled Node.
 
 ```
 <dataRoot>/
-  throughline.db                          // everything stateful (below)
+  throughline.db                          // server-owned Throughline state (below)
   runs/<owner>/<repo>/<number>/<runId>/   // harness transcripts, materialized diffs, fallback logs
   workspaces/<owner>/<repo>/              // one bare clone per repository; worktrees per run (see 03)
 ```
@@ -138,7 +140,7 @@ The split is **hybrid, blob-style**: the database holds state; bulk, non-queryab
 | `journeys`   | One row per PR: indexed metadata columns (PR ref, `journeyId`, pinned SHAs, `analyzedAt`, provenance) + the `Journey` artifact as a JSON blob, decoded through its contract schema on read. |
 | `read_state` | One row per journey: `ReadState` as above.                                                                                                                                                  |
 | `pr_state`   | `LocalPrState` marks.                                                                                                                                                                       |
-| `settings`   | App settings.                                                                                                                                                                               |
+| `settings`   | Server-owned analysis settings, initially the harness selection.                                                                                                                            |
 
 The journey stays a blob rather than relational rows because it is immutable and read whole — decomposing it into tables buys schema-migration surface without a query workload to justify it. What SQLite buys over flat files is what grows with the app: transactions (reanalysis = replace the journey row + delete its read state, atomically, in one statement batch), indexed listing for the welcome screen, and a single-writer store that won't degrade into a directory of many small files.
 

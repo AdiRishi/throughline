@@ -29,8 +29,8 @@ export default defineConfig({
     sourcemap: true,
     emptyOutDir: true,
     minify: false,
-    // The bundle's floor is Electron's bundled Node (v20.18) — the shell spawns
-    // dist/bin.mjs via ELECTRON_RUN_AS_NODE — even though dev runs on Node 22+.
+    // The bundle's floor is Electron's bundled Node — the shell spawns dist/bin.mjs
+    // via ELECTRON_RUN_AS_NODE — even though development may run on a newer Node.
     target: "node20",
     rollupOptions: {
       external: isExternalCliDependency,

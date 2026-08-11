@@ -2,15 +2,16 @@
 
 How `apps/web` renders the product: state architecture, the Pierre rendering foundations, and how each product surface maps onto them. Product behavior lives in `docs/product/`; the visual source of truth is [`docs/product/designs/`](../product/designs/README.md); this document is how it's built.
 
-## State: the server owns it, atoms view it
+## State: the server owns the domain, atoms view it
 
 Throughline adds **no new state-management library**. The reviewer's state of record — journeys, read state, PR lists, job progress — already lives in the server ([02](./02-domain-model.md)), and the starter's `@effect/atom-react` + push-bus architecture is precisely a client for that shape:
 
-- **Server-owned state** arrives as unary fetches (immutable journey data) or snapshot-then-live streams (ingestion progress, read state, PR list), folded into atoms exactly as the starter's notes feature does today. Reconnects replay snapshots; the UI can always be rebuilt from the wire.
-- **Renderer-local state** is only ephemera: scroll positions, collapsed-narrative flags, the changed-files-filter toggle. Location — which PR, cluster, or file is open — lives in the URL (see Routing). React state and a few atoms suffice for the rest.
+- **Server-owned domain state** arrives as unary fetches (immutable journey data) or snapshot-then-live streams (ingestion progress, read state, PR list), folded into atoms exactly as the starter's notes feature does today. Reconnects replay snapshots; the domain UI can always be rebuilt from the wire.
+- **Host preferences** stay behind the starter's existing seams. Theme uses `useTheme` and `LocalApi`: `localStorage` makes the plain-browser build self-sufficient, and the desktop bridge mirrors the choice into native chrome. Window geometry and update channel remain shell settings, never server RPC state.
+- **Renderer-local domain state** is only ephemera: scroll positions, collapsed-narrative flags, the changed-files-filter toggle. Location — which PR, cluster, or file is open — lives in the URL (see Routing). React state and a few atoms suffice for the rest.
 - Read marks are **optimistic**: the atom updates on click, the RPC persists, the `readState.subscribe` stream confirms (and reconciles other windows). A failed persist rolls back visibly rather than lying.
 
-The judgment call, made: a second store (Zustand/Jotai) would duplicate what atoms already do here, and server-owned state is what makes "leavable" and multi-window coherence free. If atoms ever chafe, the seam is thin — atoms are only the fold-and-subscribe layer.
+The judgment call, made: a second store (Zustand/Jotai) would duplicate what atoms already do here, and server-owned domain state is what makes reconnect recovery and multi-window coherence free. If atoms ever chafe, the seam is thin — atoms are only the fold-and-subscribe layer.
 
 ## Rendering foundations
 
@@ -39,7 +40,7 @@ Every diff surface is `@pierre/diffs` (React bindings); every tree is `@pierre/t
 
 **Free file reading** — opening any file from the tree renders its full diff with every hunk labeled by home cluster; same read state, same marks, viewed from the file side. Open files sit in tabs — renderer ephemera; the URL holds only the active file. Files outside the changed set are served from the repository clone ([03](./03-github.md)).
 
-**Settings** — detected harnesses with install/auth state (`harness.status`) and the active-harness selection (`settings.update`), plus theme. Calm, one page; T3 Code's provider settings page is the shape reference ([04](./04-analysis.md)).
+**Settings** — one page composed from two owners: detected harnesses and the server-owned active-harness selection (`harness.status`, `settings.update`), plus the existing host-owned theme preference. T3 Code's provider settings page is the shape reference for harness status and selection ([04](./04-analysis.md)); it does not move appearance into the server database.
 
 ## Routing
 
