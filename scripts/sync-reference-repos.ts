@@ -31,13 +31,13 @@ const resolveFromContracts = NodeModule.createRequire(
   NodePath.join(REPO_ROOT, "packages/contracts/package.json"),
 ).resolve;
 
-interface CliOptions {
+export interface CliOptions {
   readonly repoId: string | undefined;
   readonly latest: boolean;
   readonly dryRun: boolean;
 }
 
-function parseCliOptions(argv: ReadonlyArray<string>): CliOptions {
+export function parseCliOptions(argv: ReadonlyArray<string>): CliOptions {
   const repoFlagIndex = argv.indexOf("--repo");
   return {
     repoId: repoFlagIndex !== -1 ? argv[repoFlagIndex + 1] : undefined,
@@ -46,7 +46,7 @@ function parseCliOptions(argv: ReadonlyArray<string>): CliOptions {
   };
 }
 
-function selectRepos(repoId: string | undefined): ReadonlyArray<ReferenceRepo> {
+export function selectRepos(repoId: string | undefined): ReadonlyArray<ReferenceRepo> {
   if (repoId === undefined) {
     return REFERENCE_REPOS;
   }
@@ -70,46 +70,88 @@ function installedVersion(packageName: string): string {
   return parsed.version;
 }
 
-function resolveRef(repo: ReferenceRepo, latest: boolean): string {
+export function resolveReferenceRepoRef(
+  repo: ReferenceRepo,
+  latest: boolean,
+  readInstalledVersion: (packageName: string) => string = installedVersion,
+): string {
   return latest
     ? repo.latestRef
-    : `${repo.versionTagPrefix}${installedVersion(repo.installedPackage)}`;
+    : `${repo.versionTagPrefix}${readInstalledVersion(repo.installedPackage)}`;
+}
+
+export interface ReferenceRepoSyncPlan {
+  readonly repoId: string;
+  /** `add` creates the subtree; `pull` updates an existing one to the new ref. */
+  readonly action: "add" | "pull";
+  readonly ref: string;
+  readonly args: ReadonlyArray<string>;
+}
+
+/**
+ * The whole decision — which repos, which ref, which git invocation — with no
+ * side effects, so it can be asserted on without a git checkout or a network.
+ */
+export function planReferenceRepoSync(input: {
+  readonly options: CliOptions;
+  readonly subtreeExists: (prefix: string) => boolean;
+  readonly readInstalledVersion?: (packageName: string) => string;
+}): ReadonlyArray<ReferenceRepoSyncPlan> {
+  return selectRepos(input.options.repoId).map((repo) => {
+    const action = input.subtreeExists(repo.prefix) ? "pull" : "add";
+    const ref = resolveReferenceRepoRef(
+      repo,
+      input.options.latest,
+      input.readInstalledVersion ?? installedVersion,
+    );
+    return {
+      repoId: repo.id,
+      action,
+      ref,
+      args: ["subtree", action, `--prefix=${repo.prefix}`, repo.repository, ref, "--squash"],
+    };
+  });
 }
 
 function main(): void {
   const options = parseCliOptions(process.argv.slice(2));
-  const repos = selectRepos(options.repoId);
+  const plans = planReferenceRepoSync({
+    options,
+    subtreeExists: (prefix) => NodeFS.existsSync(NodePath.join(REPO_ROOT, prefix)),
+  });
 
   if (!options.dryRun) {
     ensureCleanWorkingTree({ repoRoot: REPO_ROOT, reason: "`git subtree` needs a clean tree" });
   }
 
-  for (const repo of repos) {
-    // `add` creates the subtree; `pull` updates an existing one to the new ref.
-    const action = NodeFS.existsSync(NodePath.join(REPO_ROOT, repo.prefix)) ? "pull" : "add";
-    const ref = resolveRef(repo, options.latest);
-    const args = ["subtree", action, `--prefix=${repo.prefix}`, repo.repository, ref, "--squash"];
-
-    process.stdout.write(`[sync:repos] ${repo.id}: git ${args.join(" ")}\n`);
+  for (const plan of plans) {
+    process.stdout.write(`[sync:repos] ${plan.repoId}: git ${plan.args.join(" ")}\n`);
     if (options.dryRun) {
       continue;
     }
 
-    const result = NodeChildProcess.spawnSync("git", args, {
+    const result = NodeChildProcess.spawnSync("git", [...plan.args], {
       cwd: REPO_ROOT,
       stdio: "inherit",
     });
     if (result.status !== 0) {
-      throw new Error(`git subtree ${action} failed for "${repo.id}" (exit ${result.status}).`);
+      throw new Error(
+        `git subtree ${plan.action} failed for "${plan.repoId}" (exit ${result.status}).`,
+      );
     }
   }
 }
 
-try {
-  main();
-} catch (error: unknown) {
-  process.stderr.write(
-    `[sync:repos] fatal: ${error instanceof Error ? error.message : String(error)}\n`,
-  );
-  process.exit(1);
+// Same entrypoint guard as the sibling scripts: without it, importing anything
+// from this module — a test, another script — runs a git subtree sync as a side
+// effect of the import.
+if (process.argv[1] === NodeURL.fileURLToPath(import.meta.url)) {
+  try {
+    main();
+  } catch (error: unknown) {
+    process.stderr.write(
+      `[sync:repos] fatal: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    process.exit(1);
+  }
 }
