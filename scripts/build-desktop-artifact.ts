@@ -234,8 +234,16 @@ function main(): void {
     ...(publishConfig ? { publish: [publishConfig] } : {}),
     // Only the platform being built gets a target block. Writing the same
     // target into all three means a `dmg` build also asks linux/win for `dmg`.
+    // A `dmg` build always also emits `zip`: electron-updater downloads the zip
+    // on macOS, never the dmg, so a dmg-only feed is one the updater we ship
+    // can never consume.
     ...(platform === "mac"
-      ? { mac: { target: [target], category: "public.app-category.developer-tools" } }
+      ? {
+          mac: {
+            target: target === "dmg" ? [target, "zip"] : [target],
+            category: "public.app-category.developer-tools",
+          },
+        }
       : {}),
     ...(platform === "win" ? { win: { target: [target] } } : {}),
     ...(platform === "linux" ? { linux: { target: [target], category: "Development" } } : {}),
