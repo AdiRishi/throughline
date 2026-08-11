@@ -161,6 +161,10 @@ const environmentLayer = (input?: HarnessInput) =>
           otlpExportIntervalMs: Option.none(),
           configuredBackendPort: Option.some(PORT),
           devServerUrl: Option.none(),
+          processArch: "arm64",
+          runningUnderArm64Translation: false,
+          appImagePath: Option.none(),
+          disableAutoUpdate: false,
         },
         path,
       ),
@@ -300,7 +304,7 @@ describe("DesktopBackendManager", () => {
       yield* harness.manager.start;
       yield* harness.awaitReady;
 
-      yield* harness.manager.stop;
+      yield* harness.manager.stop();
       assert.isTrue(yield* harness.currentKilled);
 
       yield* TestClock.adjust("5 seconds");
@@ -328,7 +332,7 @@ describe("DesktopBackendManager", () => {
         }
       });
 
-      yield* harness.manager.stop;
+      yield* harness.manager.stop();
       yield* TestClock.adjust("500 millis");
       assert.equal(yield* harness.spawnCount, 2);
     }).pipe(Effect.scoped),
@@ -347,7 +351,7 @@ describe("DesktopBackendManager", () => {
         }
       });
 
-      yield* harness.manager.stop;
+      yield* harness.manager.stop();
       yield* TestClock.adjust("5 seconds");
       assert.equal(yield* harness.spawnCount, 1);
     }).pipe(Effect.scoped),
@@ -454,7 +458,7 @@ describe("DesktopBackendManager", () => {
 
       yield* harness.manager.start;
       yield* harness.awaitReady;
-      yield* harness.manager.stop;
+      yield* harness.manager.stop();
 
       assert.deepStrictEqual(failures, []);
       assert.strictEqual(discarded, 1);
@@ -595,7 +599,7 @@ describe("DesktopBackendManager", () => {
       yield* harness.awaitReady;
       assert.equal(yield* harness.spawnCount, 1);
 
-      const stopFiber = yield* harness.manager.stop.pipe(Effect.forkChild);
+      const stopFiber = yield* harness.manager.stop().pipe(Effect.forkChild);
       yield* Deferred.await(teardownStarted);
 
       yield* harness.manager.start;

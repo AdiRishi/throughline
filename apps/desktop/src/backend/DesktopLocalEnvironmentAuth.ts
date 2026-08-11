@@ -3,7 +3,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { FetchHttpClient } from "effect/unstable/http";
 
 import { BearerAuthorization, bearerAuthorizationLayer } from "@app/client-runtime/authorization";
 
@@ -73,7 +72,10 @@ export const make = Effect.gen(function* () {
   return DesktopLocalEnvironmentAuth.of({ getBearerToken });
 });
 
+// The HttpClient is deliberately NOT provided here: `main.ts` supplies one for
+// the whole application (Electron's global `fetch`, because bundling undici into
+// the CJS main crashes Electron at load). Building a second one here would
+// silently opt this caller out of that decision.
 export const layer = Layer.effect(DesktopLocalEnvironmentAuth, make).pipe(
   Layer.provide(bearerAuthorizationLayer),
-  Layer.provide(FetchHttpClient.layer),
 );
