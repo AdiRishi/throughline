@@ -46,3 +46,12 @@ minimumReleaseAgeExclude:
   - "@effect/tsgo-win32-arm64@0.36.2"
   - "@effect/tsgo-win32-x64@0.36.2"
   - "@effect/tsgo@0.36.2"
+
+patchedDependencies:
+  # RpcClient's pinger fails the socket on the FIRST missed pong inside its 5s
+  # window. One stalled event loop — an Electron main-thread hitch, a GC pause,
+  # a slow OTLP flush — is enough, and the whole session then tears down and
+  # reconnects. The patch tolerates three consecutive misses before opening the
+  # timeout latch. Re-apply this on every `effect` bump: `pnpm patch effect@<v>`,
+  # port the `makePinger` hunk, `pnpm patch-commit`.
+  effect@4.0.0-beta.106: patches/effect@4.0.0-beta.106.patch

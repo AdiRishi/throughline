@@ -206,24 +206,27 @@ describe("RpcSession", () => {
       yield* completeInitialSync(socket);
       yield* Fiber.join(connectedFiber);
 
-      // The protocol pings a silent socket every five seconds and tolerates one
-      // unanswered window. An OS-suspended socket that never delivers a close
-      // event is only detectable this way, so the whole window is load-bearing.
-      yield* TestClock.adjust("9 seconds");
+      // The protocol pings a silent socket every five seconds and tolerates
+      // THREE unanswered windows before giving up (patches/effect@*.patch).
+      // Stock Effect fails on the first miss, which turns any single event-loop
+      // stall — an Electron main-thread hitch, a GC pause — into a full
+      // reconnect. An OS-suspended socket that never delivers a close event is
+      // only detectable this way, so the whole window is load-bearing.
+      yield* TestClock.adjust("19 seconds");
       assert.isUndefined(closedFiber.pollUnsafe());
       assert.deepEqual(
         socket.sent.slice(1).map((request) => decodeJson(request)),
-        [{ _tag: "Ping" }],
+        [{ _tag: "Ping" }, { _tag: "Ping" }, { _tag: "Ping" }],
       );
 
-      yield* TestClock.adjust("1 second");
+      yield* TestClock.adjust("5 seconds");
       const error = yield* Fiber.join(closedFiber);
       assert.instanceOf(error, ConnectionTransientError);
       assert.equal(error.reason, "transport");
     }).pipe(Effect.scoped),
   );
 
-  it.effect("re-runs the config round trip on every liveness probe", () =>
+  it.effect("probes liveness with a dedicated round trip, not a second config fetch", () =>
     Effect.gen(function* () {
       const { factory, sockets } = yield* makeFactory();
       const session = yield* factory.connect(PREPARED);
@@ -236,20 +239,24 @@ describe("RpcSession", () => {
 
       const probeFiber = yield* Effect.forkChild(session.probe);
       const probeRequest = yield* awaitRequest(socket, 1);
-      assert.equal(probeRequest.tag, WS_METHODS.serverGetConfig);
+      // The probe uses the dedicated `server.probe` method, not a second
+      // `server.getConfig`: it fires on every wakeup and reconnect, and paying
+      // for a config payload to learn one bit is expensive exactly when the
+      // link is already struggling.
+      assert.equal(probeRequest.tag, WS_METHODS.serverProbe);
       assert.deepEqual(probeRequest.payload, {});
       socket.serverMessage(
         encodeJson({
           _tag: "Exit",
           requestId: probeRequest.id,
-          exit: { _tag: "Success", value: encodeServerConfig(SERVER_CONFIG) },
+          exit: { _tag: "Success", value: {} },
         }),
       );
       yield* Fiber.join(probeFiber);
 
       assert.deepEqual(
         socket.sent.map((request) => decodeRpcRequest(decodeJson(request)).tag),
-        [WS_METHODS.serverGetConfig, WS_METHODS.serverGetConfig],
+        [WS_METHODS.serverGetConfig, WS_METHODS.serverProbe],
       );
     }).pipe(Effect.scoped),
   );

@@ -343,6 +343,20 @@ export const start = (
         }
 
         const active = establishment.exit.value;
+        // The network can drop while the handshake is in flight. Publishing the
+        // freshly built session now would hand the app a lease over a link that
+        // is already gone, and the next failure would look like a server fault
+        // rather than the disconnect it is. Returning `Interrupted` closes the
+        // attempt scope, which tears the just-built session down.
+        if ((yield* Ref.get(network)) === "offline") {
+          return {
+            _tag: "Interrupted",
+            established: false,
+            stable: false,
+            resetRetry: false,
+          } satisfies AttemptOutcome;
+        }
+
         const connectedAt = yield* Clock.currentTimeMillis;
         yield* SubscriptionRef.set(session, Option.some(active));
         yield* setState({ phase: "connected", attempt: 0, lastFailure: null });
