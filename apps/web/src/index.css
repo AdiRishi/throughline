@@ -17,8 +17,16 @@
   --color-accent-contrast: #ffffff;
 }
 
+/* Tells the UA which way native surfaces should render — scrollbars, form
+   controls, the caret, `<select>` popups. Without it a dark app keeps light
+   scrollbars and white autofill boxes. */
+:root {
+  color-scheme: light;
+}
+
 /* Dark palette. Tailwind v4 reads these custom properties at usage sites. */
 .dark {
+  color-scheme: dark;
   --color-background: #0b0b0c;
   --color-foreground: #fafafa;
   --color-card: #131316;
@@ -31,6 +39,15 @@
 body {
   background: var(--color-background);
   color: var(--color-foreground);
+}
+
+/* Applied for one frame around a theme switch. Every transition on the page
+   would otherwise animate at once, which reads as a slow smear rather than a
+   theme change. */
+.no-transitions,
+.no-transitions * {
+  transition-duration: 0s !important;
+  animation-duration: 0s !important;
 }
 
 /* Sync flash: a note row briefly tints when a change round-trips through the

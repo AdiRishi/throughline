@@ -45,10 +45,54 @@ function systemDark(): boolean {
   );
 }
 
+// Read from the resolved palette rather than hardcoded, so the browser chrome
+// can never drift from `index.css`.
+function resolvedBackgroundColor(): string {
+  const value = getComputedStyle(document.documentElement)
+    .getPropertyValue("--color-background")
+    .trim();
+  return value.length > 0 ? value : "#ffffff";
+}
+
+/**
+ * Point the UA's own surfaces at the app's background. `theme-color` drives the
+ * mobile browser toolbar and the PWA status bar; the inline background on
+ * `<html>` covers overscroll rubber-banding, which paints outside `body`.
+ */
+function syncBrowserChromeTheme(): void {
+  const color = resolvedBackgroundColor();
+  document.documentElement.style.backgroundColor = color;
+  for (const meta of document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')) {
+    meta.setAttribute("content", color);
+    // A media-scoped meta only applies under that query; once we are setting
+    // the colour ourselves the scoping would keep the stale value winning.
+    meta.removeAttribute("media");
+  }
+}
+
 function applyTheme(theme: DesktopTheme): void {
   if (typeof document === "undefined") return;
   const isDark = theme === "dark" || (theme === "system" && systemDark());
-  document.documentElement.classList.toggle("dark", isDark);
+  const root = document.documentElement;
+  const changed = root.classList.contains("dark") !== isDark;
+
+  if (changed) {
+    root.classList.add("no-transitions");
+  }
+  root.classList.toggle("dark", isDark);
+  syncBrowserChromeTheme();
+  if (changed) {
+    // Force a style flush so the new palette is committed with transitions
+    // still suppressed, then drop the suppression on the next frame.
+    void root.offsetHeight;
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => {
+        root.classList.remove("no-transitions");
+      });
+    } else {
+      root.classList.remove("no-transitions");
+    }
+  }
 }
 
 function handleSystemAppearanceChange(): void {
