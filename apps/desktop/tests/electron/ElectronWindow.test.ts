@@ -79,10 +79,13 @@ describe("ElectronWindow", () => {
         title: "Throughline",
         width: 1100,
         height: 780,
+        minWidth: 840,
+        minHeight: 620,
         show: false,
         backgroundColor: "#101010",
         webPreferences: {
           preload: "/tmp/preload.js",
+          backgroundThrottling: null,
           sandbox: true,
           contextIsolation: true,
           nodeIntegration: false,
@@ -91,7 +94,10 @@ describe("ElectronWindow", () => {
       assert.isFalse("icon" in error.options);
       assert.isFalse("spellcheck" in error.options.webPreferences);
       assert.strictEqual(error.cause, cause);
-      assert.equal(error.message, 'Failed to create Electron BrowserWindow "Throughline".');
+      assert.equal(
+        error.message,
+        'Failed to create Electron BrowserWindow "Throughline" (1100x780).',
+      );
       assert.notInclude(error.message, cause.message);
       assert.deepEqual(browserWindowMock.mock.calls, [[options]]);
     }).pipe(Effect.provide(TestLayer)),

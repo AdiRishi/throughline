@@ -15,7 +15,11 @@ import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import { MENU_ACTION_CHANNEL } from "../ipc/channels.ts";
+import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 
+// Resize and move fire continuously while a window is dragged; writing the
+// settings file on each would be hundreds of writes per drag.
+const MAIN_WINDOW_BOUNDS_PERSIST_DEBOUNCE_MS = 500;
 const DEVELOPMENT_LOAD_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
 // Renderer crash (usually V8 OOM on long sessions) recovery: reload after a
 // short delay, at most MAX_ATTEMPTS times per rolling WINDOW so a renderer
@@ -35,6 +39,7 @@ const DEVELOPMENT_RETRYABLE_LOAD_ERROR_CODES = new Set([
 
 type DesktopWindowRuntimeServices =
   | DesktopEnvironment.DesktopEnvironment
+  | DesktopAppSettings.DesktopAppSettings
   | ElectronShell.ElectronShell
   | ElectronTheme.ElectronTheme
   | ElectronWindow.ElectronWindow;
@@ -147,12 +152,46 @@ export function isRetryableDevelopmentRendererLoadFailure(input: {
   );
 }
 
+type DisplayBounds = Pick<Electron.Rectangle, "x" | "y" | "width" | "height">;
+
+function windowFitsWithinDisplay(
+  windowBounds: DesktopAppSettings.DesktopWindowBounds,
+  displayBounds: DisplayBounds,
+): boolean {
+  return (
+    windowBounds.x >= displayBounds.x &&
+    windowBounds.y >= displayBounds.y &&
+    windowBounds.x + windowBounds.width <= displayBounds.x + displayBounds.width &&
+    windowBounds.y + windowBounds.height <= displayBounds.y + displayBounds.height
+  );
+}
+
+/**
+ * Persisted bounds are only honoured when they still land on a connected
+ * display. Restoring geometry from a monitor that has since been unplugged puts
+ * the window somewhere the user cannot reach it, and there is no way back
+ * without editing the settings file by hand.
+ */
+export function resolveInitialMainWindowBounds(
+  persistedBounds: DesktopAppSettings.DesktopWindowBounds | null,
+  displays: readonly DisplayBounds[],
+): DesktopAppSettings.DesktopWindowBounds | typeof DesktopAppSettings.DEFAULT_MAIN_WINDOW_SIZE {
+  if (
+    persistedBounds !== null &&
+    displays.some((display) => windowFitsWithinDisplay(persistedBounds, display))
+  ) {
+    return persistedBounds;
+  }
+  return DesktopAppSettings.DEFAULT_MAIN_WINDOW_SIZE;
+}
+
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const electronMenu = yield* ElectronMenu.ElectronMenu;
   const electronShell = yield* ElectronShell.ElectronShell;
   const electronTheme = yield* ElectronTheme.ElectronTheme;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
+  const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
 
   const backendReadyRef = yield* Ref.make(false);
   const applicationUrlRef = yield* Ref.make(resolveApplicationUrl(environment));
@@ -163,12 +202,24 @@ export const make = Effect.gen(function* () {
   const createWindow = Effect.fn("desktop.window.createWindow")(function* () {
     const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
     const applicationUrl = yield* Ref.get(applicationUrlRef);
+    const persistedSettings = yield* desktopSettings.get;
+    const displays = yield* electronWindow.allDisplayBounds;
+    const initialBounds = resolveInitialMainWindowBounds(
+      persistedSettings.mainWindowBounds,
+      displays,
+    );
+    const restoredPersistedBounds = "x" in initialBounds;
+    if (persistedSettings.mainWindowBounds !== null && !restoredPersistedBounds) {
+      yield* logWarning("persisted main window bounds do not fit any display; using defaults", {
+        bounds: persistedSettings.mainWindowBounds,
+      });
+    }
     const window = yield* electronWindow.create({
-      width: 1100,
-      height: 780,
-      minWidth: 840,
-      minHeight: 620,
+      ...initialBounds,
+      minWidth: DesktopAppSettings.MIN_MAIN_WINDOW_SIZE.width,
+      minHeight: DesktopAppSettings.MIN_MAIN_WINDOW_SIZE.height,
       show: false,
+      autoHideMenuBar: true,
       backgroundColor: initialBackgroundColor(shouldUseDarkColors),
       title: environment.displayName,
       webPreferences: {
@@ -176,6 +227,10 @@ export const make = Effect.gen(function* () {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        // Chromium throttles timers and rAF in background windows. The renderer
+        // holds a live WebSocket session whose heartbeat must keep running when
+        // the window is not focused, so throttling it drops the connection.
+        backgroundThrottling: false,
       },
     });
 
@@ -269,7 +324,78 @@ export const make = Effect.gen(function* () {
       window.setTitle(environment.displayName);
     });
 
+    // Geometry is only persisted once we own it: a session that started from
+    // the default size because the persisted bounds were off-screen must not
+    // immediately overwrite those bounds with the fallback, or reconnecting the
+    // display never brings the window back.
+    let boundsPersistFiber: Fiber.Fiber<void, never> | undefined;
+    const boundsPersistenceEnabled =
+      persistedSettings.mainWindowBounds === null || restoredPersistedBounds;
+
+    const readPersistableBounds = (): DesktopAppSettings.DesktopWindowBounds | null => {
+      if (window.isDestroyed()) {
+        return null;
+      }
+      // While maximized/fullscreen/minimized the live bounds describe the
+      // screen, not the size to restore into — `getNormalBounds` is the one
+      // that survives un-maximizing.
+      const bounds =
+        window.isFullScreen() || window.isMaximized() || window.isMinimized()
+          ? window.getNormalBounds()
+          : window.getBounds();
+      return DesktopAppSettings.normalizeMainWindowBounds({
+        x: Math.round(bounds.x),
+        y: Math.round(bounds.y),
+        width: Math.round(bounds.width),
+        height: Math.round(bounds.height),
+      });
+    };
+
+    const persistCurrentBounds = () => {
+      if (!boundsPersistenceEnabled) return;
+      const bounds = readPersistableBounds();
+      if (bounds === null) return;
+      const isMaximized = window.isMaximized();
+      runFork(
+        desktopSettings.setMainWindowBounds(bounds, isMaximized).pipe(
+          Effect.asVoid,
+          Effect.catch((error) =>
+            logWarning("failed to persist main window bounds", { message: error.message }),
+          ),
+        ),
+      );
+    };
+
+    const scheduleBoundsPersist = () => {
+      if (!boundsPersistenceEnabled) return;
+      if (boundsPersistFiber !== undefined) {
+        runFork(Fiber.interrupt(boundsPersistFiber));
+      }
+      boundsPersistFiber = runFork(
+        Effect.sleep(`${MAIN_WINDOW_BOUNDS_PERSIST_DEBOUNCE_MS} millis`).pipe(
+          Effect.andThen(Effect.sync(persistCurrentBounds)),
+          Effect.ignore,
+        ),
+      );
+    };
+
+    window.on("resize", scheduleBoundsPersist);
+    window.on("move", scheduleBoundsPersist);
+    window.on("maximize", scheduleBoundsPersist);
+    window.on("unmaximize", scheduleBoundsPersist);
+    // The debounce would lose the last change on a quick close, so flush.
+    window.on("close", () => {
+      if (boundsPersistFiber !== undefined) {
+        runFork(Fiber.interrupt(boundsPersistFiber));
+        boundsPersistFiber = undefined;
+      }
+      persistCurrentBounds();
+    });
+
     const fireReveal = makeFirstRevealTrigger(() => {
+      if (restoredPersistedBounds && persistedSettings.mainWindowMaximized) {
+        window.maximize();
+      }
       void runPromise(electronWindow.reveal(window));
     });
     yield* electronWindow.onReadyToShow(window, fireReveal);
