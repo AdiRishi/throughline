@@ -139,8 +139,10 @@ export const make = Effect.gen(function* () {
     );
 
     // The liveness probe deliberately does NOT reuse `initialSync`: the whole
-    // point is a fresh round trip proving the far side answers right now.
-    const probe = client[WS_METHODS.serverGetConfig]({}).pipe(
+    // point is a fresh round trip proving the far side answers right now. It
+    // uses the dedicated `server.probe` method rather than re-fetching the
+    // config, because this fires on every wakeup and reconnect.
+    const probe = client[WS_METHODS.serverProbe]({}).pipe(
       Effect.mapError(mapSessionRpcError),
       Effect.asVoid,
       Effect.withSpan("clientRuntime.rpcSession.probe"),

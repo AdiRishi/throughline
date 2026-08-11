@@ -50,6 +50,9 @@ overrides:
   '@effect/platform-node-shared': 4.0.0-beta.106
   toml: 4.1.1
 
+patchedDependencies:
+  effect@4.0.0-beta.106: d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c
+
 importers:
 
   .:
@@ -86,10 +89,10 @@ importers:
         version: link:../../packages/shared
       '@effect/platform-node':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106)(ioredis@5.11.1(supports-color@7.2.0))
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(ioredis@5.11.1(supports-color@7.2.0))
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106
+        version: 4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c)
       electron:
         specifier: 41.5.0
         version: 41.5.0(supports-color@7.2.0)
@@ -99,7 +102,7 @@ importers:
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106)(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))
       '@types/node':
         specifier: 'catalog:'
         version: 24.12.4
@@ -126,14 +129,14 @@ importers:
         version: link:../../packages/shared
       '@effect/platform-node':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106)(ioredis@5.11.1(supports-color@7.2.0))
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(ioredis@5.11.1(supports-color@7.2.0))
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106
+        version: 4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c)
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106)(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))
       '@types/node':
         specifier: 'catalog:'
         version: 24.12.4
@@ -160,10 +163,10 @@ importers:
         version: link:../../packages/shared
       '@effect/atom-react':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106)(react@19.2.8)(scheduler@0.27.0)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(react@19.2.8)(scheduler@0.27.0)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106
+        version: 4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c)
       react:
         specifier: 19.2.8
         version: 19.2.8
@@ -206,14 +209,14 @@ importers:
         version: 1.77.0
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106
+        version: 4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c)
     devDependencies:
       '@effect/platform-node':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106)(ioredis@5.11.1(supports-color@7.2.0))
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(ioredis@5.11.1(supports-color@7.2.0))
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106)(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))
       '@types/node':
         specifier: 'catalog:'
         version: 24.12.4
@@ -231,11 +234,11 @@ importers:
         version: link:../contracts
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106
+        version: 4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c)
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106)(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -247,11 +250,11 @@ importers:
     dependencies:
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106
+        version: 4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c)
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106)(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -263,14 +266,14 @@ importers:
     dependencies:
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106
+        version: 4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c)
     devDependencies:
       '@effect/platform-node':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106)(ioredis@5.11.1(supports-color@7.2.0))
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(ioredis@5.11.1(supports-color@7.2.0))
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106)(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))
       '@types/node':
         specifier: 'catalog:'
         version: 24.12.4
@@ -2728,27 +2731,27 @@ snapshots:
 
   '@csstools/css-tokenizer@4.0.0': {}
 
-  '@effect/atom-react@4.0.0-beta.106(effect@4.0.0-beta.106)(react@19.2.8)(scheduler@0.27.0)':
+  '@effect/atom-react@4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(react@19.2.8)(scheduler@0.27.0)':
     dependencies:
-      effect: 4.0.0-beta.106
+      effect: 4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c)
       react: 19.2.8
       scheduler: 0.27.0
 
   '@effect/language-service@0.87.2': {}
 
-  '@effect/platform-node-shared@4.0.0-beta.106(effect@4.0.0-beta.106)':
+  '@effect/platform-node-shared@4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))':
     dependencies:
       '@types/ws': 8.18.1
-      effect: 4.0.0-beta.106
+      effect: 4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c)
       ws: 8.21.3
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@effect/platform-node@4.0.0-beta.106(effect@4.0.0-beta.106)(ioredis@5.11.1(supports-color@7.2.0))':
+  '@effect/platform-node@4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(ioredis@5.11.1(supports-color@7.2.0))':
     dependencies:
-      '@effect/platform-node-shared': 4.0.0-beta.106(effect@4.0.0-beta.106)
-      effect: 4.0.0-beta.106
+      '@effect/platform-node-shared': 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))
+      effect: 4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c)
       ioredis: 5.11.1(supports-color@7.2.0)
       mime: 4.1.0
       undici: 8.10.0
@@ -2787,9 +2790,9 @@ snapshots:
       '@effect/tsgo-win32-arm64': 0.36.2
       '@effect/tsgo-win32-x64': 0.36.2
 
-  '@effect/vitest@4.0.0-beta.106(effect@4.0.0-beta.106)(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))':
+  '@effect/vitest@4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))':
     dependencies:
-      effect: 4.0.0-beta.106
+      effect: 4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c)
       vitest: 4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0))
 
   '@electron/asar@3.4.1':
@@ -3681,7 +3684,7 @@ snapshots:
     dependencies:
       readable-stream: 2.3.8
 
-  effect@4.0.0-beta.106:
+  effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c):
     dependencies:
       '@standard-schema/spec': 1.1.0
       fast-check: 4.9.0
