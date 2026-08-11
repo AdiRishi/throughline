@@ -1,25 +1,43 @@
 #!/usr/bin/env node
-// @effect-diagnostics nodeBuiltinImport:off globalTimers:off - Standalone Node script: it runs before anything is installed into the workspace, so there is no Effect runtime to borrow.
-// Dev orchestrator. Derives collision-avoiding ports per checkout, mints one
-// shared bootstrap token, and launches the server + web (+ optionally the
-// desktop shell) with a consistent environment.
-//
-// Dependency-free on purpose: `pnpm dev` has to work before anything is
-// installed into the workspace, so there is no task runner to delegate to.
-// That makes this file the only place that can prefix each child's output and
-// tear the session down when one child dies.
-import * as NodeChildProcess from "node:child_process";
-import * as NodeCrypto from "node:crypto";
-import * as NodeNet from "node:net";
-import * as NodePath from "node:path";
-import * as NodeURL from "node:url";
+/**
+ * Dev orchestrator. Derives collision-avoiding ports per checkout, mints one
+ * shared bootstrap token, and launches the server + web (+ optionally the
+ * desktop shell) with a consistent environment.
+ *
+ * Unlike T3 Code — which hands the whole fan-out to `vp run --parallel` and
+ * only computes the environment here — this repo runs on pnpm, which does not
+ * prefix each package's output or give the session a single deterministic exit
+ * code. So the supervision lives in this file: one child per package, output
+ * attributed per line, and the first child to exit ends the run.
+ *
+ * The children are scoped, so an interrupt (Ctrl+C, which `NodeRuntime.runMain`
+ * turns into a fiber interrupt) closes the scope and tears every child down
+ * with a `forceKillAfter` grace period. Nothing is orphaned, including during
+ * the `dev:desktop` build that happens between two spawns.
+ *
+ * @module dev-runner
+ */
+import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Crypto from "effect/Crypto";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Hash from "effect/Hash";
+import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import { Argument, Command } from "effect/unstable/cli";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+
+import { HostProcessEnvironment, HostProcessPlatform } from "@app/shared/hostProcess";
+import { layer as netServiceLayer, NetService } from "@app/shared/Net";
 
 import { loadRepoEnv } from "./lib/public-config.ts";
 
 export const MODES = ["dev", "dev:server", "dev:web", "dev:desktop"] as const;
 export type Mode = (typeof MODES)[number];
-
-const REPO_ROOT = NodePath.dirname(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)));
 
 export const BASE_SERVER_PORT = 13773;
 export const BASE_WEB_PORT = 5733;
@@ -43,13 +61,7 @@ const FETCH_BAD_PORTS = new Set([
 // the same number on another interface — `tailscale serve` does exactly that,
 // which silently moved the ports out from under a URL that had just been shared.
 export const DEV_PORT_PROBE_HOSTS = ["127.0.0.1", "::1"] as const;
-const FORCE_KILL_AFTER_MS = 1500;
-// Last resort if something still holds the event loop after teardown. Unref'd,
-// so a run that can exit cleanly is never delayed by it.
-const EXIT_FALLBACK_AFTER_MS = 250;
-// How long a failing child waits for a terminal signal to explain it (see the
-// exit handler below).
-const SIGNAL_RACE_GRACE_MS = 25;
+const FORCE_KILL_AFTER = "1500 millis";
 // A child that dies from one of these was asked to stop (Ctrl+C reaches the
 // whole process group, so children see it before our own handler runs). Any
 // other signal — SIGKILL from the OOM killer, SIGSEGV — is a failure.
@@ -61,10 +73,63 @@ const LABEL_COLORS = [36, 35, 32, 33, 34, 31] as const;
 export const isMode = (value: string): value is Mode =>
   (MODES as readonly string[]).includes(value);
 
-/** Stable per-checkout offset so multiple clones don't fight over ports. */
+export class DevRunnerPortExhaustedError extends Schema.TaggedError<DevRunnerPortExhaustedError>()(
+  "DevRunnerPortExhaustedError",
+  {
+    role: Schema.Literals(["server", "web"]),
+    startPort: Schema.Int,
+    maximumPort: Schema.Int,
+  },
+) {
+  override get message(): string {
+    return `No free ${this.role} port between ${this.startPort} and ${this.maximumPort}.`;
+  }
+}
+
+export class DevRunnerProcessError extends Schema.TaggedError<DevRunnerProcessError>()(
+  "DevRunnerProcessError",
+  {
+    operation: Schema.Literals(["spawn", "wait-for-exit"]),
+    label: Schema.String,
+    filter: Schema.String,
+    script: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Dev-runner failed to ${this.operation} for ${this.label} (${this.filter} ${this.script}).`;
+  }
+}
+
+export class DevRunnerProcessExitError extends Schema.TaggedError<DevRunnerProcessExitError>()(
+  "DevRunnerProcessExitError",
+  {
+    label: Schema.String,
+    exitCode: Schema.Int,
+  },
+) {
+  override get message(): string {
+    return `${this.label} exited with ${this.exitCode}; stopping the other dev processes.`;
+  }
+}
+
+export const DevRunnerError = Schema.Union([
+  DevRunnerPortExhaustedError,
+  DevRunnerProcessError,
+  DevRunnerProcessExitError,
+]);
+export type DevRunnerError = typeof DevRunnerError.Type;
+export const isDevRunnerError = Schema.is(DevRunnerError);
+
+/**
+ * Stable per-checkout offset so multiple clones don't fight over ports.
+ *
+ * Derived from the path rather than scanned from a fixed base: a scan-only
+ * scheme gives each checkout whatever happened to be free that minute, so
+ * ports move between runs and any URL you already shared goes stale.
+ */
 export function repoPortOffset(repoRoot: string): number {
-  const hash = NodeCrypto.createHash("sha256").update(repoRoot).digest();
-  return hash.readUInt16BE(0) % PORT_OFFSET_RANGE;
+  return (Hash.string(repoRoot) >>> 0) % PORT_OFFSET_RANGE;
 }
 
 export function isBrowserAllowedPort(port: number): boolean {
@@ -97,12 +162,12 @@ export function parsePortOverride(raw: string | undefined): number | undefined {
 }
 
 export interface DevEnvInput {
-  readonly repoRoot: string;
   readonly serverPort: number;
   readonly webPort: number;
   readonly bootstrapToken: string;
   readonly logDir: string;
   readonly logLevel: string;
+  readonly serverEntry: string;
   /**
    * The shell loads the renderer from a custom scheme and hands it the server
    * address over the IPC bridge, so it is the one mode where a baked-in URL is
@@ -121,12 +186,12 @@ export interface DevEnv {
 
 /** The exact environment each child is launched with, derived from one set of ports. */
 export function createDevEnv({
-  repoRoot,
   serverPort,
   webPort,
   bootstrapToken,
   logDir,
   logLevel,
+  serverEntry,
   isDesktopMode,
 }: DevEnvInput): DevEnv {
   const wsUrl = `ws://127.0.0.1:${serverPort}`;
@@ -176,7 +241,7 @@ export function createDevEnv({
       APP_LOG_LEVEL: logLevel,
       // The shell spawns the server via Electron-as-node, which can't run `.ts`,
       // so point it at the built bundle (dev:desktop builds it first, below).
-      APP_SERVER_ENTRY: NodePath.join(repoRoot, "apps/server/dist/bin.mjs"),
+      APP_SERVER_ENTRY: serverEntry,
     },
   };
 }
@@ -239,292 +304,305 @@ export function sessionExitCode(code: number | null, signal: string | null): num
   return 1;
 }
 
-function canListen(port: number, host: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = NodeNet.createServer();
-    server.once("error", (cause: NodeJS.ErrnoException) => {
-      server.removeAllListeners();
-      server.close();
-      // Hosts without IPv6 reject "::1" binds with EADDRNOTAVAIL; treat that as
-      // available so the probe doesn't mark every port as busy.
-      resolve(cause.code === "EADDRNOTAVAIL");
-    });
-    server.once("listening", () => {
-      server.close(() => resolve(true));
-    });
-    server.listen({ host, port });
-  });
-}
+/** First port at or above `start` that nothing holds on either loopback family. */
+export const pickPort = Effect.fn("devRunner.pickPort")(function* (start: number, role: PortRole) {
+  const net = yield* NetService;
 
-async function pickPort(start: number, role: PortRole): Promise<number> {
   for (let port = start; port <= MAX_PORT; port += 1) {
     if (!isPortCandidate(port, role)) continue;
+
     let available = true;
     for (const host of DEV_PORT_PROBE_HOSTS) {
-      if (!(await canListen(port, host))) {
+      if (!(yield* net.canListenOnHost(port, host))) {
         available = false;
         break;
       }
     }
     if (available) return port;
   }
-  throw new Error(`No free port available from ${String(start)}.`);
-}
 
-interface SupervisedChild {
+  return yield* new DevRunnerPortExhaustedError({
+    role,
+    startPort: start,
+    maximumPort: MAX_PORT,
+  });
+});
+
+export interface SpawnInput {
   readonly label: string;
-  readonly child: NodeChildProcess.ChildProcess;
-  readonly flush: () => void;
+  readonly filter: string;
+  readonly script: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly colorIndex: number;
 }
 
-interface Supervisor {
-  /** Register the terminal signal handlers. Call before the first spawn. */
-  readonly install: () => void;
-  readonly spawn: (label: string, filter: string, script: string, env: NodeJS.ProcessEnv) => void;
-  /** SIGTERM every live child, then exit the runner with `code`. */
-  readonly shutdown: (code: number) => void;
-  readonly isShuttingDown: () => boolean;
-}
-
-function createSupervisor(options: {
+export interface RunnerContext {
   readonly repoRoot: string;
   readonly useColor: boolean;
-}): Supervisor {
-  const children: Array<SupervisedChild> = [];
-  let shuttingDown = false;
-  let spawnCount = 0;
-
-  const onSignal = (): void => {
-    shutdown(0);
-  };
-
-  const finish = (code: number): void => {
-    for (const entry of children) entry.flush();
-    process.exitCode = code;
-    // Prefer letting Node exit on its own: `process.exit` truncates stdout
-    // writes that are still queued when stdout is a pipe, which is exactly the
-    // tail of a failing child's output. Dropping the signal handlers releases
-    // the last handles keeping the loop alive.
-    process.removeListener("SIGINT", onSignal);
-    process.removeListener("SIGTERM", onSignal);
-    setTimeout(() => {
-      process.exit(code);
-    }, EXIT_FALLBACK_AFTER_MS).unref();
-  };
-
-  // SIGTERM everything, give children a short grace period to exit cleanly,
-  // then SIGKILL any survivor so nothing is orphaned when the runner exits.
-  // `children` may still be filling up (dev:desktop builds between spawns), so
-  // this only ever looks at what has actually been started.
-  const shutdown = (code: number): void => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    const alive = children.filter(
-      (entry) => entry.child.exitCode === null && entry.child.signalCode === null,
-    );
-    if (alive.length === 0) {
-      finish(code);
-      return;
-    }
-    let remaining = alive.length;
-    const forceKillTimer = setTimeout(() => {
-      for (const entry of alive) {
-        if (entry.child.exitCode === null && entry.child.signalCode === null) {
-          entry.child.kill("SIGKILL");
-        }
-      }
-    }, FORCE_KILL_AFTER_MS);
-    for (const entry of alive) {
-      entry.child.once("exit", () => {
-        remaining -= 1;
-        if (remaining === 0) {
-          clearTimeout(forceKillTimer);
-          finish(code);
-        }
-      });
-      entry.child.kill("SIGTERM");
-    }
-  };
-
-  const spawn = (label: string, filter: string, script: string, env: NodeJS.ProcessEnv): void => {
-    // A Ctrl+C that lands mid-startup must not be followed by another spawn.
-    if (shuttingDown) return;
-    const prefix = formatLabel(label, spawnCount, options.useColor);
-    spawnCount += 1;
-
-    const child = NodeChildProcess.spawn("pnpm", ["--filter", filter, script], {
-      cwd: options.repoRoot,
-      env: { ...process.env, ...env },
-      // stdin stays on the terminal (Vite's dev-server shortcuts read it);
-      // stdout/stderr are piped so every line can be attributed to a package.
-      stdio: ["inherit", "pipe", "pipe"],
-      // oxlint-disable-next-line app/no-global-process-runtime -- Standalone Node script has no Effect runtime (see file header).
-      shell: process.platform === "win32",
-    });
-
-    const out = createLinePrefixer(prefix, (line) => process.stdout.write(line));
-    const err = createLinePrefixer(prefix, (line) => process.stderr.write(line));
-    const flush = (): void => {
-      out.flush();
-      err.flush();
-    };
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => out.push(chunk));
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk: string) => err.push(chunk));
-
-    children.push({ label, child, flush });
-
-    child.on("error", (cause) => {
-      flush();
-      process.stderr.write(`[dev-runner] ${label} failed to start: ${String(cause)}\n`);
-      shutdown(1);
-    });
-    // `close` fires once the pipes have drained; `exit` can arrive with output
-    // still in flight, so flush on both.
-    child.on("close", flush);
-    child.on("exit", (code, signal) => {
-      flush();
-      if (shuttingDown) return;
-      const sessionCode = sessionExitCode(code, signal);
-      if (sessionCode === 0) {
-        shutdown(0);
-        return;
-      }
-      // Ctrl+C reaches the children too, and a wrapper like `pnpm run` reports
-      // it as exit 130 rather than as a signal — indistinguishable from a
-      // crash. Our own SIGINT handler is racing this event, so give it a beat
-      // to win before declaring the run failed. Deliberately not unref'd: on a
-      // real crash of the last child this timer is the only thing left holding
-      // the loop, and losing it would exit 0 on a failure.
-      setTimeout(() => {
-        if (shuttingDown) return;
-        process.stderr.write(
-          `[dev-runner] ${label} exited with ${code === null ? String(signal) : String(code)}; stopping the other dev processes\n`,
-        );
-        shutdown(sessionCode);
-      }, SIGNAL_RACE_GRACE_MS);
-    });
-  };
-
-  return {
-    install: (): void => {
-      process.on("SIGINT", onSignal);
-      process.on("SIGTERM", onSignal);
-    },
-    spawn,
-    shutdown,
-    isShuttingDown: (): boolean => shuttingDown,
-  };
+  readonly onWindows: boolean;
 }
 
-async function main(): Promise<void> {
-  const modeArgument = process.argv[2] ?? "dev";
-  if (!isMode(modeArgument)) {
-    process.stderr.write(`Unknown mode "${modeArgument}". Use one of: ${MODES.join(", ")}\n`);
-    process.exit(1);
+/**
+ * Spawns one package's dev script and returns an effect that completes when it
+ * exits. The handle is scoped, so the caller's scope owns the child's lifetime:
+ * whichever child exits first, the rest are torn down by scope close.
+ */
+export const spawnChild = Effect.fn("devRunner.spawnChild")(function* (
+  context: RunnerContext,
+  input: SpawnInput,
+) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const processContext = {
+    label: input.label,
+    filter: input.filter,
+    script: input.script,
+  } as const;
+
+  const command = ChildProcess.make("pnpm", ["--filter", input.filter, input.script], {
+    cwd: context.repoRoot,
+    env: input.env,
+    extendEnv: true,
+    // stdin stays on the terminal (Vite's dev-server shortcuts read it);
+    // stdout/stderr are piped so every line can be attributed to a package.
+    stdin: "inherit",
+    stdout: "pipe",
+    stderr: "pipe",
+    shell: context.onWindows,
+    // Same process group, so a terminal Ctrl+C reaches the child directly.
+    // Effect defaults to detached on non-Windows, which would put the runner in
+    // a new group and require forwarding signals by hand.
+    detached: false,
+    killSignal: "SIGTERM",
+    forceKillAfter: FORCE_KILL_AFTER,
+  });
+
+  const handle = yield* spawner
+    .spawn(command)
+    .pipe(
+      Effect.mapError(
+        (cause) => new DevRunnerProcessError({ ...processContext, operation: "spawn", cause }),
+      ),
+    );
+
+  const prefix = formatLabel(input.label, input.colorIndex, context.useColor);
+  yield* Effect.forkScoped(drainToPrefixed(handle.stdout, prefix, process.stdout));
+  yield* Effect.forkScoped(drainToPrefixed(handle.stderr, prefix, process.stderr));
+
+  return Effect.gen(function* () {
+    const exitCode = yield* handle.exitCode.pipe(
+      Effect.mapError(
+        (cause) =>
+          new DevRunnerProcessError({ ...processContext, operation: "wait-for-exit", cause }),
+      ),
+    );
+    // A signal-killed child surfaces here as a shell-style 128+n code, so the
+    // same mapping covers both spellings of "the user stopped the run".
+    const sessionCode = sessionExitCode(exitCode, null);
+    if (sessionCode !== 0) {
+      return yield* new DevRunnerProcessExitError({ label: input.label, exitCode: sessionCode });
+    }
+  });
+});
+
+/**
+ * Pipe a child's output stream through the line prefixer. The flush is a
+ * finalizer so a child that exits mid-line still gets its tail printed — that
+ * last partial line is usually the most interesting one.
+ */
+function drainToPrefixed(
+  stream: Stream.Stream<Uint8Array, unknown>,
+  prefix: string,
+  sink: NodeJS.WriteStream,
+): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const prefixer = createLinePrefixer(prefix, (line) => sink.write(line));
+    yield* Effect.addFinalizer(() => Effect.sync(prefixer.flush));
+    yield* Stream.decodeText(stream).pipe(
+      Stream.runForEach((chunk) => Effect.sync(() => prefixer.push(chunk))),
+      Effect.ignore,
+    );
+  }).pipe(Effect.scoped);
+}
+
+/** The desktop pre-launch build: the shell runs the built bundles, not the sources. */
+const buildForDesktop = Effect.fn("devRunner.buildForDesktop")(function* (context: RunnerContext) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const processContext = {
+    label: "build",
+    filter: "@app/server,@app/desktop",
+    script: "build",
+  } as const;
+
+  const command = ChildProcess.make(
+    "pnpm",
+    ["--filter", "@app/server", "--filter", "@app/desktop", "build"],
+    {
+      cwd: context.repoRoot,
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+      shell: context.onWindows,
+      detached: false,
+    },
+  );
+
+  const exitCode = yield* Effect.scoped(
+    spawner.spawn(command).pipe(Effect.flatMap((handle) => handle.exitCode)),
+  ).pipe(
+    Effect.mapError(
+      (cause) => new DevRunnerProcessError({ ...processContext, operation: "spawn", cause }),
+    ),
+  );
+
+  if (exitCode !== 0) {
+    yield* Effect.logError("[dev-runner] the desktop pre-launch build failed");
+    return yield* new DevRunnerProcessExitError({ label: "build", exitCode });
   }
-  const mode: Mode = modeArgument;
+});
+
+const runDevRunner = Effect.fn("devRunner.run")(function* (input: { readonly mode: Mode }) {
+  const path = yield* Path.Path;
+  const env = yield* HostProcessEnvironment;
+  const platform = yield* HostProcessPlatform;
+  const crypto = yield* Crypto.Crypto;
+  const mode = input.mode;
+
+  const scriptPath = yield* path.fromFileUrl(new URL(import.meta.url)).pipe(Effect.orDie);
+  const repoRoot = path.dirname(path.dirname(scriptPath));
 
   // Layer repo-root .env / .env.local under the real environment so the
   // overrides documented in .env.example (APP_SERVER_PORT, APP_WEB_PORT) take
   // effect. A real shell env var still wins — we only fill keys not already set.
   for (const [key, value] of Object.entries(loadRepoEnv({ baseEnv: {} }))) {
-    if (value !== undefined && process.env[key] === undefined) {
-      process.env[key] = value;
+    if (value !== undefined && env[key] === undefined) {
+      env[key] = value;
     }
   }
 
-  const envPort = (key: string): number | undefined => {
-    const raw = process.env[key];
+  const envPort = Effect.fn("devRunner.envPort")(function* (key: string) {
+    const raw = env[key];
     const parsed = parsePortOverride(raw);
     if (raw !== undefined && parsed === undefined) {
-      process.stderr.write(`[dev-runner] ignoring invalid ${key}="${raw}"\n`);
+      yield* Effect.logWarning(`[dev-runner] ignoring invalid ${key}="${raw}"`);
     }
     return parsed;
-  };
+  });
 
-  const offset = repoPortOffset(REPO_ROOT);
+  const offset = repoPortOffset(repoRoot);
   const serverPort =
-    envPort("APP_SERVER_PORT") ?? (await pickPort(BASE_SERVER_PORT + offset, "server"));
-  const webPort = envPort("APP_WEB_PORT") ?? (await pickPort(BASE_WEB_PORT + offset, "web"));
+    (yield* envPort("APP_SERVER_PORT")) ?? (yield* pickPort(BASE_SERVER_PORT + offset, "server"));
+  const webPort =
+    (yield* envPort("APP_WEB_PORT")) ?? (yield* pickPort(BASE_WEB_PORT + offset, "web"));
 
   // Dev artifacts land in the checkout, not the platform app-data directory:
   // it keeps a dev run from polluting the installed app's history, and it means
   // "where are the logs" is answerable without knowing a per-OS path.
-  const logDir = process.env["APP_LOG_DIR"] ?? NodePath.join(REPO_ROOT, ".logs");
-  const logLevel = process.env["APP_LOG_LEVEL"] ?? "Info";
+  const logDir = env["APP_LOG_DIR"] ?? path.join(repoRoot, ".logs");
+  const logLevel = env["APP_LOG_LEVEL"] ?? "Info";
+  const bootstrapToken = yield* crypto.randomBytes(24).pipe(
+    Effect.map((bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")),
+    Effect.orDie,
+  );
 
   const { serverEnv, webEnv, desktopEnv, devWebUrl } = createDevEnv({
-    repoRoot: REPO_ROOT,
     serverPort,
     webPort,
-    bootstrapToken: NodeCrypto.randomBytes(24).toString("hex"),
+    bootstrapToken,
     logDir,
     logLevel,
+    serverEntry: path.join(repoRoot, "apps/server/dist/bin.mjs"),
     isDesktopMode: mode === "dev:desktop",
   });
 
-  const targetMessage =
-    mode === "dev:desktop"
-      ? `[dev-runner] Electron will load ${devWebUrl} for the shell.\n`
-      : `[dev-runner] open ${devWebUrl} in a browser, or run \`pnpm dev:desktop\` for the shell.\n`;
-
-  process.stdout.write(
-    `[dev-runner] mode=${mode} server=${String(serverPort)} web=${String(webPort)}\n` +
-      `[dev-runner] logs: ${logDir} (server.trace.ndjson` +
+  yield* Effect.logInfo(
+    `[dev-runner] mode=${mode} server=${String(serverPort)} web=${String(webPort)}`,
+  );
+  yield* Effect.logInfo(
+    `[dev-runner] logs: ${logDir} (server.trace.ndjson` +
       (mode === "dev:desktop" ? ", desktop.trace.ndjson, server-child.log" : "") +
-      `)\n` +
-      targetMessage,
+      ")",
+  );
+  yield* Effect.logInfo(
+    mode === "dev:desktop"
+      ? `[dev-runner] Electron will load ${devWebUrl} for the shell.`
+      : `[dev-runner] open ${devWebUrl} in a browser, or run \`pnpm dev:desktop\` for the shell.`,
   );
 
-  const supervisor = createSupervisor({
-    repoRoot: REPO_ROOT,
+  const context: RunnerContext = {
+    repoRoot,
     useColor: process.stdout.isTTY === true,
-  });
-  // Installed *before* the first spawn: `dev:desktop` runs a synchronous build
-  // between spawning the web dev server and launching the shell, and a Ctrl+C
-  // inside that window would otherwise orphan the already-running dev server.
-  supervisor.install();
+    onWindows: platform === "win32",
+  };
+
+  // Completed by whichever child exits first. Watched from the moment each
+  // child starts rather than after the last spawn: `dev:desktop` runs a build
+  // between two spawns, and a web dev server that dies inside that window has
+  // to end the session too, not sit unnoticed until the race is set up.
+  const sessionEnded = yield* Deferred.make<void, DevRunnerError>();
+  let colorIndex = 0;
+  const start = (label: string, filter: string, script: string, childEnv: NodeJS.ProcessEnv) =>
+    Effect.gen(function* () {
+      const awaitExit = yield* spawnChild(context, {
+        label,
+        filter,
+        script,
+        env: childEnv,
+        colorIndex,
+      });
+      colorIndex += 1;
+      yield* Effect.forkScoped(
+        awaitExit.pipe(
+          Effect.matchEffect({
+            onFailure: (error) => Deferred.fail(sessionEnded, error),
+            onSuccess: () => Deferred.succeed(sessionEnded, undefined),
+          }),
+        ),
+      );
+    });
 
   // `dev`/`dev:server` run the server standalone; in `dev:desktop` the Electron
   // shell spawns its own server, so we don't start a second one here.
   if (mode === "dev" || mode === "dev:server") {
-    supervisor.spawn("server", "@app/server", "dev", serverEnv);
+    yield* start("server", "@app/server", "dev", serverEnv);
   }
   if (mode === "dev" || mode === "dev:web" || mode === "dev:desktop") {
-    supervisor.spawn("web", "@app/web", "dev", webEnv);
+    yield* start("web", "@app/web", "dev", webEnv);
   }
   if (mode === "dev:desktop") {
     // The shell loads the vite dev URL for HMR but spawns the built server
-    // bundle, so both it and the server must be built before launch.
-    process.stdout.write("[dev-runner] building server + desktop for the shell...\n");
-    const build = NodeChildProcess.spawnSync(
-      "pnpm",
-      ["--filter", "@app/server", "--filter", "@app/desktop", "build"],
-      {
-        cwd: REPO_ROOT,
-        stdio: "inherit",
-        // oxlint-disable-next-line app/no-global-process-runtime -- Standalone Node script has no Effect runtime (see file header).
-        shell: process.platform === "win32",
-      },
-    );
-    if (build.status !== 0 || build.signal !== null) {
-      const code = sessionExitCode(build.status, build.signal);
-      if (code !== 0) {
-        process.stderr.write("[dev-runner] the desktop pre-launch build failed\n");
-      }
-      supervisor.shutdown(code);
-      return;
-    }
-    supervisor.spawn("desktop", "@app/desktop", "start", desktopEnv);
+    // bundle, so both it and the server must be built before launch. The web
+    // dev server is already running and scoped, so a failure here still tears
+    // it down rather than orphaning it.
+    yield* Effect.logInfo("[dev-runner] building server + desktop for the shell...");
+    yield* buildForDesktop(context);
+    yield* start("desktop", "@app/desktop", "start", desktopEnv);
   }
-}
 
-// Only run when executed directly (not when imported by tests).
-if (process.argv[1] === NodeURL.fileURLToPath(import.meta.url)) {
-  main().catch((error: unknown) => {
-    process.stderr.write(`[dev-runner] fatal: ${String(error)}\n`);
-    process.exit(1);
-  });
+  // The first child to exit ends the session; scope close then tears the rest
+  // down through their scoped handles.
+  yield* Deferred.await(sessionEnded);
+});
+
+const devRunnerCli = Command.make("dev-runner", {
+  mode: Argument.choice("mode", MODES).pipe(
+    Argument.withDescription("Development mode to run."),
+    Argument.withDefault("dev" as Mode),
+  ),
+}).pipe(
+  Command.withDescription("Run the dev processes with deterministic port and env wiring."),
+  Command.withHandler((input) => runDevRunner(input)),
+);
+
+const cliRuntimeLayer = Layer.mergeAll(
+  Logger.layer([Logger.consolePretty()]),
+  NodeServices.layer,
+  netServiceLayer,
+);
+
+if (import.meta.main) {
+  Command.run(devRunnerCli, { version: "0.0.0" }).pipe(
+    Effect.scoped,
+    Effect.provide(cliRuntimeLayer),
+    NodeRuntime.runMain,
+  );
 }

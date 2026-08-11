@@ -285,7 +285,20 @@ importers:
         version: 4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0))
 
   scripts:
+    dependencies:
+      '@app/shared':
+        specifier: workspace:*
+        version: link:../packages/shared
+      '@effect/platform-node':
+        specifier: 'catalog:'
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(ioredis@5.11.1(supports-color@7.2.0))
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c)
     devDependencies:
+      '@effect/vitest':
+        specifier: 'catalog:'
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=d0591e6df062bd0ecbabe5c8ec9da686f52dacaa1f84081ea0b2e62dd5530f4c))(vitest@4.1.10(@types/node@24.12.4)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.2.1(@types/node@24.12.4)(jiti@2.7.0)))
       '@types/node':
         specifier: 'catalog:'
         version: 24.12.4
