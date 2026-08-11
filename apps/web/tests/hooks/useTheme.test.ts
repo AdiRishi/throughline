@@ -44,6 +44,8 @@ interface ThemeHarness {
   readonly emitSystemChange: () => void;
   readonly writeThroughLocalApi: (theme: DesktopTheme) => Promise<void>;
   readonly toggleClass: Mock<(token: string, force: boolean) => void>;
+  readonly themeColorMeta: { readonly attributes: Map<string, string> };
+  readonly documentElement: { readonly style: { backgroundColor: string } };
 }
 
 async function loadTheme(options: {
@@ -71,7 +73,46 @@ async function loadTheme(options: {
   }));
 
   const toggleClass = vi.fn<(token: string, force: boolean) => void>();
-  vi.stubGlobal("document", { documentElement: { classList: { toggle: toggleClass } } });
+  // A real-enough `<html>`: `applyTheme` reads the current class to decide
+  // whether the theme actually changed, suppresses transitions across the
+  // switch, and repaints the browser chrome from the resolved palette.
+  const classes = new Set<string>();
+  const themeColorMeta = {
+    attributes: new Map<string, string>([["media", "(prefers-color-scheme: dark)"]]),
+    setAttribute(name: string, value: string) {
+      this.attributes.set(name, value);
+    },
+    removeAttribute(name: string) {
+      this.attributes.delete(name);
+    },
+  };
+  const documentElement = {
+    classList: {
+      toggle: (token: string, force: boolean) => {
+        if (force) classes.add(token);
+        else classes.delete(token);
+        toggleClass(token, force);
+      },
+      contains: (token: string) => classes.has(token),
+      add: (token: string) => classes.add(token),
+      remove: (token: string) => classes.delete(token),
+    },
+    style: { backgroundColor: "" },
+    offsetHeight: 0,
+  };
+  vi.stubGlobal("document", {
+    documentElement,
+    querySelectorAll: (selector: string) =>
+      selector === 'meta[name="theme-color"]' ? [themeColorMeta] : [],
+  });
+  vi.stubGlobal("getComputedStyle", () => ({
+    getPropertyValue: (property: string) =>
+      property === "--color-background" ? (classes.has("dark") ? "#0b0b0c" : "#fafafa") : "",
+  }));
+  vi.stubGlobal("requestAnimationFrame", (callback: () => void) => {
+    callback();
+    return 0;
+  });
   vi.stubGlobal("window", {
     localStorage: options.storage ?? createStorage(),
     matchMedia: () =>
@@ -115,6 +156,8 @@ async function loadTheme(options: {
     },
     writeThroughLocalApi: (theme) => localApi().setTheme(theme),
     toggleClass,
+    themeColorMeta,
+    documentElement,
   };
 }
 
@@ -202,6 +245,39 @@ describe("useTheme snapshot", () => {
     // reports the default forever.
     expect(harness.readSnapshot()).toBe("dark");
     unsubscribe();
+  });
+});
+
+describe("useTheme browser chrome", () => {
+  // Without this the UA keeps painting light scrollbars, a white overscroll
+  // gutter and a light mobile toolbar around a dark app.
+  it("repaints the browser chrome from the resolved palette", async () => {
+    const harness = await loadTheme({});
+
+    harness.setTheme("dark");
+    expect(harness.documentElement.style.backgroundColor).toBe("#0b0b0c");
+    expect(harness.themeColorMeta.attributes.get("content")).toBe("#0b0b0c");
+    // A media-scoped meta would keep the stale value winning once we set it
+    // ourselves.
+    expect(harness.themeColorMeta.attributes.has("media")).toBe(false);
+
+    harness.setTheme("light");
+    expect(harness.documentElement.style.backgroundColor).toBe("#fafafa");
+    expect(harness.themeColorMeta.attributes.get("content")).toBe("#fafafa");
+  });
+
+  it("suppresses transitions only across an actual theme change", async () => {
+    const harness = await loadTheme({});
+
+    harness.setTheme("dark");
+    // `requestAnimationFrame` is synchronous in this harness, so the class is
+    // added and removed within the call.
+    expect(harness.toggleClass).toHaveBeenLastCalledWith("dark", true);
+
+    harness.toggleClass.mockClear();
+    harness.setTheme("dark");
+    // Re-applying the same theme is not a change; nothing should flash.
+    expect(harness.toggleClass).toHaveBeenLastCalledWith("dark", true);
   });
 });
 
