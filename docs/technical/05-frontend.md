@@ -43,7 +43,7 @@ Every diff surface is `@pierre/diffs` (React bindings); every tree is `@pierre/t
 
 ## Routing
 
-**TanStack Router**, with a **code-based route tree** — a handful of routes doesn't earn the file-based codegen plugin, and migrating to it later is mechanical. Browser history works in both hosts: the server already serves an SPA `index.html` fallback for unknown paths, and the packaged renderer is served same-origin by the local server (ADR-0004), so reloads and back/forward land correctly everywhere.
+**TanStack Router**, with a **code-based route tree** — a handful of routes doesn't earn the file-based codegen plugin, and migrating to it later is mechanical. Browser history works in both hosts: the server already serves an SPA `index.html` fallback for unknown paths, and the packaged renderer is served same-origin by the local server, so reloads and back/forward land correctly everywhere.
 
 ```
 /                              welcome
