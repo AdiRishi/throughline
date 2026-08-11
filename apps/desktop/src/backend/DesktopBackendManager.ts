@@ -92,6 +92,41 @@ class BackendProcessSpawnError extends Schema.TaggedError<BackendProcessSpawnErr
   }
 }
 
+export type BackendProcessOutputStream = "stdout" | "stderr";
+
+export class BackendProcessOutputReadError extends Schema.TaggedError<BackendProcessOutputReadError>()(
+  "BackendProcessOutputReadError",
+  {
+    ...backendProcessContextSchema,
+    pid: Schema.Number,
+    streamName: Schema.Literals(["stdout", "stderr"]),
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Failed to read ${this.streamName} from desktop backend process ${this.pid}.`;
+  }
+}
+
+export class BackendProcessOutputHandlingError extends Schema.TaggedError<BackendProcessOutputHandlingError>()(
+  "BackendProcessOutputHandlingError",
+  {
+    ...backendProcessContextSchema,
+    pid: Schema.Number,
+    streamName: Schema.Literals(["stdout", "stderr"]),
+    chunkByteLength: Schema.Number,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Failed to handle ${this.chunkByteLength} bytes from ${this.streamName} of desktop backend process ${this.pid}.`;
+  }
+}
+
+export type BackendProcessOutputError =
+  | BackendProcessOutputReadError
+  | BackendProcessOutputHandlingError;
+
 interface BackendProcessExit {
   readonly code: Option.Option<number>;
   readonly reason: string;
@@ -123,16 +158,48 @@ interface DesktopBackendReadyCallbacks {
 
 /**
  * Drain one of the child's output streams into the shell's backend output log.
- * Failures are ignored: a broken log must never take the backend down with it.
+ *
+ * A broken log must never take the backend down, so neither failure propagates
+ * — but neither is discarded either. Losing the child's output silently is the
+ * worst case: `server-child.log` is the only evidence left when the backend
+ * dies before its own tracer exists, and a drain that fails without saying so
+ * looks identical to a child that simply printed nothing.
  */
 function drainBackendOutput(
-  streamName: "stdout" | "stderr",
+  context: {
+    readonly executablePath: string;
+    readonly entryPath: string;
+    readonly cwd: string;
+    readonly httpBaseUrl: URL;
+    readonly pid: number;
+  },
+  streamName: BackendProcessOutputStream,
   stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>,
-  onOutput: DesktopObservability.DesktopBackendOutputLogShape["writeOutputChunk"],
+  onOutput: (
+    streamName: BackendProcessOutputStream,
+    chunk: Uint8Array,
+  ) => Effect.Effect<void, Error>,
+  onOutputFailure: (error: BackendProcessOutputError) => Effect.Effect<void>,
 ): Effect.Effect<void> {
   return stream.pipe(
-    Stream.runForEach((chunk) => onOutput(streamName, chunk)),
-    Effect.ignore,
+    Stream.mapError(
+      (cause) => new BackendProcessOutputReadError({ ...context, streamName, cause }),
+    ),
+    Stream.runForEach((chunk) =>
+      onOutput(streamName, chunk).pipe(
+        Effect.mapError(
+          (cause) =>
+            new BackendProcessOutputHandlingError({
+              ...context,
+              streamName,
+              chunkByteLength: chunk.byteLength,
+              cause,
+            }),
+        ),
+        Effect.catchTag("BackendProcessOutputHandlingError", onOutputFailure),
+      ),
+    ),
+    Effect.catchTag("BackendProcessOutputReadError", onOutputFailure),
   );
 }
 
@@ -318,13 +385,24 @@ export const runBackendProcess = Effect.fn("desktop.backend.runBackendProcess")(
 
   yield* callbacks.onStarted(handle.pid);
 
+  const outputContext = { ...processContext, pid: handle.pid };
+  const onOutputFailure = (error: BackendProcessOutputError) => logError(error.message, { error });
+
   outputFibers.push(
-    yield* drainBackendOutput("stdout", handle.stdout, backendOutputLog.writeOutputChunk).pipe(
-      Effect.forkScoped,
-    ),
-    yield* drainBackendOutput("stderr", handle.stderr, backendOutputLog.writeOutputChunk).pipe(
-      Effect.forkScoped,
-    ),
+    yield* drainBackendOutput(
+      outputContext,
+      "stdout",
+      handle.stdout,
+      backendOutputLog.writeOutputChunk,
+      onOutputFailure,
+    ).pipe(Effect.forkScoped),
+    yield* drainBackendOutput(
+      outputContext,
+      "stderr",
+      handle.stderr,
+      backendOutputLog.writeOutputChunk,
+      onOutputFailure,
+    ).pipe(Effect.forkScoped),
   );
 
   yield* waitForHttpReady({

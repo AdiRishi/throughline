@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
@@ -540,6 +541,76 @@ describe("DesktopBackendManager", () => {
       yield* Deferred.succeed(finishOutputDrain, undefined);
       const exit = yield* Fiber.join(runFiber);
       assert.deepStrictEqual(exit.code, Option.some(1));
+    }),
+  );
+
+  // A drain that dies quietly is indistinguishable from a child that printed
+  // nothing, which is the worst possible failure mode for `server-child.log`.
+  it.effect("reports a failure to read the child's output instead of swallowing it", () =>
+    Effect.gen(function* () {
+      const logged: Array<string> = [];
+      const captureLogger = Logger.make<unknown, void>(({ message }) => {
+        logged.push(String(message));
+      });
+
+      const readFailure = PlatformError.systemError({
+        _tag: "Unknown",
+        module: "ChildProcess",
+        method: "stdout",
+        description: "stdout pipe collapsed",
+      });
+
+      const spawner = ChildProcessSpawner.make(() =>
+        Effect.succeed(
+          ChildProcessSpawner.makeHandle({
+            pid: ChildProcessSpawner.ProcessId(4242),
+            exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+            isRunning: Effect.succeed(false),
+            kill: () => Effect.void,
+            stdin: Sink.drain,
+            stdout: Stream.fail(readFailure),
+            stderr: Stream.empty,
+            all: Stream.empty,
+            getInputFd: () => Sink.drain,
+            getOutputFd: () => Stream.empty,
+            unref: Effect.succeed(Effect.void),
+          }),
+        ),
+      );
+
+      const exit = yield* runBackendProcess(
+        directConfig,
+        DesktopObservability.DesktopBackendOutputLogNoop,
+        {
+          onStarted: () => Effect.void,
+          onExitObserved: Effect.void,
+          onReady: Effect.void,
+          onReadinessFailure: () => Effect.void,
+        },
+      ).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make(() => Effect.never),
+        ),
+        Effect.provide(
+          Layer.mergeAll(
+            FileSystem.layerNoop({}),
+            Logger.layer([captureLogger], { mergeWithExisting: false }),
+          ),
+        ),
+        Effect.orDie,
+        Effect.scoped,
+      );
+
+      // The run itself is unaffected: a broken log must not take the backend down.
+      assert.deepStrictEqual(exit.code, Option.some(0));
+      assert.isTrue(
+        logged.some((message) =>
+          message.includes("Failed to read stdout from desktop backend process 4242"),
+        ),
+        `expected the stdout read failure to be logged, got [${logged.join(" | ")}]`,
+      );
     }),
   );
 
