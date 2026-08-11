@@ -1,6 +1,14 @@
+import * as NodeModule from "node:module";
+
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, defineProject, type TestProjectInlineConfiguration } from "vitest/config";
+
+// Read rather than imported: a JSON import would need `resolveJsonModule` and
+// would put the whole manifest in the config's type graph for one string.
+const appVersion = (
+  NodeModule.createRequire(import.meta.url)("./package.json") as { version: string }
+).version;
 
 import { DEV_PROXIED_PATH_PREFIXES } from "@app/shared/devProxy";
 
@@ -13,6 +21,11 @@ const host = explicitHost || "localhost";
 // (src/env.ts), which is the only address that is right for every visitor; an
 // explicit value stays what it should be — a dev/override affordance.
 const configuredWsUrl = process.env.VITE_WS_URL?.trim();
+// Set by the dev runner for browser dev. It says "there IS a backend to proxy
+// to, and the client must still resolve it from the page origin" — which is not
+// the same as "nobody configured a URL", and the two need different handling.
+const singleOriginDev = process.env.APP_SINGLE_ORIGIN_DEV?.trim() === "1";
+const devServerPort = Number(process.env.APP_SERVER_PORT ?? "");
 const bootstrapToken = process.env.VITE_BOOTSTRAP_TOKEN?.trim() || "";
 const sourcemapEnv = process.env.APP_WEB_SOURCEMAP?.trim().toLowerCase();
 
@@ -70,7 +83,14 @@ function resolveDevProxyTarget(wsUrl: string | undefined): string | undefined {
   }
 }
 
-const devProxyTarget = resolveDevProxyTarget(configuredWsUrl);
+// In single-origin dev the proxy target comes from the port, never from a URL
+// the client can see — that is the whole point: Vite knows where the backend
+// is, the bundle does not.
+const devProxyTarget = singleOriginDev
+  ? Number.isInteger(devServerPort) && devServerPort > 0
+    ? `http://127.0.0.1:${devServerPort}/`
+    : undefined
+  : resolveDevProxyTarget(configuredWsUrl);
 
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
@@ -98,8 +118,11 @@ export default defineConfig(() => ({
     // Pinned explicitly rather than left to Vite's automatic VITE_ exposure, so
     // an unset value bakes as "" (the client then falls back to the page
     // origin) instead of leaking a stray shell variable into the bundle.
-    "import.meta.env.VITE_WS_URL": JSON.stringify(configuredWsUrl ?? ""),
+    // In single-origin dev the runner deliberately does not hand us a URL, and
+    // baking one anyway is the exact bug the runner is avoiding.
+    "import.meta.env.VITE_WS_URL": JSON.stringify(singleOriginDev ? "" : (configuredWsUrl ?? "")),
     "import.meta.env.VITE_BOOTSTRAP_TOKEN": JSON.stringify(bootstrapToken),
+    "import.meta.env.APP_VERSION": JSON.stringify(appVersion),
   },
   resolve: {
     // One React, always: the first workspace package to take a React peer dep

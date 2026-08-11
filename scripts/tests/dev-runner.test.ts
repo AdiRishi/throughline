@@ -131,23 +131,36 @@ describe("parsePortOverride", () => {
 });
 
 describe("createDevEnv", () => {
-  const env = createDevEnv({
+  const baseInput = {
     repoRoot: "/repo",
     serverPort: 13_800,
     webPort: 5_800,
     bootstrapToken: "token",
     logDir: "/repo/.logs",
     logLevel: "Debug",
-  });
+  };
+  const env = createDevEnv({ ...baseInput, isDesktopMode: false });
+  const desktopEnvResult = createDevEnv({ ...baseInput, isDesktopMode: true });
 
   it("hands the same bootstrap token to the server and the web client", () => {
     expect(env.serverEnv["APP_BOOTSTRAP_TOKEN"]).toBe("token");
     expect(env.webEnv["VITE_BOOTSTRAP_TOKEN"]).toBe("token");
   });
 
-  it("points the web client at the server's websocket on loopback", () => {
-    expect(env.wsUrl).toBe("ws://127.0.0.1:13800");
-    expect(env.webEnv["VITE_WS_URL"]).toBe(env.wsUrl);
+  // Baking a loopback URL into the browser bundle is what breaks LAN/tailnet
+  // dev: the remote browser resolves it and dials its own machine.
+  it("keeps browser dev single-origin instead of baking a backend URL", () => {
+    expect(env.webEnv["VITE_WS_URL"]).toBeUndefined();
+    expect(env.webEnv["HOST"]).toBeUndefined();
+    expect(env.webEnv["APP_SINGLE_ORIGIN_DEV"]).toBe("1");
+    expect(env.webEnv["APP_SERVER_PORT"]).toBe("13800");
+  });
+
+  it("bakes the backend URL only for the shell, which loads from a custom scheme", () => {
+    expect(desktopEnvResult.wsUrl).toBe("ws://127.0.0.1:13800");
+    expect(desktopEnvResult.webEnv["VITE_WS_URL"]).toBe(desktopEnvResult.wsUrl);
+    expect(desktopEnvResult.webEnv["HOST"]).toBe("localhost");
+    expect(desktopEnvResult.webEnv["APP_SINGLE_ORIGIN_DEV"]).toBeUndefined();
   });
 
   it("agrees on the dev web URL across the server and the shell", () => {

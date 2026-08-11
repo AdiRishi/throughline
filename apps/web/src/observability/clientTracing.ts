@@ -32,6 +32,10 @@ const CLIENT_TRACING_RESOURCE = {
   attributes: {
     "service.runtime": "throughline-web",
     "service.mode": isElectron ? "electron" : "browser",
+    // Renderer spans land in the same trace file as the server's. Without a
+    // build stamp there is no way to tell which bundle produced a stack, which
+    // is exactly what you need when a failure only reproduces on one release.
+    "service.version": import.meta.env.APP_VERSION,
   },
 } as const;
 
