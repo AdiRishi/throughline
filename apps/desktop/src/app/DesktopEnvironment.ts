@@ -6,10 +6,10 @@ import * as LogLevel from "effect/LogLevel";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
-import type { DesktopAppInfo } from "@app/contracts";
+import type { DesktopAppInfo, DesktopRuntimeArch, DesktopRuntimeInfo } from "@app/contracts";
 
 import type { DesktopSettings } from "../settings/DesktopAppSettings.ts";
-import { DEFAULT_DESKTOP_SETTINGS } from "../settings/DesktopAppSettings.ts";
+import { resolveDefaultDesktopSettings } from "../settings/DesktopAppSettings.ts";
 import { resolveDesktopStateDir } from "./DesktopStatePaths.ts";
 
 const APP_BASE_NAME = "Throughline";
@@ -34,6 +34,9 @@ export interface MakeDesktopEnvironmentInput {
   readonly appPath: string;
   readonly isPackaged: boolean;
   readonly resourcesPath: string;
+  /** `process.arch` — the architecture this build was compiled for. */
+  readonly processArch: string;
+  readonly runningUnderArm64Translation: boolean;
   readonly appDataDirectory: Option.Option<string>;
   readonly xdgConfigHome: Option.Option<string>;
   readonly serverEntryOverride: Option.Option<string>;
@@ -43,6 +46,13 @@ export interface MakeDesktopEnvironmentInput {
   readonly otlpExportIntervalMs: Option.Option<number>;
   readonly configuredBackendPort: Option.Option<number>;
   readonly devServerUrl: Option.Option<URL>;
+  /**
+   * Set by the AppImage runtime to the path of the running image. On Linux
+   * electron-updater can only replace an AppImage, so its absence is what tells
+   * the updater it must stay disabled there.
+   */
+  readonly appImagePath: Option.Option<string>;
+  readonly disableAutoUpdate: boolean;
 }
 
 export class DesktopEnvironment extends Context.Service<
@@ -76,6 +86,19 @@ export class DesktopEnvironment extends Context.Service<
     readonly defaultBackendPort: number;
     readonly configuredBackendPort: Option.Option<number>;
     readonly devServerUrl: Option.Option<URL>;
+    readonly appImagePath: Option.Option<string>;
+    readonly disableAutoUpdate: boolean;
+    readonly runtimeInfo: DesktopRuntimeInfo;
+    /**
+     * Normalizes a renderer-supplied starting directory for the folder picker:
+     * trims it, expands a leading `~`, and resolves anything relative against
+     * the process cwd. Electron treats an unresolvable `defaultPath` as no
+     * default at all, so a `~/projects` that the renderer sent verbatim would
+     * silently open the picker somewhere else entirely.
+     */
+    readonly resolvePickFolderDefaultPath: (
+      initialPath: string | undefined,
+    ) => Option.Option<string>;
     readonly appInfo: DesktopAppInfo;
     readonly displayName: string;
     readonly userDataDirName: string;
@@ -88,6 +111,38 @@ function normalizePlatform(platform: NodeJS.Platform): DesktopAppInfo["platform"
   if (platform === "win32") return "win32";
   if (platform === "darwin") return "darwin";
   return "linux";
+}
+
+function normalizeDesktopArch(arch: string): DesktopRuntimeArch {
+  if (arch === "arm64") return "arm64";
+  if (arch === "x64") return "x64";
+  return "other";
+}
+
+/**
+ * Rosetta is the only translation layer we model, so outside macOS the host is
+ * by definition whatever the build targets. On macOS an x64 build reports
+ * `process.arch === "x64"` whether it runs on Intel or on Apple Silicon under
+ * translation, and only `runningUnderARM64Translation` tells the two apart.
+ */
+function resolveDesktopRuntimeInfo(input: {
+  readonly platform: NodeJS.Platform;
+  readonly processArch: string;
+  readonly runningUnderArm64Translation: boolean;
+}): DesktopRuntimeInfo {
+  const appArch = normalizeDesktopArch(input.processArch);
+
+  if (input.platform !== "darwin") {
+    return { hostArch: appArch, appArch, runningUnderArm64Translation: false };
+  }
+
+  const hostArch = appArch === "arm64" || input.runningUnderArm64Translation ? "arm64" : appArch;
+
+  return {
+    hostArch,
+    appArch,
+    runningUnderArm64Translation: input.runningUnderArm64Translation,
+  };
 }
 
 export function makeWith(
@@ -160,14 +215,51 @@ export function makeWith(
     defaultBackendPort: DEFAULT_BACKEND_PORT,
     configuredBackendPort: input.configuredBackendPort,
     devServerUrl: input.devServerUrl,
+    appImagePath: input.appImagePath,
+    disableAutoUpdate: input.disableAutoUpdate,
+    runtimeInfo: resolveDesktopRuntimeInfo({
+      platform: input.platform,
+      processArch: input.processArch,
+      runningUnderArm64Translation: input.runningUnderArm64Translation,
+    }),
+    resolvePickFolderDefaultPath: (initialPath) => {
+      if (typeof initialPath !== "string") {
+        return Option.none();
+      }
+
+      const trimmedPath = initialPath.trim();
+      if (trimmedPath.length === 0) {
+        return Option.none();
+      }
+
+      if (trimmedPath === "~") {
+        return Option.some(input.homeDirectory);
+      }
+
+      if (trimmedPath.startsWith("~/") || trimmedPath.startsWith("~\\")) {
+        return Option.some(path.join(input.homeDirectory, trimmedPath.slice(2)));
+      }
+
+      return Option.some(path.resolve(trimmedPath));
+    },
     appInfo,
     displayName,
     userDataDirName: isDevelopment ? "throughline-dev" : "throughline",
     appUserModelId: isDevelopment ? `${APP_BASE_ID}.dev` : APP_BASE_ID,
-    defaultDesktopSettings: DEFAULT_DESKTOP_SETTINGS,
+    defaultDesktopSettings: resolveDefaultDesktopSettings(input.appVersion),
   });
 }
 
+/**
+ * `Path.Path` is deliberately left as a requirement rather than satisfied here.
+ * `effect/Path`'s own `Path.layer` is the POSIX implementation; providing it
+ * would shadow the platform-aware `node:path` service that `NodeServices.layer`
+ * supplies in `main.ts`, and every path this service hands out — stateDir,
+ * logDir, settings, preload, the backend entry — would be computed with posix
+ * semantics on Windows. `path.resolve` in particular does not treat `\` as a
+ * separator or a drive letter as absolute, so the dev backend entry would
+ * resolve to cwd-relative garbage there.
+ */
 export function layer(
   metadata: Pick<
     MakeDesktopEnvironmentInput,
@@ -178,8 +270,10 @@ export function layer(
     | "appPath"
     | "isPackaged"
     | "resourcesPath"
+    | "processArch"
+    | "runningUnderArm64Translation"
   >,
-): Layer.Layer<DesktopEnvironment> {
+): Layer.Layer<DesktopEnvironment, never, Path.Path> {
   return Layer.effect(
     DesktopEnvironment,
     Effect.gen(function* () {
@@ -195,6 +289,10 @@ export function layer(
       );
       const configuredBackendPort = yield* Config.port("APP_SERVER_PORT").pipe(Config.option);
       const devServerUrl = yield* Config.url("APP_DEV_WEB_URL").pipe(Config.option);
+      const appImagePath = yield* Config.string("APPIMAGE").pipe(Config.option);
+      const disableAutoUpdate = yield* Config.boolean("APP_DISABLE_AUTO_UPDATE").pipe(
+        Config.withDefault(false),
+      );
       return makeWith(
         {
           ...metadata,
@@ -207,6 +305,8 @@ export function layer(
           otlpExportIntervalMs,
           configuredBackendPort,
           devServerUrl,
+          appImagePath,
+          disableAutoUpdate,
         },
         path,
       );
@@ -215,5 +315,5 @@ export function layer(
       // misconfiguration; die rather than thread ConfigError through the graph.
       Effect.orDie,
     ),
-  ).pipe(Layer.provide(Path.layer));
+  );
 }

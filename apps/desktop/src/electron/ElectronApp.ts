@@ -10,6 +10,8 @@ export interface ElectronAppMetadata {
   readonly appPath: string;
   readonly isPackaged: boolean;
   readonly resourcesPath: string;
+  /** True for an x64 build running on Apple Silicon under Rosetta. */
+  readonly runningUnderArm64Translation: boolean;
 }
 
 export class ElectronAppMetadataReadError extends Schema.TaggedError<ElectronAppMetadataReadError>()(
@@ -92,6 +94,8 @@ export const make = ElectronApp.of({
       appPath,
       isPackaged: Electron.app.isPackaged,
       resourcesPath: process.resourcesPath,
+      // Only defined on macOS; anywhere else it reads as undefined.
+      runningUnderArm64Translation: Electron.app.runningUnderARM64Translation === true,
     };
   }),
   whenReady: Effect.gen(function* () {
