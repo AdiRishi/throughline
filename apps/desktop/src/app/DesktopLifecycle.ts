@@ -52,8 +52,16 @@ function addScopedListener<Args extends ReadonlyArray<unknown>>(
 }
 
 const requestDesktopShutdownAndWait = Effect.fn("desktop.lifecycle.requestShutdownAndWait")(
-  function* (): Effect.fn.Return<void, never, DesktopShutdown.DesktopShutdown> {
+  function* (): Effect.fn.Return<
+    void,
+    never,
+    DesktopShutdown.DesktopShutdown | DesktopWindow.DesktopWindow
+  > {
     const shutdown = yield* DesktopShutdown.DesktopShutdown;
+    const desktopWindow = yield* DesktopWindow.DesktopWindow;
+    // Before the teardown, not after: once shutdown completes the app exits,
+    // and a geometry write still in flight at that point is lost.
+    yield* desktopWindow.flushMainWindowBounds;
     yield* shutdown.request;
     yield* shutdown.awaitComplete;
   },

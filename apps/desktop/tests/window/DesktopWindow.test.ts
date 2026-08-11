@@ -1,5 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -61,6 +63,8 @@ function makeFakeBrowserWindow() {
     },
   };
 
+  const bounds = { x: 100, y: 120, width: 1100, height: 780 };
+
   const window = {
     isDestroyed: () => false,
     loadURL: (url: string) => {
@@ -73,17 +77,50 @@ function makeFakeBrowserWindow() {
     once: () => undefined,
     setBackgroundColor: () => undefined,
     setTitle: () => undefined,
+    isFullScreen: () => false,
+    isMaximized: () => false,
+    isMinimized: () => false,
+    getBounds: () => bounds,
+    getNormalBounds: () => bounds,
     webContents,
   };
 
   return {
     window: window as unknown as Electron.BrowserWindow,
+    bounds,
     loadedUrls,
     reloads,
     webContentsListeners,
     webContentsOnceListeners,
     windowListeners,
   };
+}
+
+/**
+ * Settings whose `setMainWindowBounds` parks until `gate` is released, so a
+ * test can tell "the write was started" apart from "the write has landed".
+ */
+function gatedSettingsLayer(input: {
+  readonly gate: Deferred.Deferred<void>;
+  readonly writes: Array<DesktopAppSettings.DesktopWindowBounds>;
+}) {
+  return Layer.succeed(DesktopAppSettings.DesktopAppSettings, {
+    get: Effect.succeed(DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS),
+    load: Effect.succeed(DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS),
+    setTheme: () =>
+      Effect.succeed({ settings: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS, changed: false }),
+    setUpdateChannel: () =>
+      Effect.succeed({ settings: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS, changed: false }),
+    setMainWindowBounds: (bounds) =>
+      Deferred.await(input.gate).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            input.writes.push(bounds);
+            return { settings: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS, changed: true };
+          }),
+        ),
+      ),
+  } satisfies DesktopAppSettings.DesktopAppSettings["Service"]);
 }
 
 const desktopEnvironmentLayer = (devServerUrl: Option.Option<URL> = Option.none()) =>
@@ -136,6 +173,7 @@ function makeTestLayer(input: {
   readonly mainWindow: Ref.Ref<Option.Option<Electron.BrowserWindow>>;
   readonly openedExternalUrls?: unknown[];
   readonly devServerUrl?: URL;
+  readonly settingsLayer?: Layer.Layer<DesktopAppSettings.DesktopAppSettings>;
 }) {
   const electronWindowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
     create: () => Ref.update(input.createCount, (count) => count + 1).pipe(Effect.as(input.window)),
@@ -158,7 +196,7 @@ function makeTestLayer(input: {
     Layer.provide(
       Layer.mergeAll(
         desktopEnvironmentLayer(Option.fromNullishOr(input.devServerUrl ?? null)),
-        DesktopAppSettings.layerTest(),
+        input.settingsLayer ?? DesktopAppSettings.layerTest(),
         electronMenuLayer,
         Layer.succeed(ElectronShell.ElectronShell, {
           openExternal: (url) =>
@@ -239,6 +277,45 @@ describe("DesktopWindow", () => {
         yield* desktopWindow.handleBackendReady(backendConfig);
         assert.equal(yield* Ref.get(createCount), 1);
         assert.equal(fakeWindow.loadedUrls[0], "http://127.0.0.1:3773/");
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  // The debounced geometry write is forked, so completing `flushMainWindowBounds`
+  // without joining it would leave the write in flight while the app exits.
+  it.effect("flushMainWindowBounds does not complete until the write has landed", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const gate = yield* Deferred.make<void>();
+      const writes: Array<DesktopAppSettings.DesktopWindowBounds> = [];
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        settingsLayer: gatedSettingsLayer({ gate, writes }),
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady(backendConfig);
+
+        // Arms the debounce the flush has to cancel.
+        fakeWindow.windowListeners.get("resize")?.();
+
+        const flushFiber = yield* Effect.forkChild(desktopWindow.flushMainWindowBounds);
+        yield* Effect.yieldNow;
+        assert.isUndefined(
+          flushFiber.pollUnsafe(),
+          "flush completed while the settings write was still parked",
+        );
+        assert.deepEqual(writes, [], "write landed before the gate was released");
+
+        yield* Deferred.succeed(gate, undefined);
+        yield* Fiber.join(flushFiber);
+
+        assert.deepEqual(writes, [{ x: 100, y: 120, width: 1100, height: 780 }]);
       }).pipe(Effect.provide(layer));
     }),
   );
