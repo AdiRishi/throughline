@@ -34,6 +34,7 @@ import {
 import * as LifecycleEvents from "./lifecycleEvents.ts";
 import * as NotesStore from "./notes/NotesStore.ts";
 import { ObservabilityLive } from "./observability/Layers/Observability.ts";
+import { fixPath } from "./os-jank.ts";
 import * as Readiness from "./readiness.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 
@@ -66,6 +67,12 @@ const RuntimeServicesLive = Layer.mergeAll(
 export const makeServerLayer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
+
+    // Before anything binds or spawns. A GUI-launched desktop shell hands this
+    // process the launchd/session environment, not the user's login-shell one,
+    // so `PATH` is missing every version manager and package-manager shim until
+    // this runs.
+    yield* fixPath();
 
     const httpServerLayer = NodeHttpServer.layer(NodeHttp.createServer, {
       host: config.host,
