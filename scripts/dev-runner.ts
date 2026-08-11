@@ -103,6 +103,12 @@ export interface DevEnvInput {
   readonly bootstrapToken: string;
   readonly logDir: string;
   readonly logLevel: string;
+  /**
+   * The shell loads the renderer from a custom scheme and hands it the server
+   * address over the IPC bridge, so it is the one mode where a baked-in URL is
+   * correct. Every browser mode is single-origin instead.
+   */
+  readonly isDesktopMode: boolean;
 }
 
 export interface DevEnv {
@@ -121,6 +127,7 @@ export function createDevEnv({
   bootstrapToken,
   logDir,
   logLevel,
+  isDesktopMode,
 }: DevEnvInput): DevEnv {
   const wsUrl = `ws://127.0.0.1:${serverPort}`;
   const devWebUrl = `http://localhost:${webPort}`;
@@ -137,9 +144,28 @@ export function createDevEnv({
     },
     webEnv: {
       PORT: String(webPort),
-      HOST: "localhost",
-      VITE_WS_URL: wsUrl,
+      // Vite needs the backend port either way — to proxy to it in browser dev,
+      // and nothing else — but only the shell gets the URL baked into the
+      // bundle.
+      APP_SERVER_PORT: String(serverPort),
       VITE_BOOTSTRAP_TOKEN: bootstrapToken,
+      ...(isDesktopMode
+        ? {
+            // HMR needs an explicit host inside a BrowserWindow, and the shell
+            // is always local, so pinning it here is safe.
+            HOST: "localhost",
+            VITE_WS_URL: wsUrl,
+          }
+        : {
+            // Browser dev is single-origin: /api, /ws and friends are proxied
+            // through Vite, so the client must resolve its backend from
+            // window.location.origin. Baking localhost here is what breaks
+            // every non-localhost origin (LAN, tailnet, phone) — the remote
+            // browser then dials its OWN loopback. Stated positively rather
+            // than by omission because vite.config.ts must be able to tell
+            // "single-origin dev" from "nobody set a URL".
+            APP_SINGLE_ORIGIN_DEV: "1",
+          }),
     },
     desktopEnv: {
       APP_SERVER_PORT: String(serverPort),
@@ -436,6 +462,7 @@ async function main(): Promise<void> {
     bootstrapToken: NodeCrypto.randomBytes(24).toString("hex"),
     logDir,
     logLevel,
+    isDesktopMode: mode === "dev:desktop",
   });
 
   const targetMessage =

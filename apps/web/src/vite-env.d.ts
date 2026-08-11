@@ -9,6 +9,11 @@ interface ImportMetaEnv {
   readonly VITE_WS_URL: string;
   /** Bootstrap credential exchanged for a `/ws` bearer session in the browser. */
   readonly VITE_BOOTSTRAP_TOKEN: string;
+  /**
+   * The web package's version, baked in at build time. Rides on every renderer
+   * span as `service.version` so a trace can be attributed to a build.
+   */
+  readonly APP_VERSION: string;
 }
 
 interface ImportMeta {
