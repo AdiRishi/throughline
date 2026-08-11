@@ -25,6 +25,7 @@ import {
  */
 export const WS_METHODS = {
   serverGetConfig: "server.getConfig",
+  serverProbe: "server.probe",
   serverEcho: "server.echo",
   serverSubscribeTicks: "server.subscribeTicks",
   serverSubscribeLifecycle: "server.subscribeLifecycle",
@@ -40,6 +41,19 @@ export const WS_METHODS = {
 export const WsServerGetConfigRpc = Rpc.make(WS_METHODS.serverGetConfig, {
   payload: Schema.Struct({}),
   success: ServerConfig,
+  error: EnvironmentAuthorizationError,
+});
+
+/**
+ * The connection supervisor's liveness check. Deliberately its own method
+ * rather than a reused `server.getConfig`: a probe fires on every wakeup and
+ * reconnect, and paying for a full config payload — and re-running whatever
+ * work assembling it implies — to learn one bit ("does the far side answer?")
+ * gets expensive exactly when the link is already struggling.
+ */
+export const WsServerProbeRpc = Rpc.make(WS_METHODS.serverProbe, {
+  payload: Schema.Struct({}),
+  success: Schema.Struct({}),
   error: EnvironmentAuthorizationError,
 });
 
@@ -98,6 +112,7 @@ export const WsNotesSubscribeRpc = Rpc.make(WS_METHODS.notesSubscribe, {
 /** The wire contract the server decodes against and the client is typed by. */
 export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
+  WsServerProbeRpc,
   WsServerEchoRpc,
   WsServerSubscribeTicksRpc,
   WsServerSubscribeLifecycleRpc,

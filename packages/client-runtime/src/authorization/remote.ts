@@ -6,10 +6,17 @@ import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientError from "effect/unstable/http/HttpClientError";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 
-import { BearerSessionJson, BootstrapBearerInput, type BearerSession } from "@app/contracts";
+import {
+  BearerSessionJson,
+  BootstrapBearerInput,
+  WebSocketTicketJson,
+  type BearerSession,
+  type WebSocketTicket,
+} from "@app/contracts";
 
 /** Where the bearer-bootstrap exchange lives on the local server. */
 export const AUTH_BOOTSTRAP_PATH = "/api/auth/bootstrap/bearer";
+export const AUTH_WEBSOCKET_TICKET_PATH = "/api/auth/websocket-ticket";
 
 const DEFAULT_BOOTSTRAP_TIMEOUT_MS = 10_000;
 
@@ -94,6 +101,7 @@ export type BearerBootstrapError =
 
 const encodeBootstrapInput = Schema.encodeEffect(Schema.toCodecJson(BootstrapBearerInput));
 const decodeBearerSession = Schema.decodeUnknownEffect(BearerSessionJson);
+const decodeWebSocketTicket = Schema.decodeUnknownEffect(WebSocketTicketJson);
 
 type BootstrapRequestError =
   | HttpClientError.HttpClientError
@@ -196,6 +204,40 @@ export const bootstrapRemoteBearerSession = Effect.fn(
         return yield* new BearerBootstrapStatusError({ requestUrl, status: response.status });
       }
       return yield* decodeBearerSession(yield* response.json);
+    }),
+  );
+});
+
+/**
+ * Trade a live bearer for a single-use `/ws` upgrade ticket.
+ *
+ * The bearer rides in the `Authorization` header here — the one place it
+ * belongs. What comes back is what goes in the socket URL, so the credential
+ * that ends up in access logs, proxy logs and browser history is worth one
+ * already-consumed connection rather than a 30-day session.
+ */
+export const issueRemoteWebSocketTicket = Effect.fn(
+  "clientRuntime.authorization.issueRemoteWebSocketTicket",
+)(function* (input: {
+  readonly httpBaseUrl: string;
+  readonly bearerToken: string;
+  readonly timeoutMs?: number;
+}): Effect.fn.Return<WebSocketTicket, BearerBootstrapError, HttpClient.HttpClient> {
+  const client = yield* HttpClient.HttpClient;
+  const requestUrl = new URL(AUTH_WEBSOCKET_TICKET_PATH, input.httpBaseUrl).toString();
+  const request = HttpClientRequest.post(requestUrl).pipe(
+    HttpClientRequest.setHeader("authorization", `Bearer ${input.bearerToken}`),
+  );
+
+  return yield* executeBootstrapRequest(
+    requestUrl,
+    input.timeoutMs ?? DEFAULT_BOOTSTRAP_TIMEOUT_MS,
+    Effect.gen(function* () {
+      const response = yield* client.execute(request);
+      if (response.status < 200 || response.status >= 300) {
+        return yield* new BearerBootstrapStatusError({ requestUrl, status: response.status });
+      }
+      return yield* decodeWebSocketTicket(yield* response.json);
     }),
   );
 });

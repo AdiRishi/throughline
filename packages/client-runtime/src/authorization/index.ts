@@ -8,6 +8,8 @@ export {
   BearerBootstrapTimeoutError,
   BearerBootstrapTransportError,
   bootstrapRemoteBearerSession,
+  AUTH_WEBSOCKET_TICKET_PATH,
+  issueRemoteWebSocketTicket,
 } from "./remote.ts";
 export {
   BearerAuthorization,

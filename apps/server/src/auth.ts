@@ -27,11 +27,19 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import { Headers, HttpServerRequest } from "effect/unstable/http";
 
+import { WS_TICKET_QUERY_PARAM } from "@app/contracts";
+
 import * as ServerConfig from "./config.ts";
 
 const TOKEN_BYTES = 32;
 
 const SESSION_TTL = Duration.days(30);
+
+/**
+ * Long enough to open a socket (including a retry or two), short enough that a
+ * ticket sitting in an access log is worthless by the time anyone reads it.
+ */
+const WEBSOCKET_TICKET_TTL = Duration.minutes(5);
 
 const toHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -60,6 +68,18 @@ export class BearerSessionStore extends Context.Service<
     ) => Effect.Effect<Option.Option<MintedBearerSession>>;
     /** Whether the given bearer token is a live, unexpired session. */
     readonly authenticateBearer: (token: string) => Effect.Effect<boolean>;
+    /**
+     * Mint a single-use `/ws` upgrade ticket for a live bearer session.
+     * `Option.none()` when the bearer is not a live session.
+     */
+    readonly issueWebSocketTicket: (
+      bearerToken: string,
+    ) => Effect.Effect<Option.Option<MintedWebSocketTicket>>;
+    /**
+     * Redeem a `/ws` ticket. Consumes it: a replayed ticket is rejected even
+     * inside its TTL, so a URL captured from a log cannot open a second socket.
+     */
+    readonly redeemWebSocketTicket: (ticket: string) => Effect.Effect<boolean>;
   }
 >()("@app/server/auth/BearerSessionStore") {}
 
@@ -69,11 +89,19 @@ export interface MintedBearerSession {
   readonly expiresAt: DateTime.Utc;
 }
 
+export interface MintedWebSocketTicket {
+  readonly ticket: string;
+  readonly expiresAt: DateTime.Utc;
+}
+
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const crypto = yield* Crypto.Crypto;
   // token -> expiry epoch millis.
   const sessions = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
+  // ticket -> expiry epoch millis. Separate from `sessions` so a ticket can
+  // never be presented as a bearer, and vice versa.
+  const websocketTickets = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
 
   /** Drop every session that has already expired as of `nowMillis`. */
   const evictExpired = (current: ReadonlyMap<string, number>, nowMillis: number) => {
@@ -85,6 +113,15 @@ const make = Effect.gen(function* () {
     }
     return live ?? current;
   };
+
+  /** Whether `token` names a live session, without mutating anything. */
+  const isLiveSession = (token: string, nowMillis: number) =>
+    Ref.get(sessions).pipe(
+      Effect.map((current) => {
+        const expiresAtMillis = current.get(token);
+        return expiresAtMillis !== undefined && expiresAtMillis > nowMillis;
+      }),
+    );
 
   return {
     authenticateBootstrap: (credential) =>
@@ -122,16 +159,69 @@ const make = Effect.gen(function* () {
         }
         return true;
       }),
+    issueWebSocketTicket: (bearerToken) =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const nowMillis = DateTime.toEpochMillis(now);
+        if (!(yield* isLiveSession(bearerToken, nowMillis))) {
+          return Option.none();
+        }
+        const bytes = yield* crypto.randomBytes(TOKEN_BYTES).pipe(Effect.orDie);
+        const ticket = toHex(bytes);
+        const expiresAt = DateTime.add(now, {
+          milliseconds: Duration.toMillis(WEBSOCKET_TICKET_TTL),
+        });
+        // Swept on mint for the same reason sessions are: a reconnect storm
+        // mints one ticket per attempt.
+        yield* Ref.update(websocketTickets, (current) => {
+          const live = new Map(evictExpired(current, nowMillis));
+          live.set(ticket, DateTime.toEpochMillis(expiresAt));
+          return live;
+        });
+        return Option.some({ ticket, expiresAt });
+      }),
+    redeemWebSocketTicket: (ticket) =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const nowMillis = DateTime.toEpochMillis(now);
+        // Read and delete in one `modify` so two concurrent upgrades cannot
+        // both redeem the same ticket.
+        return yield* Ref.modify(websocketTickets, (current) => {
+          const expiresAtMillis = current.get(ticket);
+          const live = evictExpired(current, nowMillis);
+          if (expiresAtMillis === undefined || expiresAtMillis <= nowMillis) {
+            return [false, live] as const;
+          }
+          const remaining = new Map(live);
+          remaining.delete(ticket);
+          return [true, remaining] as const;
+        });
+      }),
   } satisfies BearerSessionStore["Service"];
 });
 
 export const layer = Layer.effect(BearerSessionStore, make);
 
+/** The single-use `/ws` upgrade ticket, when the request carries one. */
+export function extractWebSocketTicket(
+  request: HttpServerRequest.HttpServerRequest,
+): Option.Option<string> {
+  const url = HttpServerRequest.toURL(request);
+  if (Option.isNone(url)) {
+    return Option.none();
+  }
+  const ticket = url.value.searchParams.get(WS_TICKET_QUERY_PARAM);
+  return ticket ? Option.some(ticket) : Option.none();
+}
+
 /**
  * Extract a bearer token from a request: `Authorization: Bearer <t>` header, or
- * `?access_token=<t>` query param (browsers cannot set headers on a WebSocket
- * upgrade). Shared by the `/ws` upgrade and the OTLP ingest route so the two
- * gates cannot drift apart.
+ * `?access_token=<t>` query param. Shared by the OTLP ingest route and the
+ * ticket-minting route so the two gates cannot drift apart.
+ *
+ * The query-param form exists for non-browser callers that cannot set headers;
+ * the browser `/ws` path uses a ticket instead (see `extractWebSocketTicket`),
+ * because a 30-day bearer has no business in a URL.
  */
 export function extractBearer(request: HttpServerRequest.HttpServerRequest): Option.Option<string> {
   const header = Headers.get(request.headers, "authorization");

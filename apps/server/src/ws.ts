@@ -12,7 +12,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import {
@@ -56,6 +56,11 @@ const makeWsRpcLayer = () =>
             }),
             { "rpc.aggregate": "server" },
           ),
+        // Intentionally does no work: the answer is the round trip itself.
+        [WS_METHODS.serverProbe]: () =>
+          observeRpcEffect(WS_METHODS.serverProbe, Effect.succeed({}), {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverEcho]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverEcho,
@@ -141,13 +146,29 @@ export const websocketRpcRouteLayer = HttpRouter.add(
     const request = yield* HttpServerRequest.HttpServerRequest;
     const auth = yield* Auth.BearerSessionStore;
 
-    const token = Auth.extractBearer(request);
-    if (Option.isNone(token)) {
-      return HttpServerResponse.text("Unauthorized", { status: 401 });
-    }
-    const valid = yield* auth.authenticateBearer(token.value);
-    if (!valid) {
-      return HttpServerResponse.text("Unauthorized", { status: 401 });
+    // Two ways in, and the order matters. A browser cannot set headers on a
+    // WebSocket handshake, so it presents a single-use ticket in the URL; a
+    // caller that CAN set headers presents the bearer there, where it does not
+    // land in an access log. The long-lived bearer is deliberately not accepted
+    // from the query string on this route.
+    const ticket = Auth.extractWebSocketTicket(request);
+    if (Option.isSome(ticket)) {
+      const redeemed = yield* auth.redeemWebSocketTicket(ticket.value);
+      if (!redeemed) {
+        return HttpServerResponse.text("Unauthorized", { status: 401 });
+      }
+    } else {
+      const header = Headers.get(request.headers, "authorization");
+      const token = Option.isSome(header)
+        ? Option.fromNullishOr(/^Bearer\s+(.+)$/i.exec(header.value.trim())?.[1]?.trim())
+        : Option.none<string>();
+      if (Option.isNone(token)) {
+        return HttpServerResponse.text("Unauthorized", { status: 401 });
+      }
+      const valid = yield* auth.authenticateBearer(token.value);
+      if (!valid) {
+        return HttpServerResponse.text("Unauthorized", { status: 401 });
+      }
     }
 
     // The handlers carry their own `ws.rpc.<method>` spans (see

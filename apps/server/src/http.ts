@@ -20,7 +20,13 @@ import {
 } from "effect/unstable/http";
 import type * as OtlpTracer from "effect/unstable/observability/OtlpTracer";
 
-import { BearerSessionJson, BootstrapBearerInput, type BearerSession } from "@app/contracts";
+import {
+  BearerSessionJson,
+  BootstrapBearerInput,
+  WebSocketTicketJson,
+  type BearerSession,
+  type WebSocketTicket,
+} from "@app/contracts";
 import { isDevProxiedPath } from "@app/shared/devProxy";
 import { decodeOtlpTraceRecords } from "@app/shared/observability";
 
@@ -36,12 +42,14 @@ import * as Readiness from "./readiness.ts";
 
 export const HEALTH_PATH = "/.well-known/app/health";
 export const AUTH_BOOTSTRAP_PATH = "/api/auth/bootstrap/bearer";
+export const AUTH_WEBSOCKET_TICKET_PATH = "/api/auth/websocket-ticket";
 export const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 
 // Encodes via the JSON wire codec so `expires_at` leaves as an ISO string —
 // `HttpServerResponse.json` alone would stringify the raw DateTime instance,
 // which the client's decoder rejects.
 const respondBearerSession = HttpServerResponse.schemaJson(BearerSessionJson);
+const respondWebSocketTicket = HttpServerResponse.schemaJson(WebSocketTicketJson);
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -131,10 +139,45 @@ export const authBootstrapRouteLayer = HttpRouter.add(
   }),
 );
 
+/**
+ * `POST /api/auth/websocket-ticket` — trade a live bearer for a single-use,
+ * minutes-long ticket to put in the `/ws` URL.
+ *
+ * Gated by the bearer itself, presented the way every other API call presents
+ * it: in a header, where it does not end up in an access log.
+ */
+export const authWebSocketTicketRouteLayer = HttpRouter.add(
+  "POST",
+  AUTH_WEBSOCKET_TICKET_PATH,
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const auth = yield* Auth.BearerSessionStore;
+
+    const bearer = Auth.extractBearer(request);
+    if (Option.isNone(bearer)) {
+      return HttpServerResponse.text("Unauthorized", { status: 401 });
+    }
+    const minted = yield* auth.issueWebSocketTicket(bearer.value);
+    if (Option.isNone(minted)) {
+      return HttpServerResponse.text("Unauthorized", { status: 401 });
+    }
+
+    const ticket: WebSocketTicket = {
+      ticket: minted.value.ticket,
+      expires_at: minted.value.expiresAt,
+    };
+    // Encoding a value we just constructed can only fail on a schema bug — die.
+    return yield* respondWebSocketTicket(ticket).pipe(Effect.orDie);
+  }),
+);
+
 class DecodeOtlpTraceRecordsError extends Schema.TaggedError<DecodeOtlpTraceRecordsError>()(
   "DecodeOtlpTraceRecordsError",
   {
     cause: Schema.Defect(),
+    // The payload IS the diagnostic here: a renderer emitting spans the decoder
+    // cannot read is unactionable without seeing what it actually sent.
+    bodyJson: Schema.Unknown,
   },
 ) {
   override get message(): string {
@@ -187,10 +230,15 @@ export const otlpTracesRouteLayer = HttpRouter.add(
 
     yield* Effect.try({
       try: () => decodeOtlpTraceRecords(bodyJson),
-      catch: (cause) => new DecodeOtlpTraceRecordsError({ cause }),
+      catch: (cause) => new DecodeOtlpTraceRecordsError({ cause, bodyJson }),
     }).pipe(
       Effect.flatMap((records) => collector.record(records)),
-      Effect.catch((cause) => Effect.logWarning("Failed to decode browser OTLP traces", { cause })),
+      Effect.catch((error) =>
+        Effect.logWarning("Failed to decode browser OTLP traces", {
+          cause: error.cause,
+          bodyJson: error.bodyJson,
+        }),
+      ),
     );
 
     const otlpTracesUrl = config.otlpTracesUrl;
