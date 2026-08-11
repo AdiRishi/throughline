@@ -3,6 +3,11 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { assert, it as effectIt } from "@effect/vitest";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -12,13 +17,16 @@ import {
   createLinePrefixer,
   formatLabel,
   isBrowserAllowedPort,
+  isDevRunnerError,
   isMode,
   isPortCandidate,
   MAX_PORT,
+  MODES,
   parsePortOverride,
   PORT_OFFSET_RANGE,
   repoPortOffset,
   sessionExitCode,
+  spawnChild,
 } from "../dev-runner.ts";
 
 const DEV_RUNNER = NodePath.join(
@@ -32,7 +40,12 @@ describe("cli entrypoint", () => {
       encoding: "utf8",
     });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('Unknown mode "dev:mobile"');
+    // The CLI rejects the argument before the handler runs, and names the modes
+    // that would have worked.
+    expect(result.stderr).toContain('Invalid value for argument <mode>: "dev:mobile"');
+    for (const mode of MODES) {
+      expect(result.stderr).toContain(mode);
+    }
   });
 });
 
@@ -132,12 +145,12 @@ describe("parsePortOverride", () => {
 
 describe("createDevEnv", () => {
   const baseInput = {
-    repoRoot: "/repo",
     serverPort: 13_800,
     webPort: 5_800,
     bootstrapToken: "token",
     logDir: "/repo/.logs",
     logLevel: "Debug",
+    serverEntry: "/repo/apps/server/dist/bin.mjs",
   };
   const env = createDevEnv({ ...baseInput, isDesktopMode: false });
   const desktopEnvResult = createDevEnv({ ...baseInput, isDesktopMode: true });
@@ -284,4 +297,32 @@ describe("sessionExitCode", () => {
     expect(sessionExitCode(null, "SIGSEGV")).toBe(1);
     expect(sessionExitCode(null, null)).toBe(1);
   });
+});
+
+describe("spawnChild", () => {
+  const REPO_ROOT = NodePath.dirname(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)));
+  const context = { repoRoot: REPO_ROOT, useColor: false, onWindows: false };
+
+  // A crashing dev process has to reach the shell as a non-zero exit; a session
+  // that reports success after a child died is worse than one that never
+  // started, because CI and `&&` chains both believe it.
+  effectIt.effect("surfaces a non-zero child exit as a typed failure", () =>
+    Effect.gen(function* () {
+      const awaitExit = yield* spawnChild(context, {
+        label: "server",
+        filter: "@app/scripts",
+        script: "definitely-not-a-script",
+        env: {},
+        colorIndex: 0,
+      });
+
+      const exit = yield* Effect.exit(awaitExit);
+      assert.isTrue(Exit.isFailure(exit), "a missing script should fail the child");
+      const failure = Exit.isFailure(exit)
+        ? exit.cause.reasons.find(Cause.isFailReason)?.error
+        : undefined;
+      assert.isTrue(isDevRunnerError(failure), `expected a DevRunnerError, got ${String(failure)}`);
+      assert.equal(failure?._tag, "DevRunnerProcessExitError");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });
