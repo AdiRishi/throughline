@@ -3,6 +3,7 @@
  *
  * @module http
  */
+import Mime from "@effect/platform-node/Mime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -345,14 +346,15 @@ export const staticAndDevRouteLayer = HttpRouter.add(
       });
     }
 
-    return yield* HttpServerResponse.file(filePath, {
+    const contentType = Mime.getType(filePath) ?? "application/octet-stream";
+    const data = yield* fileSystem.readFile(filePath).pipe(Effect.orElseSucceed(() => null));
+    if (!data) {
+      return HttpServerResponse.text("Internal Server Error", { status: 500 });
+    }
+
+    return HttpServerResponse.uint8Array(data, {
       status: 200,
-      headers: {
-        "Cache-Control": "private, max-age=3600",
-        "X-Content-Type-Options": "nosniff",
-      },
-    }).pipe(
-      Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
-    );
+      contentType,
+    });
   }),
 );

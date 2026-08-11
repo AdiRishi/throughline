@@ -410,6 +410,7 @@ describe("static serving", () => {
     Effect.gen(function* () {
       const index = yield* HttpClient.get("/");
       assert.equal(index.status, 200);
+      assert.isUndefined(index.headers["cache-control"]);
       assert.include(yield* index.text, "INDEX_SENTINEL");
 
       const asset = yield* HttpClient.get("/assets/app.js");
