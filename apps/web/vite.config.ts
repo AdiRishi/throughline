@@ -6,9 +6,9 @@ import { defineConfig, defineProject, type TestProjectInlineConfiguration } from
 
 // Read rather than imported: a JSON import would need `resolveJsonModule` and
 // would put the whole manifest in the config's type graph for one string.
-const appVersion = (
-  NodeModule.createRequire(import.meta.url)("./package.json") as { version: string }
-).version;
+const appVersion =
+  process.env.APP_VERSION?.trim() ||
+  (NodeModule.createRequire(import.meta.url)("./package.json") as { version: string }).version;
 
 import { DEV_PROXIED_PATH_PREFIXES } from "@app/shared/devProxy";
 
