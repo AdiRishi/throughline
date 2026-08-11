@@ -4,7 +4,9 @@ import type {
   DesktopAppInfo,
   DesktopServerBootstrap,
   DesktopTheme,
+  DesktopUpdateActionResult,
   DesktopUpdateChannel,
+  DesktopUpdateCheckResult,
   DesktopUpdateState,
   PickFolderOptions,
 } from "./desktop.ts";
@@ -40,10 +42,10 @@ export interface DesktopBridge {
   ) => Promise<T | null>;
 
   readonly getUpdateState: () => Promise<DesktopUpdateState>;
-  readonly setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<void>;
-  readonly checkForUpdate: () => Promise<void>;
-  readonly downloadUpdate: () => Promise<void>;
-  readonly installUpdate: () => Promise<void>;
+  readonly setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;
+  readonly checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
+  readonly downloadUpdate: () => Promise<DesktopUpdateActionResult>;
+  readonly installUpdate: () => Promise<DesktopUpdateActionResult>;
   readonly onUpdateState: (listener: (state: DesktopUpdateState) => void) => Unsubscribe;
 
   readonly onMenuAction: (listener: (action: string) => void) => Unsubscribe;
